@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Copy Trading – panel</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --card: var(--tg-theme-secondary-bg-color, #f2f3f5);
+    --text: var(--tg-theme-text-color, #111418);
+    --hint: var(--tg-theme-hint-color, #8a8f98);
+    --accent: var(--tg-theme-button-color, #2f80ed);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --up: #1fa36b;
+    --down: #e5484d;
+    --radius: 16px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: var(--tg-theme-bg-color, #17191d);
+      --card: var(--tg-theme-secondary-bg-color, #22252b);
+      --text: var(--tg-theme-text-color, #f1f2f4);
+      --hint: var(--tg-theme-hint-color, #8b919b);
+      --up: #2ebd85;
+      --down: #f6465d;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  body { padding: 12px 16px calc(24px + env(safe-area-inset-bottom)); }
+  .tabs { display: grid; grid-template-columns: 1fr 1fr 1fr; background: var(--card); border-radius: 12px; padding: 3px; }
+  .tabs button { border: 0; background: transparent; color: var(--hint); font: inherit; font-weight: 600;
+    padding: 9px 0; border-radius: 10px; cursor: pointer; }
+  .tabs button[aria-selected="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .hero { margin: 20px 2px 6px; }
+  .label { color: var(--hint); font-size: 13px; }
+  .value { font-size: 34px; font-weight: 700; letter-spacing: -.5px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .value small { font-size: 16px; font-weight: 600; color: var(--hint); margin-left: 4px; }
+  .chip { display: inline-block; margin-top: 6px; padding: 3px 9px; border-radius: 999px; font-weight: 600; font-size: 13px;
+    font-variant-numeric: tabular-nums; }
+  .chip.up { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); }
+  .chip.down { color: var(--down); background: color-mix(in srgb, var(--down) 14%, transparent); }
+  .chart { position: relative; height: 170px; margin: 10px -4px 4px; touch-action: pan-y; }
+  .chart svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  .chart .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--hint); font-size: 13px;
+    text-align: center; padding: 0 24px; }
+  .range { display: flex; justify-content: space-between; color: var(--hint); font-size: 12px; margin: 0 2px 16px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { background: var(--card); border-radius: var(--radius); padding: 12px 14px; }
+  .stat b { display: block; font-size: 18px; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  h2 { font-size: 15px; margin: 22px 2px 8px; }
+  .list { background: var(--card); border-radius: var(--radius); overflow: hidden; }
+  .row { display: flex; align-items: center; gap: 10px; padding: 11px 14px; }
+  .row + .row { border-top: 1px solid color-mix(in srgb, var(--hint) 18%, transparent); }
+  .dot { width: 30px; height: 30px; flex: none; border-radius: 50%; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+  .dot.buy { color: var(--up); background: color-mix(in srgb, var(--up) 14%, transparent); }
+  .dot.sell { color: var(--down); background: color-mix(in srgb, var(--down) 14%, transparent); }
+  .dot.other { color: var(--hint); background: color-mix(in srgb, var(--hint) 14%, transparent); }
+  .row .main { flex: 1; min-width: 0; }
+  .row .main div:last-child { color: var(--hint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .amt { text-align: right; font-variant-numeric: tabular-nums; font-size: 14px; }
+  .note { color: var(--hint); font-size: 12px; margin: 18px 4px 0; text-align: center; }
+  .banner { background: var(--card); border-radius: var(--radius); padding: 14px; margin-top: 14px; }
+  .banner button { margin-top: 10px; width: 100%; border: 0; border-radius: 12px; padding: 12px; font: inherit; font-weight: 600;
+    background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  .state { padding: 60px 20px; text-align: center; color: var(--hint); }
+  .skeleton { background: var(--card); border-radius: 12px; height: 18px; margin: 10px 0; animation: pulse 1.2s infinite ease-in-out; }
+  @keyframes pulse { 50% { opacity: .5; } }
+  [hidden] { display: none !important; }
+  .trader { background: var(--card); border-radius: var(--radius); padding: 14px; margin-top: 10px; }
+  .trader .top { display: flex; align-items: center; gap: 10px; }
+  .trader .rank { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-weight: 700;
+    font-size: 13px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); flex: none; }
+  .trader .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trader .ret { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .trader .bio { color: var(--hint); font-size: 13px; margin: 6px 0 0; }
+  .trader .meta { display: flex; gap: 12px; flex-wrap: wrap; color: var(--hint); font-size: 12px; margin-top: 8px; }
+  .trader .meta b { color: var(--text); font-weight: 600; }
+  .trader svg.spark { width: 100%; height: 36px; display: block; margin-top: 8px; }
+  .trader button { margin-top: 10px; width: 100%; border: 0; border-radius: 10px; padding: 10px; font: inherit;
+    font-weight: 600; background: var(--accent); color: var(--accent-text); cursor: pointer; }
+  .trader button.mine { background: transparent; color: var(--up); border: 1px solid color-mix(in srgb, var(--up) 40%, transparent); }
+</style>
+</head>
+<body>
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="me">Mój portfel</button>
+    <button role="tab" aria-selected="false" data-tab="leader">Mój trader</button>
+    <button role="tab" aria-selected="false" data-tab="rank">Ranking</button>
+  </div>
+
+  <main id="view">
+    <div class="skeleton" style="width:40%;margin-top:24px"></div>
+    <div class="skeleton" style="width:65%;height:36px"></div>
+    <div class="skeleton" style="height:160px"></div>
+  </main>
+
+<script>
+const tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); if (tg.colorScheme) document.documentElement.dataset.theme = tg.colorScheme; }
+
+const $view = document.getElementById('view');
+let DATA = null, TAB = 'me';
+
+const nf = (x, d = 2) => Number(x || 0).toLocaleString('pl-PL', { minimumFractionDigits: d, maximumFractionDigits: d });
+const amt = x => Number(x || 0).toLocaleString('pl-PL', { maximumFractionDigits: 8 });
+const pct = x => x == null ? '—' : (x >= 0 ? '+' : '−') + nf(Math.abs(x) * 100) + '%';
+const date = ms => new Date(ms).toLocaleDateString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric' });
+const dt = ms => new Date(ms).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const cls = x => (x || 0) >= 0 ? 'up' : 'down';
+
+function chart(series, emptyText) {
+  if (!series || series.length < 2) return `<div class="chart"><div class="empty">${esc(emptyText)}</div></div>`;
+  const W = 300, H = 150, P = 6;
+  const xs = series.map(p => p[0]), ys = series.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const sx = t => x1 === x0 ? W / 2 : (t - x0) / (x1 - x0) * W;
+  const sy = v => y1 === y0 ? H / 2 : P + (1 - (v - y0) / (y1 - y0)) * (H - 2 * P);
+  const pts = series.map(p => `${sx(p[0]).toFixed(1)},${sy(p[1]).toFixed(1)}`);
+  const up = ys[ys.length - 1] >= ys[0];
+  const color = up ? 'var(--up)' : 'var(--down)';
+  return `<div class="chart" data-series='${JSON.stringify(series)}'>
+    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="Wykres wartości portfela">
+      <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="${color}" stop-opacity=".28"/><stop offset="1" stop-color="${color}" stop-opacity="0"/>
+      </linearGradient></defs>
+      <polygon points="0,${H} ${pts.join(' ')} ${W},${H}" fill="url(#g)"/>
+      <polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke"
+        stroke-linejoin="round" stroke-linecap="round"/>
+      <line class="cursor" x1="0" x2="0" y1="0" y2="${H}" stroke="var(--hint)" stroke-dasharray="3 3"
+        vector-effect="non-scaling-stroke" hidden/>
+    </svg></div>
+    <div class="range"><span>${date(x0)}</span><span>min ${nf(y0)} · max ${nf(y1)}</span><span>${date(x1)}</span></div>`;
+}
+
+function attachScrub(labelEl, valueEl, quote) {
+  const box = $view.querySelector('.chart[data-series]');
+  if (!box) return;
+  const series = JSON.parse(box.dataset.series), line = box.querySelector('.cursor');
+  const origLabel = labelEl.innerHTML, origValue = valueEl.innerHTML;
+  const move = e => {
+    const r = box.getBoundingClientRect();
+    const f = Math.min(Math.max((e.clientX - r.left) / r.width, 0), 1);
+    const t = series[0][0] + f * (series[series.length - 1][0] - series[0][0]);
+    let best = series[0];
+    for (const p of series) if (Math.abs(p[0] - t) < Math.abs(best[0] - t)) best = p;
+    const x = (best[0] - series[0][0]) / (series[series.length - 1][0] - series[0][0] || 1) * 300;
+    line.setAttribute('x1', x); line.setAttribute('x2', x); line.hidden = false;
+    labelEl.textContent = dt(best[0]);
+    valueEl.innerHTML = `${nf(best[1])}<small>${quote}</small>`;
+  };
+  const end = () => { line.hidden = true; labelEl.innerHTML = origLabel; valueEl.innerHTML = origValue; };
+  box.addEventListener('pointerdown', e => { box.setPointerCapture(e.pointerId); move(e); });
+  box.addEventListener('pointermove', e => { if (e.buttons || e.pointerType === 'mouse') move(e); });
+  box.addEventListener('pointerup', end); box.addEventListener('pointerleave', end); box.addEventListener('pointercancel', end);
+}
+
+const SIDE = { buy: ['buy', 'K', 'Kupno'], sell: ['sell', 'S', 'Sprzedaż'] };
+
+function renderMe() {
+  const q = DATA.quote, m = DATA.me, sub = DATA.subscription;
+  if (m.error) return `<div class="state">${esc(m.error)}</div>`;
+  const rows = (m.history || []).map(h => {
+    const [c, letter, name] = h.status === 'filled' ? SIDE[h.side] : ['other', '!', SIDE[h.side][2]];
+    const right = h.status === 'filled' ? `${nf(h.cost)} ${q}<div class="label">@ ${nf(h.price)}</div>` : `<span class="label">${h.status === 'skipped' ? 'pominięte' : 'błąd'}</span>`;
+    const sub2 = h.status === 'filled' ? `${amt(h.amount)} · ${dt(h.ts)}` : esc(h.info || '');
+    return `<div class="row"><div class="dot ${c}">${letter}</div><div class="main"><div>${name} ${esc(h.symbol)}</div><div>${sub2}</div></div><div class="amt">${right}</div></div>`;
+  }).join('');
+  const subBanner = sub.required && !sub.ok
+    ? `<div class="banner"><b>💎 Subskrypcja</b><div class="label">Kopiowanie${m.paper ? '' : ' na prawdziwych środkach'} wymaga subskrypcji: ${sub.price} ⭐ / 30 dni.</div><button onclick="toBot('sub')">Wykup w bocie</button></div>`
+    : sub.required ? `<div class="note">Subskrypcja aktywna do ${date(sub.paid_until)}</div>` : '';
+  return `
+    <section class="hero">
+      <div class="label" id="lbl">${m.paper ? '🧪 Portfel demo' : '💰 Portfel ' + esc(DATA.exchange)} · ${m.active ? 'kopiuje' : 'kopiowanie wyłączone'}</div>
+      <div class="value" id="val">${nf(m.equity)}<small>${q}</small></div>
+      <span class="chip ${cls(m.pnl)}">${m.pnl >= 0 ? '+' : '−'}${nf(Math.abs(m.pnl))} ${q} · ${pct(m.pnl_pct)}</span>
+    </section>
+    ${chart(m.series, 'Wykres pojawi się, gdy włączysz kopiowanie. Wartość zapisujemy co kilkanaście minut.')}
+    <div class="grid">
+      <div class="stat"><span class="label">Od włączenia</span><b class="${m.since_start == null ? '' : cls(m.since_start)}" style="color:${m.since_start == null ? 'inherit' : `var(--${cls(m.since_start)})`}">${pct(m.since_start)}</b></div>
+      <div class="stat"><span class="label">Największy spadek</span><b>${pct(-m.max_dd)}</b></div>
+      <div class="stat"><span class="label">Mnożnik · limit</span><b>${m.multiplier}x · ${nf(m.max_trade, 0)}</b></div>
+      <div class="stat"><span class="label">Stop-loss</span><b>${m.stop_loss > 0 ? '−' + m.stop_loss + '%' : 'wyłączony'}</b></div>
+    </div>
+    ${subBanner}
+    <h2>Ostatnie transakcje</h2>
+    ${rows ? `<div class="list">${rows}</div>` : '<div class="note">Jeszcze nic nie skopiowano.</div>'}
+    <div class="note">Ustawienia zmienisz w czacie z botem: /menu</div>`;
+}
+
+function renderLeader() {
+  const q = DATA.quote, l = DATA.leader;
+  if (l.error) return `<div class="state">${esc(l.error)}</div>`;
+  const rows = (l.recent || []).map(f => {
+    const [c, letter, name] = SIDE[f.side];
+    return `<div class="row"><div class="dot ${c}">${letter}</div><div class="main"><div>${name} ${esc(f.symbol)}</div><div>${dt(f.ts)}</div></div><div class="amt">@ ${nf(f.price)}</div></div>`;
+  }).join('');
+  return `
+    <section class="hero">
+      <div class="label" id="lbl">${esc(l.name || 'Trader')}${l.exchange ? ' · ' + esc(l.exchange) : l.source === 'manual' ? ' · sygnały' : ''} · wynik od ${date(l.since)}</div>
+      <div class="value" id="val" style="color:var(--${cls(l.total)})">${pct(l.total)}</div>
+      <span class="chip ${cls(l.d30 ?? 0)}">30 dni: ${pct(l.d30)}</span>
+    </section>
+    ${chart(l.series, 'Wykres pojawi się po pierwszych transakcjach lidera.')}
+    <div class="grid">
+      <div class="stat"><span class="label">Trafione transakcje</span><b>${l.win_rate == null ? '—' : Math.round(l.win_rate * 100) + '%'}</b><span class="label">${l.wins} z ${l.closed}</span></div>
+      <div class="stat"><span class="label">Największy spadek</span><b>${pct(-l.max_dd)}</b></div>
+      <div class="stat"><span class="label">7 dni</span><b style="color:var(--${cls(l.d7 ?? 0)})">${pct(l.d7)}</b></div>
+      <div class="stat"><span class="label">Najlepsza · najgorsza</span><b>${nf(l.best, 0)} · ${nf(l.worst, 0)}</b><span class="label">${q}</span></div>
+    </div>
+    <h2>Ostatnie zlecenia tradera</h2>
+    ${rows ? `<div class="list">${rows}</div>` : '<div class="note">Brak zleceń.</div>'}
+    <div class="note">Portfel wzorcowy: każde zlecenie tradera skopiowane 1:1 od startu (${nf(l.start, 0)} ${q}, prowizja 0,1%).<br>Wyniki z przeszłości nie gwarantują przyszłych zysków.</div>`;
+}
+
+function spark(series) {
+  if (!series || series.length < 2) return '';
+  const ys = series.map(p => p[1]), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const pts = series.map((p, i) => `${(i / (series.length - 1) * 300).toFixed(1)},${(y1 === y0 ? 18 : 33 - (p[1] - y0) / (y1 - y0) * 30).toFixed(1)}`);
+  const color = ys[ys.length - 1] >= ys[0] ? 'var(--up)' : 'var(--down)';
+  return `<svg class="spark" viewBox="0 0 300 36" preserveAspectRatio="none"><polyline points="${pts.join(' ')}" fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+
+function renderRank() {
+  const list = DATA.ranking || [];
+  if (!list.length) return '<div class="state">Nie ma jeszcze aktywnych traderów.</div>';
+  return `<h2>Ranking traderów</h2>` + list.map((t, i) => `
+    <div class="trader">
+      <div class="top"><div class="rank">${i + 1}</div><div class="name">${esc(t.name)}</div>
+        <div class="ret" style="color:var(--${cls(t.d30 ?? t.total)})">${pct(t.d30 ?? t.total)}</div></div>
+      ${t.bio ? `<p class="bio">${esc(t.bio)}</p>` : ''}
+      ${spark(t.spark)}
+      <div class="meta"><span>Od startu <b>${pct(t.total)}</b></span><span>Spadek <b>${pct(-t.max_dd)}</b></span>
+        <span>Trafność <b>${t.win_rate == null ? '—' : Math.round(t.win_rate * 100) + '%'}</b></span><span>Kopiuje <b>${t.copying}</b></span></div>
+      ${t.mine ? '<button class="mine" disabled>✔ Kopiujesz</button>' : `<button onclick="follow(${t.id}, this)">Kopiuj tego tradera</button>`}
+    </div>`).join('') + '<div class="note">Wynik (30 dni) z portfeli wzorcowych – każde zlecenie skopiowane 1:1.<br>Wyniki z przeszłości nie gwarantują przyszłych zysków.</div>';
+}
+
+async function follow(id, btn) {
+  btn.disabled = true; btn.textContent = 'Zapisuję…';
+  try {
+    const r = await fetch('api/follow', { method: 'POST', headers: { 'X-Init-Data': (tg && tg.initData) || '', 'Content-Type': 'application/json' }, body: JSON.stringify({ leader_id: id }) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.notificationOccurred('success');
+    const msg = `Kopiujesz: ${j.name}.` + (j.active ? '' : ' Włącz kopiowanie w menu bota ▶️');
+    if (tg && tg.showAlert) tg.showAlert(msg); else alert(msg);
+    await load();
+  } catch (e) { btn.disabled = false; btn.textContent = 'Kopiuj tego tradera'; if (tg && tg.showAlert) tg.showAlert(e.message); }
+}
+
+function render() {
+  $view.innerHTML = TAB === 'me' ? renderMe() : TAB === 'leader' ? renderLeader() : renderRank();
+  const lbl = document.getElementById('lbl'), val = document.getElementById('val');
+  if (lbl && val) attachScrub(lbl, val, DATA.quote);
+}
+
+function toBot(cmd) { if (tg) tg.close(); }
+
+document.querySelectorAll('.tabs button').forEach(b => b.addEventListener('click', () => {
+  TAB = b.dataset.tab;
+  document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-selected', x === b));
+  if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  if (DATA) render();
+}));
+
+async function load() {
+  try {
+    const r = await fetch('api/data', { headers: { 'X-Init-Data': (tg && tg.initData) || '' } });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'Błąd ' + r.status);
+    DATA = j; render();
+  } catch (e) {
+    $view.innerHTML = `<div class="state">${esc(e.message)}</div>`;
+  }
+}
+load();
+</script>
+</body>
+</html>
