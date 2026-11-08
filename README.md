@@ -1,31 +1,26 @@
-# Copy Trading Bot (Telegram) – wersja 2
+# Copy Trading Bot (Telegram) – wersja prywatna
 
-Platforma copytradingu w Telegramie, działająca jak copy trading na dużych giełdach, tylko u Ciebie:
-**użytkownicy wybierają traderów z rankingu, a bot w około sekundę powtarza ich transakcje na kontach
-obserwujących, na wybranej przez każdego giełdzie.**
+Prywatny bot do copytradingu dla kilku osób, np. Ciebie i kumpla. **Dodajesz traderów, wybierasz, kogo kopiujesz,
+a kogo tylko obserwujesz. Bot w około sekundę powtarza ich transakcje na Twoim koncie, na wybranej przez Ciebie giełdzie.**
 
 ## Co potrafi
 
-- **🏆 Ranking traderów.** Każdy trader ma publiczne wyniki (30 dni, od startu, największy spadek,
-  trafność), wykres i liczbę kopiujących. Wyniki liczy *portfel wzorcowy*, który kopiuje każde zlecenie 1:1,
-  więc nie da się ich podkręcić. Kolejność to wynik z 30 dni minus kara za duży spadek.
-- **🎓 Zostań traderem** (`/zostan_traderem`). Trader podpina klucz **tylko do odczytu** albo wysyła sygnały
-  w bocie (`/sygnal buy BTC/USDT 10`). Admin zatwierdza zgłoszenie jednym przyciskiem. Trader ma swój panel `/trader`.
-- **🔁 Wiele giełd:** Binance, Bybit, OKX, KuCoin, Bitget, Gate.io i MEXC (lista w `EXCHANGES`). Każdy użytkownik
-  i każdy trader wybiera własną giełdę. Trader może handlować na Binance, a kopiujący na Bybit, bo bot kopiuje
-  tę samą parę. Jeśli pary nie ma na giełdzie obserwującego, ten dostaje informację i zlecenie jest pomijane.
-- **⚡ Czas rzeczywisty.** Bot nasłuchuje transakcji tradera przez WebSocket giełdy (`watchMyTrades`), z opóźnieniem
-  około 1 s. Gdy połączenie padnie, sam przechodzi na odpytywanie i po 2 minutach znów próbuje WebSocketu.
-  Pary odkrywa sam z salda tradera, więc nic nie trzeba wpisywać.
-- **Model kopiowania: procent portfela.** Trader kupi za 20% swoich USDT, to obserwujący kupi za 20% swoich
-  (× mnożnik, maks. limit na zlecenie). Trader sprzeda połowę BTC, to obserwujący też sprzeda połowę.
-- **🛡 Ochrona.** Stop-loss portfela, ochrona ceny (bot nie kupi, jeśli cena uciekła o więcej niż X% od ceny
-  tradera), limit na zakup, przycisk „🧹 Sprzedaj wszystko”, globalna pauza admina.
-- **🌙 Raport dzienny** o 20:00: wartość portfela, zmiana z 24 h, liczba transakcji.
-- **📈 Panel (Telegram Mini App)** z trzema zakładkami: Mój portfel, Mój trader i Ranking (z przyciskiem „Kopiuj”).
-- **💎 Subskrypcja w Telegram Stars** (opcjonalnie), **🧪 tryb demo** na prawdziwych cenach.
-
-Przy pierwszym starcie dane z wersji 1 przenoszą się same: dotychczasowy lider staje się traderem #1.
+- **🔒 Dostęp na zaproszenie.** Pierwsza osoba, która napisze `/start`, zostaje właścicielem. Każda kolejna dostaje
+  „bot prywatny”, a właściciel przycisk **✅ Wpuść / ❌ Odrzuć**. Dostęp zabiera się w **🛠 Admin**.
+- **➕ Dodawanie traderów** (każda osoba z dostępem, w 3 krokach):
+  - **📡 konto na giełdzie**: klucz API *tylko do odczytu*, a bot widzi transakcje w czasie rzeczywistym (WebSocket);
+  - **✍️ sygnały w bocie**: `/sygnal buy BTC/USDT 10` (kup za 10% salda), `/sygnal sell BTC/USDT 100`.
+- **👥 Śledzenie wielu traderów.** Przy każdym wybierasz **✅ kopiuj** albo **👁 tylko powiadomienia**. Kopiować możesz
+  kilku naraz. Tradera można przemianować albo usunąć (robi to osoba, która go dodała, albo właściciel).
+- **🏠 Czytelny pulpit:** stan kopiowania, tryb, wartość portfela, kogo kopiujesz. Ekrany: Portfel, Traderzy,
+  Historia, Ustawienia (pogrupowane), Giełda, Admin.
+- **Wyniki traderów** z portfela wzorcowego (każde zlecenie 1:1): 30 dni, od startu, największy spadek, trafność.
+- **🔁 8 giełd:** Binance, Bybit, OKX, Coinbase, KuCoin, Bitget, Gate.io i MEXC. Pary dopasowują się między
+  stablecoinami, więc BTC/USDT u tradera to BTC/USD na Coinbase.
+- **Model kopiowania: procent portfela.** Trader kupi za 20% salda, to Ty kupisz za 20% (× mnożnik, maks. limit).
+  Sprzeda połowę, to Ty też sprzedasz połowę.
+- **🛡 Ochrona:** stop-loss portfela, ochrona ceny, limit na zakup, „🧹 Sprzedaj wszystko”, globalna pauza.
+- **🌙 Raport dzienny**, **📈 panel Mini App** (portfel, mój trader, ranking), **🧪 tryb demo** na prawdziwych cenach.
 
 ## Uruchomienie
 
@@ -57,25 +52,17 @@ docker build -t copybot . && docker run -d --env-file .env -v copybot-data:/data
 
 ## Komendy
 
-| Użytkownik | |
+| | |
 |---|---|
-| `/start`, `/menu` | menu: portfel, traderzy, start/stop, ustawienia, historia, giełda, demo/LIVE |
-| `/traderzy`, `/wyniki` | ranking traderów i wybór, kogo kopiować |
-| `/polacz` | wybór giełdy i podłączenie kluczy API (wiadomości z kluczami są od razu kasowane) |
-| `/zostan_traderem`, `/trader` | zgłoszenie i panel tradera |
-| `/mnoznik 1.5`, `/limit 100`, `/stoploss 20` | własne ustawienia |
-| `/wyniki` | wyniki lidera |
-| `/subskrypcja`, `/paysupport` | subskrypcja i pomoc w płatnościach |
-
-| Admin | |
-|---|---|
-| `/admin` | statystyki |
-| `/traderzy` | lista traderów z przyciskami zatwierdź/ukryj |
-| `/pauza`, `/wznow` | wstrzymanie kopiowania dla wszystkich |
-| `/sygnal buy BTC/USDT 10 [#id]` | sygnał tradera (właściciel profilu albo admin): kupno za 10% salda |
-| `/sygnal sell BTC/USDT 100 [#id]` | sprzedaż całej pozycji |
-| `/ogloszenie tekst` | wiadomość do wszystkich |
-| `/zwrot ID` | zwrot ostatniej płatności użytkownika w Stars |
+| `/start`, `/menu` | pulpit z przyciskami |
+| `/traderzy` | lista traderów: kopiuj / obserwuj / szczegóły |
+| `/dodaj` | dodaj tradera (konto giełdowe albo sygnały) |
+| `/sygnal buy BTC/USDT 10 [#id]` | sygnał dla tradera typu „sygnały w bocie” |
+| `/polacz` | podłącz giełdę (klucze są szyfrowane, wiadomości od razu kasowane) |
+| `/mnoznik 1.5` · `/limit 100` · `/stoploss 25` | własne ustawienia |
+| `/admin` | właściciel: osoby z dostępem, pauza |
+| `/ogloszenie tekst` | właściciel: wiadomość do wszystkich |
+| `/anuluj` | przerwij bieżącą czynność |
 
 ## Struktura
 
@@ -85,7 +72,7 @@ copybot/
   stats.py    – wynik, trafność, największy spadek (testowane)
   engine.py   – wykonywanie zleceń (demo + LIVE), rynki wielu giełd, ochrona ceny, stop-loss
   watchers.py – obserwatorzy kont traderów: WebSocket + zapasowe odpytywanie
-  traders.py  – ranking, profile, zgłoszenia traderów, sygnały
+  traders.py  – lista, profil, kopiuj/obserwuj, dodawanie, zmiana nazwy, usuwanie, sygnały
   reports.py  – raporty: wyniki lidera, portfel użytkownika
   jobs.py     – zadania okresowe: wartości portfeli, stop-loss, wygasanie subskrypcji
   billing.py  – subskrypcje w Telegram Stars

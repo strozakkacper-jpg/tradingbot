@@ -52,9 +52,10 @@ def setup(tmp_path, markets=None):
     return s, sent
 
 
-def add_user(s, uid, leader_id, **kw):
+def add_user(s, uid, leader_id, copy=True, **kw):
     s.db.ensure_user(uid, None, 1000, "USDT")
-    s.db.update_user(uid, accepted=1, active=1, max_trade=10_000, leader_id=leader_id, **kw)
+    s.db.update_user(uid, accepted=1, approved=1, active=1, max_trade=10_000, **kw)
+    s.db.follow(uid, leader_id, copy)
 
 
 def order(side="buy", price=100.0, oid="A", symbol="BTC/USDT"):
@@ -199,7 +200,7 @@ def test_migration_from_v1(tmp_path):
     db.set_state("reference_start", "111")
     db._q("INSERT INTO leader_trades VALUES ('T1', 1)")
     lid = db.migrate_v2(lambda: db.create_leader("Trader #1", "manual", None, "active"))
-    assert lid == 1 and db.get_user(5)["leader_id"] == 1
+    assert lid == 1 and db.follows_of(5) == {1: True}
     assert db.paper_balances(-1) == {"USDT": 1000} and db.paper_balances(0) == {}
     assert db.get_state("reference_start:1") == "111"
     assert db.unseen_trades(1, [{"id": "T1", "timestamp": 1}]) == []  # stary klucz nadal rozpoznany
@@ -225,57 +226,10 @@ def tg_update(uid, data=None, text=""):
                            effective_message=msg, message=msg, effective_chat=chat)
 
 
-def test_apply_approve_and_follow_flow(tmp_path):
-    s, _ = setup(tmp_path)
-    s.db.set_state("owner", "1")
-    for uid in (1, 2):
-        s.db.ensure_user(uid, None, 1000, "USDT")
-        s.db.update_user(uid, accepted=1)
-    bot = AsyncMock()
-    ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"svc": s}), user_data={}, bot=bot, args=[])
-
-    async def flow():
-        assert await T.apply_start(tg_update(2), ctx) == T.A_NAME
-        assert await T.apply_name(tg_update(2, text="Kacper Swing"), ctx) == T.A_BIO
-        assert await T.apply_bio(tg_update(2, text="BTC swing"), ctx) == T.A_SOURCE
-        await T.apply_source(tg_update(2, data="src:manual"), ctx)
-        lead = s.db.leaders("pending")[0]
-        assert lead["name"] == "Kacper Swing" and lead["owner_tg_id"] == 2
-        assert bot.send_message.call_args.args[0] == 1  # admin powiadomiony
-        await T.on_admin_button(tg_update(1, data=f"adm_ok:{lead['id']}"), ctx)
-        assert s.db.get_leader(lead["id"])["status"] == "active"
-        await T.on_admin_button(tg_update(2, data=f"adm_ok:{lead['id']}"), ctx)  # nie-admin: odmowa
-        await T.on_trader_button(tg_update(1, data=f"follow:{lead['id']}"), ctx)
-        assert s.db.get_user(1)["leader_id"] == lead["id"]
-        u = tg_update(1, data="traders")
-        await T.on_trader_button(u, ctx)
-        assert "Kacper Swing" in u.callback_query.edit_message_text.call_args.args[0]
-        # trader wysyła sygnał
-        s.db.update_user(1, active=1)
-        ctx.args = ["buy", "BTC/USDT", "10"]
-        u = tg_update(2)
-        await T.cmd_signal(u, ctx)
-        assert "wysłany" in u.message.reply_text.call_args.args[0]
-        assert "BTC" in s.db.paper_balances(1)
-
-    asyncio.run(flow())
-
-
-def test_toggle_requires_trader(tmp_path):
-    s, _ = setup(tmp_path)
-    s.db.ensure_user(1, None, 1000, "USDT")
-    s.db.update_user(1, accepted=1)
-    ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"svc": s}), user_data={}, bot=AsyncMock())
-    u = tg_update(1, data="toggle")
-    asyncio.run(B.on_button(u, ctx))
-    assert s.db.get_user(1)["active"] == 0
-    assert "wybierz tradera" in u.callback_query.answer.call_args.args[0].lower()
-
-
 def test_connect_saves_chosen_exchange(tmp_path):
     s, _ = setup(tmp_path)
     s.db.ensure_user(1, None, 1000, "USDT")
-    s.db.update_user(1, accepted=1)
+    s.db.update_user(1, accepted=1, approved=1)
     s.engine.verify_keys = AsyncMock(return_value={"USDT": 50.0})
     ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"svc": s}), user_data={}, bot=AsyncMock())
 
@@ -359,7 +313,8 @@ def test_button_acknowledged_before_slow_exchange(tmp_path):
     s, _ = setup(tmp_path)
     lid = s.db.create_leader("T", "manual", None, "active")
     s.db.ensure_user(1, None, 1000, "USDT")
-    s.db.update_user(1, accepted=1, leader_id=lid)
+    s.db.update_user(1, accepted=1, approved=1)
+    s.db.follow(1, lid, True)
     order_of_events = []
 
     async def slow_equity(u):
@@ -382,7 +337,8 @@ def test_button_shows_error_when_exchange_times_out(tmp_path, monkeypatch):
     s, _ = setup(tmp_path)
     lid = s.db.create_leader("T", "manual", None, "active")
     s.db.ensure_user(1, None, 1000, "USDT")
-    s.db.update_user(1, accepted=1, leader_id=lid)
+    s.db.update_user(1, accepted=1, approved=1)
+    s.db.follow(1, lid, True)
     monkeypatch.setattr(B, "UI_TIMEOUT", 0.05)
 
     async def hang(u):

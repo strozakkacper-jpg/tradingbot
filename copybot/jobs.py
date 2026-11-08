@@ -76,15 +76,15 @@ async def daily_report_job(ctx: ContextTypes.DEFAULT_TYPE):
             continue
         series = s.db.equity_series(u["tg_id"], bool(u["paper"]), since=day_ago)
         trades = [r for r in s.db.history(u["tg_id"], 50) if r["ts"] >= day_ago and r["status"] == "filled"]
-        lead = s.db.get_leader(u["leader_id"])
+        copied = s.db.copied_leaders(u["tg_id"])
         lines = [f"🌙 <b>Podsumowanie dnia</b>{' (demo)' if u['paper'] else ''}", ""]
         lines.append(f"Wartość portfela: <b>{fmt_money(equity)} {s.cfg.quote}</b>")
         if series and series[0][1] > 0:
             ch = equity / series[0][1] - 1
             lines.append(f"Zmiana 24 h: {'📈' if ch >= 0 else '📉'} {fmt_pct(ch)}")
         lines.append(f"Transakcje dziś: {len(trades)}")
-        if lead:
-            lines.append(f"Kopiujesz: {lead['name']}")
+        if copied:
+            lines.append("Kopiujesz: " + ", ".join(c["name"] for c in copied))
         lines.append("\nWyłączysz te raporty w ⚙️ Ustawieniach.")
         try:
             await ctx.bot.send_message(u["tg_id"], "\n".join(lines), parse_mode="HTML")

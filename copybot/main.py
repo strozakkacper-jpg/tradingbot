@@ -1,6 +1,5 @@
 import asyncio
 import datetime as dt
-import html
 import logging
 import warnings
 from zoneinfo import ZoneInfo
@@ -10,10 +9,10 @@ from telegram.ext import Application
 from telegram.warnings import PTBUserWarning
 
 from . import traders
-from .bot import Services, admin_ids, make_notify, register, summary
+from .bot import Services, make_notify, register
 from .config import Config
 from .db import DB
-from .engine import SIDE_PL, CopyEngine, Markets
+from .engine import CopyEngine, Markets
 from .jobs import daily_report_job, snapshot_job
 from .security import Vault
 from .watchers import Watchers
@@ -51,17 +50,9 @@ async def post_init(app: Application):
     async def on_orders(leader_id: int, pairs):
         if db.get_state("paused") == "1":
             return
-        lead = db.get_leader(leader_id)
         for order, fraction in pairs:
             res = await engine.copy(order, fraction, leader_id)
-            notify_ids = admin_ids(svc) | ({lead["owner_tg_id"]} if lead and lead["owner_tg_id"] else set())
-            for uid in notify_ids:
-                try:
-                    await app.bot.send_message(uid, f"🔁 {html.escape(lead['name'] if lead else '?')}: "
-                                                    f"{SIDE_PL[order.side]} {order.symbol} "
-                                                    f"({fraction * 100:.2f}% salda)\n{summary(res)}")
-                except Exception:  # noqa: BLE001
-                    pass
+            log.info("Trader #%s %s %s (%.2f%%): %s", leader_id, order.side, order.symbol, fraction * 100, dict(res))
 
     watchers = Watchers(cfg, db, vault, markets, on_orders)
     svc = app.bot_data["svc"] = Services(cfg, db, vault, markets, engine, watchers)
@@ -84,10 +75,9 @@ async def post_init(app: Application):
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("Panel", WebAppInfo(f"{cfg.webapp_url}/app")))
     log.info("Giełdy: %s · traderzy aktywni: %d", ", ".join(cfg.exchanges), len(db.leaders("active")))
     await app.bot.set_my_commands([
-        BotCommand("menu", "Menu główne"), BotCommand("traderzy", "Ranking traderów"),
-        BotCommand("polacz", "Podłącz giełdę"), BotCommand("zostan_traderem", "Zostań traderem"),
-        BotCommand("trader", "Panel tradera"), BotCommand("stoploss", "Stop-loss w %"),
-        BotCommand("subskrypcja", "Subskrypcja"), BotCommand("pomoc", "Jak to działa"),
+        BotCommand("menu", "Pulpit"), BotCommand("traderzy", "Traderzy"), BotCommand("dodaj", "Dodaj tradera"),
+        BotCommand("sygnal", "Wyślij sygnał"), BotCommand("polacz", "Podłącz giełdę"),
+        BotCommand("pomoc", "Jak to działa"),
     ])
 
 

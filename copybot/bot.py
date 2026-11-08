@@ -1,4 +1,7 @@
-"""Interfejs Telegram: menu, podłączanie giełdy, ustawienia, panel admina."""
+"""Interfejs Telegram (bot prywatny): pulpit, portfel, ustawienia, giełda, dostęp i admin.
+
+Traderzy (lista, profil, dodawanie, sygnały) są w traders.py.
+"""
 import asyncio
 import html
 import logging
@@ -8,36 +11,37 @@ from telegram import InlineKeyboardButton as B
 from telegram import InlineKeyboardMarkup as KB
 from telegram import Update, WebAppInfo
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden, NetworkError
+from telegram.error import BadRequest, Conflict, Forbidden, NetworkError
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
-                          MessageHandler, PreCheckoutQueryHandler, filters)
+                          MessageHandler, filters)
 
-from .billing import PERIOD_SECONDS, has_access, invoice_link, needs_subscription, paywall_on
 from .config import KEY_HINTS, Config, exchange_name, friendly_error, needs_password, normalize_secret
-from .db import DB, now_ms
+from .db import DB
 from .engine import SIDE_PL, CopyEngine, Market, fmt_amount, fmt_money, user_exchange
-from .reports import fmt_date
 from .security import Vault
-from .sizing import LeaderOrder
 
 log = logging.getLogger(__name__)
 
 DISCLAIMER = (
     "⚠️ <b>Zanim zaczniesz</b>\n\n"
-    "• Handel kryptowalutami jest ryzykowny – możesz stracić całość wpłaconych środków.\n"
-    "• Wyniki lidera z przeszłości <b>nie gwarantują</b> przyszłych zysków.\n"
-    "• Bot kopiuje transakcje automatycznie, ale nie jest doradcą inwestycyjnym.\n"
-    "• Domyślnie działasz w <b>trybie demo</b> (wirtualne {start} {quote}). Na prawdziwe środki "
-    "przełączasz się sam, po podłączeniu kluczy API.\n"
-    "• Klucze API twórz <b>wyłącznie z uprawnieniem do handlu</b> – nigdy z prawem do wypłat."
+    "• Handel kryptowalutami jest ryzykowny – możesz stracić całość środków.\n"
+    "• Wyniki tradera z przeszłości <b>nie gwarantują</b> przyszłych zysków.\n"
+    "• Startujesz w <b>trybie demo</b> (wirtualne {start} {quote}, prawdziwe ceny). "
+    "Na prawdziwe środki przełączasz się sam, po podłączeniu giełdy.\n"
+    "• Klucze API twórz <b>tylko z handlem spot</b> – nigdy z prawem do wypłat."
 )
+LOCKED = "🔒 <b>To prywatny bot.</b>\n\nPoprosiłem właściciela o dostęp dla Ciebie – dostaniesz wiadomość, gdy Cię wpuści."
 
 KEY, SECRET, PASSWORD, CHOOSE = range(4)
-MULTIPLIERS = (0.25, 0.5, 1.0, 1.5, 2.0)
+MULTIPLIERS = (0.5, 1.0, 1.5, 2.0, 3.0)
 LIMITS = (10, 25, 50, 100, 250, 1000)
 STOP_LOSSES = (0, 10, 20, 30, 50)
 PRICE_MOVES = (0, 1, 2, 5)
 UI_TIMEOUT = 20  # s – dłużej nie czekamy na giełdę w odpowiedzi na kliknięcie
+SIDES = {"buy": "buy", "kup": "buy", "kupno": "buy", "sell": "sell", "sprzedaj": "sell", "sprzedaz": "sell"}
+
+HOME = [B("« Pulpit", callback_data="menu")]
+BACK = HOME  # zgodność wsteczna
 
 
 @dataclass
@@ -55,7 +59,7 @@ def S(ctx: ContextTypes.DEFAULT_TYPE) -> Services:
 
 
 def admin_ids(s: "Services") -> set[int]:
-    """Admini z .env albo – jeśli nie podano – właściciel: pierwsza osoba, która napisała /start."""
+    """Admini z .env albo właściciel – pierwsza osoba, która napisała /start."""
     owner = s.db.get_state("owner")
     return set(s.cfg.admin_ids) | ({int(owner)} if owner else set())
 
@@ -64,46 +68,9 @@ def is_admin(ctx, update: Update) -> bool:
     return update.effective_user.id in admin_ids(S(ctx))
 
 
-# ---------- widoki ----------
-
-def menu_view(s: Services, u) -> tuple[str, KB]:
-    paused = s.db.get_state("paused") == "1"
-    connected = bool(u["api_key"])
-    text = (
-        "🤖 <b>Copy Trading</b>\n\n"
-        f"Kopiowanie: {'▶️ <b>włączone</b>' if u['active'] else '⏸ wyłączone'}\n"
-        f"Tryb: {'🧪 demo' if u['paper'] else '💰 <b>LIVE</b>'}\n"
-        f"Mnożnik: {u['multiplier']:g}x · Limit: {u['max_trade']:g} {s.cfg.quote}/zlecenie\n"
-        f"Giełda: {exchange_name(user_exchange(s.cfg, u))} {'✅ podłączona' if connected else '— niepodłączona'}\n"
-        f"Stop-loss: {sl_txt(u)}"
-    )
-    lead = s.db.get_leader(u["leader_id"])
-    if lead and lead["status"] == "active":
-        text = text.replace("🤖 <b>Copy Trading</b>\n\n", f"🤖 <b>Copy Trading</b>\n\nKopiujesz: <b>"
-                            f"{html.escape(lead['name'])}</b>\n", 1)
-    else:
-        text += "\n\n👉 Wybierz tradera do kopiowania: 🏆 Traderzy"
-    if paused:
-        text += "\n⏸ Kopiowanie wstrzymane przez admina"
-    if paywall_on(s.cfg):
-        text += "\nSubskrypcja: " + (f"💎 do {fmt_date(u['paid_until'])}" if (u["paid_until"] or 0) > now_ms()
-                                       else "brak")
-    rows = []
-    if s.cfg.webapp_url:
-        rows.append([B("📈 Otwórz panel", web_app=WebAppInfo(f"{s.cfg.webapp_url}/app"))])
-    rows += [
-        [B("📊 Portfel", callback_data="status"), B("🏆 Traderzy", callback_data="traders")],
-        [B("⏸ Zatrzymaj kopiowanie" if u["active"] else "▶️ Zacznij kopiować", callback_data="toggle")],
-        [B("⚙️ Ustawienia", callback_data="settings"), B("📜 Historia", callback_data="history")],
-        [B("🔑 Podłącz giełdę", callback_data="connect"),
-         B("Na 💰 LIVE" if u["paper"] else "Na 🧪 demo", callback_data="mode")],
-    ]
-    if paywall_on(s.cfg):
-        rows.append([B("💎 Subskrypcja", callback_data="sub")])
-    return text, KB(rows)
-
-
-BACK = [B("« Menu", callback_data="menu")]
+def header(b_text: str) -> list:
+    """Nieklikalny nagłówek sekcji między przyciskami."""
+    return [B(f"— {b_text} —", callback_data="noop")]
 
 
 def pm_txt(u) -> str:
@@ -111,45 +78,87 @@ def pm_txt(u) -> str:
 
 
 def sl_txt(u) -> str:
-    return f"-{u['stop_loss']:g}%" if u["stop_loss"] else "wyłączony"
+    return f"−{u['stop_loss']:g}%" if u["stop_loss"] else "wyłączony"
 
 
-def sub_view(s: Services, u) -> tuple[str, KB | None]:
-    active = (u["paid_until"] or 0) > now_ms()
-    scope = "kopiowania na prawdziwych środkach (demo jest za darmo)" if s.cfg.sub_scope == "live" else "kopiowania"
-    text = (f"💎 <b>Subskrypcja</b>\n\n{s.cfg.sub_price_stars} ⭐ za 30 dni – wymagana do {scope}.\n"
-            "Płacisz gwiazdkami Telegrama (kupisz je w aplikacji). Odnawia się co miesiąc, anulujesz w "
-            "Ustawienia → Moje gwiazdki.\n\n"
-            + (f"✅ Aktywna do <b>{fmt_date(u['paid_until'])}</b>" if active else "Status: brak subskrypcji"))
-    return text, None
+def summary(res) -> str:
+    return (f"✅ skopiowano: {res.get('filled', 0)} · ⚠️ pominięto: {res.get('skipped', 0)} · "
+            f"❌ błędy: {res.get('error', 0)} · 👁 powiadomienia: {res.get('alert', 0)}")
+
+
+# ---------- widoki ----------
+
+def menu_view(s: Services, u) -> tuple[str, KB]:
+    q = s.cfg.quote
+    ex = exchange_name(user_exchange(s.cfg, u))
+    copied = s.db.copied_leaders(u["tg_id"])
+    follows = s.db.follows_of(u["tg_id"])
+    watching = sum(1 for c in follows.values() if not c)
+
+    lines = ["🏠 <b>Pulpit</b>", ""]
+    state = "▶️ <b>włączone</b>" if u["active"] else "⏸ wyłączone"
+    lines.append(f"<b>Kopiowanie:</b> {state}")
+    mode = "🧪 demo" if u["paper"] else f"💰 <b>LIVE</b> · {ex}"
+    lines.append(f"<b>Tryb:</b> {mode}")
+    series = s.db.equity_series(u["tg_id"], bool(u["paper"]))
+    if series:
+        value = series[-1][1]
+        base = s.cfg.paper_start if u["paper"] else (u["start_equity"] or value)
+        lines.append(f"<b>Portfel:</b> ≈ {fmt_money(value)} {q} ({(value / base - 1) * 100:+.2f}%)")
+    names = ", ".join(html.escape(c["name"]) for c in copied)
+    lines.append(f"<b>Kopiujesz:</b> {names if names else '— nikogo'}")
+    if watching:
+        lines.append(f"<b>Obserwujesz:</b> {watching} (tylko powiadomienia)")
+    if not copied:
+        lines += ["", "👉 Wejdź w <b>👥 Traderzy</b>, dodaj albo wybierz tradera do kopiowania."]
+    if s.db.get_state("paused") == "1":
+        lines += ["", "⏸ <i>Kopiowanie wstrzymane przez admina.</i>"]
+
+    rows = [[B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="toggle")],
+            [B("💼 Portfel", callback_data="status"), B("👥 Traderzy", callback_data="traders")],
+            [B("📜 Historia", callback_data="history"), B("⚙️ Ustawienia", callback_data="settings")],
+            [B(f"🏦 Giełda: {ex}" if u["api_key"] else "🏦 Podłącz giełdę", callback_data="exchange"),
+             B("Przejdź na 💰 LIVE" if u["paper"] else "Przejdź na 🧪 demo", callback_data="mode")]]
+    if s.cfg.webapp_url:
+        rows.append([B("📈 Panel z wykresami", web_app=WebAppInfo(f"{s.cfg.webapp_url}/app"))])
+    extra = [B("🔄 Odśwież", callback_data="menu")]
+    if u["tg_id"] in admin_ids(s):
+        extra.insert(0, B("🛠 Admin", callback_data="admin"))
+    rows.append(extra)
+    return "\n".join(lines), KB(rows)
 
 
 def settings_view(s: Services, u) -> tuple[str, KB]:
+    q = s.cfg.quote
     text = (
         "⚙️ <b>Ustawienia</b>\n\n"
-        f"<b>Mnożnik</b>: {u['multiplier']:g}x – gdy lider wyda 10% salda, Ty wydasz "
-        f"{min(10 * u['multiplier'], 100):g}%.\n"
-        f"<b>Limit</b>: {u['max_trade']:g} {s.cfg.quote} – maksymalna wartość pojedynczego zakupu. "
-        "Sprzedaże nie są limitowane, żeby zawsze zamykać pozycje razem z liderem.\n"
-        f"<b>Stop-loss</b>: {sl_txt(u)} – gdy portfel spadnie o tyle od momentu włączenia kopiowania, "
-        "bot wyłączy kopiowanie i sprzeda pozycje, które sam otworzył.\n\n"
-        f"<b>Ochrona ceny</b>: {pm_txt(u)} – nie kupuj, jeśli cena urosła już "
-        "o więcej od ceny zakupu tradera (nie gonimy rynku).\n"
-        f"<b>Raport dzienny</b>: {'włączony' if u['daily_report'] else 'wyłączony'}\n\n"
-        "Własne wartości: /mnoznik 1.2 · /limit 75 · /stoploss 25"
+        "💵 <b>Wielkość zleceń</b>\n"
+        f"Mnożnik <b>{u['multiplier']:g}x</b> – trader wyda 10% salda, Ty wydasz {min(10 * u['multiplier'], 100):g}%.\n"
+        f"Limit <b>{u['max_trade']:g} {q}</b> na jeden zakup (sprzedaże bez limitu).\n\n"
+        "🛡 <b>Ochrona</b>\n"
+        f"Stop-loss <b>{sl_txt(u)}</b> – spadek portfela od włączenia kopiowania wyłącza kopiowanie "
+        "i sprzedaje pozycje bota.\n"
+        f"Ochrona ceny <b>{pm_txt(u)}</b> – nie kupuj, jeśli cena uciekła od ceny tradera.\n\n"
+        "🔔 <b>Powiadomienia</b>\n"
+        f"Raport dzienny o {s.cfg.daily_report_hour}:00: <b>{'włączony' if u['daily_report'] else 'wyłączony'}</b>\n\n"
+        "<i>Własne wartości: /mnoznik 1.2 · /limit 75 · /stoploss 25</i>"
     )
-    mark = lambda cur, v: f"• {v:g} •" if abs(cur - v) < 1e-9 else f"{v:g}"  # noqa: E731
+
+    def mark(cur, v, label):
+        return f"✓ {label}" if abs((cur or 0) - v) < 1e-9 else label
+
     kb = KB([
-        [B(mark(u["multiplier"], m) + "x", callback_data=f"mult:{m}") for m in MULTIPLIERS],
-        [B(mark(u["max_trade"], v), callback_data=f"lim:{v}") for v in LIMITS[:3]],
-        [B(mark(u["max_trade"], v), callback_data=f"lim:{v}") for v in LIMITS[3:]],
-        [B("SL: " + ("• wył •" if not u["stop_loss"] else "wył"), callback_data="sl:0")]
-        + [B(mark(u["stop_loss"], v) + "%", callback_data=f"sl:{v}") for v in STOP_LOSSES[1:]],
-        [B("Cena: " + ("• wył •" if not u["max_price_move"] else "wył"), callback_data="pm:0")]
-        + [B(mark(u["max_price_move"], v) + "%", callback_data=f"pm:{v}") for v in PRICE_MOVES[1:]],
-        [B(f"🌙 Raport dzienny: {'wł ✅' if u['daily_report'] else 'wył'}", callback_data="daily")],
-        [B("🔄 Zresetuj konto demo", callback_data="paper_reset")],
-        BACK,
+        header("Mnożnik"),
+        [B(mark(u["multiplier"], m, f"{m:g}x"), callback_data=f"mult:{m}") for m in MULTIPLIERS],
+        header(f"Limit na zakup ({q})"),
+        [B(mark(u["max_trade"], v, f"{v:g}"), callback_data=f"lim:{v}") for v in LIMITS],
+        header("Stop-loss"),
+        [B(mark(u["stop_loss"], v, f"−{v:g}%" if v else "wył"), callback_data=f"sl:{v}") for v in STOP_LOSSES],
+        header("Ochrona ceny"),
+        [B(mark(u["max_price_move"], v, f"+{v:g}%" if v else "wył"), callback_data=f"pm:{v}") for v in PRICE_MOVES],
+        [B(f"🌙 Raport dzienny: {'✓ wł' if u['daily_report'] else 'wył'}", callback_data="daily"),
+         B("🔄 Reset demo", callback_data="paper_reset")],
+        HOME,
     ])
     return text, kb
 
@@ -158,198 +167,202 @@ async def status_text(s: Services, u) -> str:
     q = s.cfg.quote
     if u["paper"]:
         bal = s.db.paper_balances(u["tg_id"])
-        title = "🧪 <b>Portfel demo</b>"
+        title = "💼 <b>Portfel demo</b> 🧪"
     else:
         bal = await s.engine.live_balance(u)
-        title = f"💰 <b>Portfel {exchange_name(user_exchange(s.cfg, u))}</b>"
+        title = f"💼 <b>Portfel {exchange_name(user_exchange(s.cfg, u))}</b> 💰"
     lines = [title, ""]
     if not bal:
         lines.append("Brak środków.")
     for asset, amount in sorted(bal.items(), key=lambda kv: kv[0] != q):
-        lines.append(f"• {html.escape(asset)}: {fmt_amount(amount)}")
+        lines.append(f"• <b>{html.escape(asset)}</b>: {fmt_amount(amount)}")
     try:
         equity = await s.engine.m(u).equity(bal)
         lines += ["", f"Wartość: <b>{fmt_money(equity)} {q}</b>"]
         if u["paper"]:
             pnl = equity - s.cfg.paper_start
-            pct = pnl / s.cfg.paper_start * 100
-            lines.append(f"Wynik: {'📈' if pnl >= 0 else '📉'} {pnl:+.2f} {q} ({pct:+.2f}%)")
+            lines.append(f"Wynik demo: {'📈' if pnl >= 0 else '📉'} {pnl:+.2f} {q} "
+                         f"({pnl / s.cfg.paper_start * 100:+.2f}%)")
         if u["active"] and u["start_equity"]:
             ch = (equity / u["start_equity"] - 1) * 100
-            lines.append(f"Od włączenia kopiowania: {ch:+.2f}% (stop-loss: {sl_txt(u)})")
+            lines.append(f"Od włączenia kopiowania: {ch:+.2f}% · stop-loss {sl_txt(u)}")
     except Exception:  # noqa: BLE001
         log.exception("Nie udało się wycenić portfela")
-        lines += ["", "(nie udało się pobrać cen)"]
+        lines += ["", "<i>(nie udało się pobrać cen)</i>"]
     return "\n".join(lines)
 
 
 def history_text(s: Services, u) -> str:
-    rows = s.db.history(u["tg_id"], 10)
+    rows = s.db.history(u["tg_id"], 12)
     if not rows:
         return "📜 <b>Historia</b>\n\nJeszcze nic nie skopiowano."
-    icon = {"filled": "✅", "skipped": "⚠️", "error": "❌"}
     lines = ["📜 <b>Ostatnie transakcje</b>", ""]
     for r in rows:
         mode = "demo" if r["paper"] else "LIVE"
         if r["status"] == "filled":
-            lines.append(f"{icon['filled']} {SIDE_PL[r['side']]} {r['symbol']} {fmt_amount(r['amount'])} "
-                         f"@ {fmt_money(r['price'])} ({fmt_money(r['cost'])} {s.cfg.quote}, {mode})")
+            lines.append(f"{'🟢' if r['side'] == 'buy' else '🔴'} <b>{r['symbol']}</b> {fmt_amount(r['amount'])} "
+                         f"@ {fmt_money(r['price'])} = {fmt_money(r['cost'])} {s.cfg.quote} <i>({mode})</i>")
         else:
-            lines.append(f"{icon.get(r['status'], '•')} {SIDE_PL[r['side']]} {r['symbol']}: "
-                         f"{html.escape((r['info'] or '')[:80])}")
+            icon = "⚠️" if r["status"] == "skipped" else "❌"
+            lines.append(f"{icon} {r['symbol']}: <i>{html.escape((r['info'] or '')[:80])}</i>")
     return "\n".join(lines)
 
 
-# ---------- helpery ----------
+def exchange_view(s: Services, u) -> tuple[str, KB]:
+    ex = exchange_name(user_exchange(s.cfg, u))
+    if u["api_key"]:
+        text = (f"🏦 <b>Giełda: {ex}</b> ✅\n\nKlucze API są podłączone i zaszyfrowane.\n"
+                f"Tryb: {'🧪 demo' if u['paper'] else '💰 LIVE – bot handluje Twoimi środkami'}.\n\n"
+                "Możesz podłączyć inną giełdę albo odłączyć klucze.")
+        rows = [[B("🔁 Zmień giełdę / klucze", callback_data="connect")],
+                [B("🗑 Odłącz klucze", callback_data="disconnect")], HOME]
+    else:
+        names = ", ".join(exchange_name(e) for e in s.cfg.exchanges)
+        text = ("🏦 <b>Giełda</b>\n\nNie masz podłączonej giełdy – działasz w trybie demo.\n\n"
+                f"Obsługiwane: {names}.\nTrader może być na innej giełdzie niż Ty – bot kopiuje te same pary.")
+        rows = [[B("🔑 Podłącz giełdę", callback_data="connect")], HOME]
+    return text, KB(rows)
+
+
+def admin_view(s: Services) -> tuple[str, KB]:
+    st = s.db.stats()
+    paused = s.db.get_state("paused") == "1"
+    owners = admin_ids(s)
+    lines = ["🛠 <b>Admin</b>", "",
+             f"Kopiowanie: {'⏸ wstrzymane dla wszystkich' if paused else '🟢 działa'}",
+             f"Traderzy: {len(s.db.leaders('active'))} · kopiuje teraz: {st['active']} os. (LIVE: {st['live']})",
+             "", "<b>Osoby z dostępem</b>"]
+    rows = []
+    for u in s.db.approved_users():
+        name = f"@{u['username']}" if u["username"] else str(u["tg_id"])
+        role = " 👑" if u["tg_id"] in owners else ""
+        lines.append(f"• {html.escape(name)}{role} – {'▶️ kopiuje' if u['active'] else '⏸'} "
+                     f"{'🧪' if u['paper'] else '💰'}")
+        if u["tg_id"] not in owners:
+            rows.append([B(f"🚫 Zabierz dostęp: {name[:24]}", callback_data=f"usr_del:{u['tg_id']}")])
+    lines += ["", "<i>Nowa osoba pisze /start do bota – dostaniesz przycisk „Wpuść”.</i>",
+              "<i>Ogłoszenie do wszystkich: /ogloszenie treść</i>"]
+    rows.insert(0, [B("▶️ Wznów kopiowanie" if paused else "⏸ Wstrzymaj kopiowanie wszystkim",
+                      callback_data="resume" if paused else "pause")])
+    rows.append(HOME)
+    return "\n".join(lines), KB(rows)
+
+
+# ---------- dostęp ----------
 
 def get_user(ctx, update: Update):
     s = S(ctx)
     tu = update.effective_user
-    return s.db.ensure_user(tu.id, tu.username, s.cfg.paper_start, s.cfg.quote)
+    u = s.db.ensure_user(tu.id, tu.username, s.cfg.paper_start, s.cfg.quote)
+    if not u["approved"] and tu.id in admin_ids(s):
+        s.db.update_user(tu.id, approved=1)
+        u = s.db.get_user(tu.id)
+    if tu.username and u["username"] != tu.username:
+        s.db.update_user(tu.id, username=tu.username)
+    return u
 
 
 async def show(update: Update, text: str, kb: KB | None = None):
     """Edytuje wiadomość z przyciskami albo wysyła nową."""
+    kw = {"parse_mode": ParseMode.HTML, "reply_markup": kb, "disable_web_page_preview": True}
     if update.callback_query:
         try:
-            await update.callback_query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+            await update.callback_query.edit_message_text(text, **kw)
         except BadRequest as e:
             if "not modified" not in str(e).lower():
                 raise
     else:
-        await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        await update.effective_chat.send_message(text, **kw)
 
 
 async def require_accepted(update: Update, ctx) -> object | None:
+    """Wpuszcza tylko zatwierdzone osoby, które zaakceptowały ostrzeżenie o ryzyku."""
+    s = S(ctx)
     u = get_user(ctx, update)
+    if not u["approved"]:
+        await show(update, LOCKED)
+        if not u["requested"]:
+            s.db.update_user(u["tg_id"], requested=1)
+            tu = update.effective_user
+            who = f"@{tu.username}" if tu.username else (tu.full_name if hasattr(tu, "full_name") else str(tu.id))
+            for admin in admin_ids(s):
+                try:
+                    await ctx.bot.send_message(
+                        admin, f"🔔 <b>{html.escape(str(who))}</b> (ID {tu.id}) prosi o dostęp do bota.",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=KB([[B("✅ Wpuść", callback_data=f"usr_ok:{tu.id}"),
+                                          B("❌ Odrzuć", callback_data=f"usr_no:{tu.id}")]]))
+                except Exception:  # noqa: BLE001
+                    log.exception("Nie wysłano prośby o dostęp")
+        return None
     if u["accepted"]:
         return u
-    s = S(ctx)
     await show(update, DISCLAIMER.format(start=f"{s.cfg.paper_start:g}", quote=s.cfg.quote),
-               KB([[B("✅ Rozumiem ryzyko, zaczynam", callback_data="accept")]]))
+               KB([[B("✅ Rozumiem, zaczynam", callback_data="accept")]]))
     return None
 
 
-# ---------- komendy użytkownika ----------
+# ---------- komendy ----------
 
 async def cmd_start(update: Update, ctx):
     s = S(ctx)
     if not s.cfg.admin_ids and s.db.get_state("owner") is None:
         s.db.set_state("owner", str(update.effective_user.id))
-        await update.effective_message.reply_text(
-            "👑 Jesteś pierwszą osobą w tym bocie, więc zostajesz jego <b>administratorem</b>.\n"
-            "Panel: /admin", parse_mode=ParseMode.HTML)
+        get_user(ctx, update)
+        await update.effective_chat.send_message(
+            "👑 Jesteś właścicielem tego bota. Tylko osoby, które wpuścisz, będą mogły z niego korzystać.",
+            parse_mode=ParseMode.HTML)
     if u := await require_accepted(update, ctx):
-        await show(update, *menu_view(S(ctx), u))
+        await show(update, *menu_view(s, u))
 
 
 async def cmd_help(update: Update, ctx):
-    await update.effective_message.reply_text(
+    await update.effective_chat.send_message(
         "ℹ️ <b>Jak to działa?</b>\n\n"
-        "Wybierasz tradera z rankingu (🏆 Traderzy). Gdy trader kupi za X% swojego salda, bot w około sekundę kupi "
-        "u Ciebie za X% Twojego salda (× mnożnik, maks. limit). Gdy sprzeda część pozycji, sprzedasz ten sam "
-        "procent.\n\nChcesz, żeby inni kopiowali Ciebie? /zostan_traderem\n\n"
-        "/menu – menu główne\n/traderzy – ranking traderów\n/trader – Twój panel tradera\n/polacz – podłącz klucze API giełdy\n"
-        "/mnoznik 1.5 – ustaw mnożnik\n/limit 100 – limit na zlecenie\n/stoploss 25 – stop-loss w %\n"
-        "/subskrypcja – status subskrypcji\n/paysupport – pomoc w sprawie płatności\n"
-        "/anuluj – przerwij podłączanie kluczy",
+        "1. W <b>👥 Traderzy</b> dodajesz tradera: jego konto na giełdzie (klucz tylko do odczytu) albo własne "
+        "sygnały.\n"
+        "2. Przy każdym traderze wybierasz: <b>kopiuj</b> albo <b>tylko powiadomienia</b>.\n"
+        "3. Włączasz kopiowanie. Trader kupi za X% swojego salda → bot w około sekundę kupi u Ciebie za X% "
+        "Twojego (× mnożnik, maks. limit). Sprzeda część pozycji → sprzedasz ten sam procent.\n\n"
+        "<b>Komendy</b>\n/menu – pulpit\n/traderzy – lista traderów\n/dodaj – dodaj tradera\n"
+        "/sygnal buy BTC/USDT 10 – sygnał (dla traderów „sygnały”)\n/polacz – podłącz giełdę\n"
+        "/mnoznik 1.5 · /limit 100 · /stoploss 25\n/anuluj – przerwij bieżącą czynność",
         parse_mode=ParseMode.HTML)
+
+
+def _num(ctx, lo: float, hi: float) -> float | None:
+    try:
+        v = float(ctx.args[0].replace(",", ".").rstrip("%"))
+        return v if lo <= v <= hi else None
+    except (IndexError, ValueError):
+        return None
 
 
 async def cmd_multiplier(update: Update, ctx):
-    if not (u := await require_accepted(update, ctx)):
-        return
-    try:
-        v = float(ctx.args[0].replace(",", "."))
-        assert 0.01 <= v <= 10
-    except (IndexError, ValueError, AssertionError):
-        return await update.message.reply_text("Użycie: /mnoznik 1.5 (od 0.01 do 10)")
-    S(ctx).db.update_user(u["tg_id"], multiplier=v)
-    await update.message.reply_text(f"✅ Mnożnik ustawiony na {v:g}x")
+    if u := await require_accepted(update, ctx):
+        if (v := _num(ctx, 0.01, 10)) is None:
+            return await update.message.reply_text("Użycie: /mnoznik 1.5 (od 0.01 do 10)")
+        S(ctx).db.update_user(u["tg_id"], multiplier=v)
+        await update.message.reply_text(f"✅ Mnożnik: {v:g}x")
 
 
 async def cmd_limit(update: Update, ctx):
-    if not (u := await require_accepted(update, ctx)):
-        return
-    try:
-        v = float(ctx.args[0].replace(",", "."))
-        assert v > 0
-    except (IndexError, ValueError, AssertionError):
-        return await update.message.reply_text(f"Użycie: /limit 100 (w {S(ctx).cfg.quote})")
-    S(ctx).db.update_user(u["tg_id"], max_trade=v)
-    await update.message.reply_text(f"✅ Limit na zlecenie: {v:g} {S(ctx).cfg.quote}")
+    if u := await require_accepted(update, ctx):
+        if (v := _num(ctx, 1, 10_000_000)) is None:
+            return await update.message.reply_text(f"Użycie: /limit 100 (w {S(ctx).cfg.quote})")
+        S(ctx).db.update_user(u["tg_id"], max_trade=v)
+        await update.message.reply_text(f"✅ Limit na zakup: {v:g} {S(ctx).cfg.quote}")
 
 
 async def cmd_stoploss(update: Update, ctx):
-    if not (u := await require_accepted(update, ctx)):
-        return
-    try:
-        v = float(ctx.args[0].replace(",", ".").rstrip("%"))
-        assert 0 <= v < 100
-    except (IndexError, ValueError, AssertionError):
-        return await update.message.reply_text("Użycie: /stoploss 25 (procent, 0 = wyłączony)")
-    S(ctx).db.update_user(u["tg_id"], stop_loss=v)
-    await update.message.reply_text(f"✅ Stop-loss: {'-' + format(v, 'g') + '%' if v else 'wyłączony'}")
-
-
-async def cmd_leader(update: Update, ctx):
-    if await require_accepted(update, ctx):
-        from .traders import show_traders
-        await show_traders(update, ctx)
-
-
-async def cmd_sub(update: Update, ctx):
     if u := await require_accepted(update, ctx):
-        await show_sub(update, ctx, u)
+        if (v := _num(ctx, 0, 99)) is None:
+            return await update.message.reply_text("Użycie: /stoploss 25 (procent, 0 = wyłączony)")
+        S(ctx).db.update_user(u["tg_id"], stop_loss=v)
+        await update.message.reply_text(f"✅ Stop-loss: {'−' + format(v, 'g') + '%' if v else 'wyłączony'}")
 
 
-async def show_sub(update: Update, ctx, u, reason: str = ""):
-    s = S(ctx)
-    if not paywall_on(s.cfg):
-        return await show(update, "Bot jest obecnie darmowy 🎉", KB([BACK]))
-    text, _ = sub_view(s, u)
-    rows = []
-    if (u["paid_until"] or 0) <= now_ms():
-        try:
-            link = await invoice_link(ctx.bot, s.cfg, u["tg_id"])
-            rows.append([B(f"💎 Kup za {s.cfg.sub_price_stars} ⭐", url=link)])
-        except Exception:  # noqa: BLE001
-            log.exception("Nie utworzono faktury")
-            text += "\n\n❌ Nie udało się utworzyć płatności, spróbuj później."
-    await show(update, (reason + "\n\n" if reason else "") + text, KB(rows + [BACK]))
-
-
-async def on_precheckout(update: Update, ctx):
-    q = update.pre_checkout_query
-    ok = q.invoice_payload == f"sub:{q.from_user.id}" and q.currency == "XTR"
-    await q.answer(ok=ok, error_message=None if ok else "Ta płatność jest nieaktualna, otwórz /subskrypcja.")
-
-
-async def on_payment(update: Update, ctx):
-    s = S(ctx)
-    sp = update.message.successful_payment
-    exp = sp.subscription_expiration_date
-    until = int(exp.timestamp() * 1000) if hasattr(exp, "timestamp") else int(exp * 1000) if exp else \
-        now_ms() + PERIOD_SECONDS * 1000
-    s.db.add_payment(update.effective_user.id, sp.telegram_payment_charge_id, sp.total_amount,
-                     bool(sp.is_recurring), until)
-    await update.message.reply_text(
-        f"💎 Dziękujemy! Subskrypcja aktywna do <b>{fmt_date(until)}</b>.\nWłącz kopiowanie w /menu.",
-        parse_mode=ParseMode.HTML)
-    for admin in admin_ids(s):
-        try:
-            await ctx.bot.send_message(admin, f"💰 Płatność {sp.total_amount} ⭐ od {update.effective_user.id}"
-                                              f"{' (odnowienie)' if sp.is_recurring else ''}")
-        except Exception:  # noqa: BLE001
-            pass
-
-
-async def cmd_paysupport(update: Update, ctx):
-    await update.effective_message.reply_text(
-        "💬 Pomoc w sprawie płatności\n\nOpisz problem w odpowiedzi do tej wiadomości albo napisz do "
-        "administratora bota. Subskrypcję anulujesz w Telegramie: Ustawienia → Moje gwiazdki. "
-        "Zwroty rozpatrujemy indywidualnie.")
-
+# ---------- przyciski ----------
 
 async def on_button(update: Update, ctx):
     q = update.callback_query
@@ -367,9 +380,15 @@ async def on_button(update: Update, ctx):
             await q.answer(text, show_alert=show_alert)
         except BadRequest:  # kliknięcie sprzed restartu bota – za stare, żeby odpowiedzieć
             pass
+
+    if data == "noop":
+        return await ack()
+    if data.startswith("usr_") or data in ("admin", "pause", "resume"):
+        return await on_admin_button(update, ctx, ack)
     if data == "accept":
-        get_user(ctx, update)
-        s.db.update_user(update.effective_user.id, accepted=1)
+        u0 = get_user(ctx, update)
+        if u0["approved"]:
+            s.db.update_user(u0["tg_id"], accepted=1)
     if not (u := await require_accepted(update, ctx)):
         return await ack()
     uid = u["tg_id"]
@@ -379,15 +398,12 @@ async def on_button(update: Update, ctx):
         if u["active"]:
             s.db.update_user(uid, active=0)
             alert = "Kopiowanie wyłączone"
-        elif not (lead := s.db.get_leader(u["leader_id"])) or lead["status"] != "active":
-            await ack("Najpierw wybierz tradera, którego chcesz kopiować.", show_alert=True)
+        elif not s.db.copied_leaders(uid):
+            await ack("Najpierw wybierz tradera do kopiowania.", show_alert=True)
             from .traders import show_traders
             return await show_traders(update, ctx)
         elif not u["paper"] and not u["api_key"]:
-            alert = "Najpierw podłącz giełdę albo przełącz się na demo."
-        elif not has_access(s.cfg, u):
-            await ack()
-            return await show_sub(update, ctx, u, "Żeby włączyć kopiowanie, potrzebujesz subskrypcji.")
+            alert = "Najpierw podłącz giełdę albo przejdź na demo."
         else:
             await ack("⏳ Włączam…")
             try:
@@ -395,66 +411,38 @@ async def on_button(update: Update, ctx):
             except Exception as e:  # noqa: BLE001
                 return await show(update, "❌ Nie udało się pobrać salda z giełdy"
                                           f"{': ' + html.escape(str(e)[:150]) if str(e) else ' (przekroczony czas)'}."
-                                          "\nSpróbuj ponownie za chwilę.", KB([BACK]))
+                                          "\nSpróbuj ponownie za chwilę.", KB([HOME]))
             s.db.update_user(uid, active=1, start_equity=start)
+            s.db.add_equity(uid, start, bool(u["paper"]))
             alert = "Kopiowanie włączone ▶️"
     elif data == "mode":
         if u["paper"]:
             if not u["api_key"]:
-                await ack("Najpierw podłącz giełdę (🔑).", show_alert=True)
-                return
+                await ack("Najpierw podłącz giełdę 🏦", show_alert=True)
+                return await show(update, *exchange_view(s, u))
             await ack()
             return await show(update,
-                              "💰 <b>Przełączyć na prawdziwe środki?</b>\n\nOd teraz bot będzie składał "
-                              f"<b>prawdziwe zlecenia</b> na Twoim koncie {exchange_name(user_exchange(s.cfg, u))}, "
-                              f"maks. {u['max_trade']:g} {s.cfg.quote} na zakup. Stop-loss: {sl_txt(u)}."
-                              + ("\n\n💎 Kopiowanie na LIVE wymaga subskrypcji." if needs_subscription(s.cfg, False)
-                                 and not has_access(s.cfg, u, paper=False) else ""),
-                              KB([[B("Tak, przełącz na LIVE", callback_data="mode_live")], BACK]))
+                              "💰 <b>Przejść na prawdziwe środki?</b>\n\nBot będzie składał <b>prawdziwe zlecenia</b> na "
+                              f"Twoim koncie {exchange_name(user_exchange(s.cfg, u))}.\n"
+                              f"Limit: {u['max_trade']:g} {s.cfg.quote} na zakup · stop-loss: {sl_txt(u)}.\n\n"
+                              "Kopiowanie wyłączy się – włączysz je ponownie, gdy będziesz gotowy.",
+                              KB([[B("✅ Tak, przejdź na LIVE", callback_data="mode_live")], HOME]))
         s.db.update_user(uid, paper=1, active=0)
         alert = "Tryb demo 🧪 – włącz kopiowanie ponownie"
     elif data == "mode_live":
         if u["api_key"]:
             s.db.update_user(uid, paper=0, active=0)
             alert = "Tryb LIVE 💰 – włącz kopiowanie, gdy będziesz gotowy"
-    elif data.startswith("mult:"):
-        s.db.update_user(uid, multiplier=float(data[5:]))
-        await ack()
-        return await show(update, *settings_view(s, s.db.get_user(uid)))
-    elif data.startswith("lim:"):
-        s.db.update_user(uid, max_trade=float(data[4:]))
-        await ack()
-        return await show(update, *settings_view(s, s.db.get_user(uid)))
-    elif data.startswith("sl:"):
-        s.db.update_user(uid, stop_loss=float(data[3:]))
-        await ack()
-        return await show(update, *settings_view(s, s.db.get_user(uid)))
-    elif data == "leader":
-        await ack()
-        from .traders import show_profile
-        return await show_profile(update, ctx, u["leader_id"])
-    elif data.startswith("pm:"):
-        s.db.update_user(uid, max_price_move=float(data[3:]))
-        await ack()
+    elif data.split(":")[0] in ("mult", "lim", "sl", "pm"):
+        key, val = data.split(":")
+        field = {"mult": "multiplier", "lim": "max_trade", "sl": "stop_loss", "pm": "max_price_move"}[key]
+        s.db.update_user(uid, **{field: float(val)})
+        await ack("Zapisano")
         return await show(update, *settings_view(s, s.db.get_user(uid)))
     elif data == "daily":
         s.db.update_user(uid, daily_report=0 if u["daily_report"] else 1)
-        await ack()
+        await ack("Zapisano")
         return await show(update, *settings_view(s, s.db.get_user(uid)))
-    elif data == "closeall":
-        await ack()
-        return await show(update, "🧹 <b>Sprzedać wszystkie pozycje otwarte przez bota?</b>\n\nMonet, których bot "
-                                  "nie kupował, nie ruszamy. Kopiowanie zostanie wyłączone.",
-                          KB([[B("Tak, sprzedaj wszystko", callback_data="closeall_ok")], BACK]))
-    elif data == "closeall_ok":
-        await ack("Sprzedaję…")
-        s.db.update_user(uid, active=0)
-        res = await s.engine.close_positions(u)
-        return await show(update, f"🧹 Gotowe. Sprzedane pozycje: {res.get('filled', 0)}, błędy: "
-                                  f"{res.get('error', 0)}. Kopiowanie wyłączone.", KB([BACK]))
-    elif data == "sub":
-        await ack()
-        return await show_sub(update, ctx, u)
     elif data == "paper_reset":
         s.db.paper_reset(uid, s.cfg.paper_start, s.cfg.quote)
         await ack(f"Konto demo: {s.cfg.paper_start:g} {s.cfg.quote}", show_alert=True)
@@ -462,25 +450,78 @@ async def on_button(update: Update, ctx):
     elif data == "settings":
         await ack()
         return await show(update, *settings_view(s, u))
+    elif data == "exchange":
+        await ack()
+        return await show(update, *exchange_view(s, u))
+    elif data == "disconnect":
+        s.db.update_user(uid, api_key=None, api_secret=None, api_password=None, paper=1, active=0)
+        await ack("Klucze odłączone – jesteś w trybie demo", show_alert=True)
+        return await show(update, *exchange_view(s, s.db.get_user(uid)))
     elif data == "status":
         await ack("Pobieram saldo…")
         try:
             text = await asyncio.wait_for(status_text(s, u), UI_TIMEOUT)
         except Exception as e:  # noqa: BLE001
-            text = f"❌ Nie udało się pobrać salda: {html.escape(str(e)[:200])}"
+            text = f"❌ Nie udało się pobrać salda: {html.escape(friendly_error(e) if str(e) else 'przekroczony czas')}"
         return await show(update, text, KB([[B("🔄 Odśwież", callback_data="status"),
-                                             B("🧹 Sprzedaj wszystko", callback_data="closeall")], BACK]))
+                                             B("🧹 Sprzedaj wszystko", callback_data="closeall")], HOME]))
+    elif data == "closeall":
+        await ack()
+        return await show(update, "🧹 <b>Sprzedać wszystkie pozycje otwarte przez bota?</b>\n\nMonet, których bot "
+                                  "nie kupował, nie ruszam. Kopiowanie zostanie wyłączone.",
+                          KB([[B("✅ Tak, sprzedaj", callback_data="closeall_ok")], HOME]))
+    elif data == "closeall_ok":
+        await ack("Sprzedaję…")
+        s.db.update_user(uid, active=0)
+        res = await s.engine.close_positions(u)
+        return await show(update, f"🧹 Gotowe. Sprzedane pozycje: {res.get('filled', 0)}, błędy: "
+                                  f"{res.get('error', 0)}. Kopiowanie wyłączone.", KB([HOME]))
     elif data == "history":
         await ack()
-        return await show(update, history_text(s, u), KB([BACK]))
+        return await show(update, history_text(s, u), KB([HOME]))
 
-    notice = alert if acked else None  # gdy już odpowiedzieliśmy, komunikat trafia do treści menu
+    notice = alert if acked else None  # gdy już odpowiedzieliśmy, komunikat trafia do treści pulpitu
     await ack(alert)
     text, kb = menu_view(s, s.db.get_user(uid))
     await show(update, (f"ℹ️ {html.escape(notice)}\n\n" if notice else "") + text, kb)
 
 
-# ---------- podłączanie kluczy API ----------
+async def on_admin_button(update: Update, ctx, ack):
+    s = S(ctx)
+    if not is_admin(ctx, update):
+        return await ack("Tylko dla właściciela", show_alert=True)
+    data = q_data = update.callback_query.data
+    if q_data.startswith("usr_"):
+        action, tid = q_data.split(":")
+        tid = int(tid)
+        target = s.db.get_user(tid)
+        if not target:
+            return await ack("Nie ma takiej osoby")
+        name = f"@{target['username']}" if target["username"] else str(tid)
+        if action == "usr_ok":
+            s.db.update_user(tid, approved=1)
+            await ack("Wpuszczono ✅")
+            try:
+                await ctx.bot.send_message(tid, "✅ Masz dostęp do bota! Napisz /start, żeby zacząć.")
+            except Exception:  # noqa: BLE001
+                pass
+            return await update.callback_query.edit_message_text(f"✅ {name} ma dostęp.")
+        if action == "usr_no":
+            await ack("Odrzucono")
+            return await update.callback_query.edit_message_text(f"❌ Odrzucono prośbę {name}.")
+        if action == "usr_del":
+            s.db.update_user(tid, approved=0, active=0, requested=0)
+            await ack("Dostęp zabrany")
+            return await show(update, *admin_view(s))
+    if data in ("pause", "resume"):
+        s.db.set_state("paused", "1" if data == "pause" else "0")
+        await ack("Wstrzymano" if data == "pause" else "Wznowiono")
+    else:
+        await ack()
+    return await show(update, *admin_view(s))
+
+
+# ---------- podłączanie giełdy ----------
 
 def exchange_kb(cfg: Config, prefix: str) -> KB:
     names = [B(exchange_name(e), callback_data=f"{prefix}{e}") for e in cfg.exchanges]
@@ -489,12 +530,14 @@ def exchange_kb(cfg: Config, prefix: str) -> KB:
 
 async def connect_start(update: Update, ctx):
     if update.callback_query:
-        await update.callback_query.answer()
+        try:
+            await update.callback_query.answer()
+        except BadRequest:
+            pass
     if not await require_accepted(update, ctx):
         return ConversationHandler.END
     await update.effective_chat.send_message(
-        "🔑 <b>Podłączenie giełdy</b>\n\nWybierz giełdę, na której masz konto. Trader może handlować na innej "
-        "giełdzie niż Ty – bot kopiuje te same pary (np. BTC/USDT) na Twojej giełdzie.\n\n/anuluj – przerwij",
+        "🔑 <b>Podłączenie giełdy</b>\n\nWybierz giełdę, na której masz konto:\n\n/anuluj – przerwij",
         parse_mode=ParseMode.HTML, reply_markup=exchange_kb(S(ctx).cfg, "cex:"))
     return CHOOSE
 
@@ -512,9 +555,9 @@ async def got_exchange(update: Update, ctx):
     await q.edit_message_text(
         f"🔑 <b>Podłączenie {exchange_name(ex)}</b>\n\n"
         "1. W ustawieniach giełdy utwórz klucz API.\n"
-        "2. Zaznacz <b>tylko</b> handel spot. <b>Wyłącz wypłaty!</b>\n"
-        f"3. Najlepiej ogranicz klucz do IP serwera bota.{extra}\n\n"
-        "Wyślij teraz <b>API Key</b> (wiadomość zostanie od razu usunięta).\n/anuluj – przerwij",
+        "2. Zaznacz <b>tylko</b> odczyt i handel spot. <b>Bez wypłat!</b>\n"
+        f"3. Nie ustawiaj ograniczenia IP (albo dodaj IP serwera bota).{extra}\n\n"
+        "Wyślij teraz <b>API Key</b> (wiadomość od razu usunę).\n/anuluj – przerwij",
         parse_mode=ParseMode.HTML)
     return KEY
 
@@ -555,7 +598,7 @@ async def _finish_connect(update: Update, ctx, password):
     chat = update.effective_chat
     msg = await chat.send_message(f"⏳ Sprawdzam klucze na {exchange_name(ex)}…")
     try:
-        bal = await s.engine.verify_keys(key, secret, password, ex)
+        bal = await asyncio.wait_for(s.engine.verify_keys(key, secret, password, ex), 30)
     except Exception as e:  # noqa: BLE001
         log.warning("Klucze %s odrzucone: %s", ex, e)
         await msg.edit_text(f"❌ Klucze nie działają: {html.escape(friendly_error(e))}.\nSpróbuj ponownie: /polacz")
@@ -565,11 +608,12 @@ async def _finish_connect(update: Update, ctx, password):
     s.db.update_user(update.effective_user.id, api_key=s.vault.enc(key), api_secret=s.vault.enc(secret),
                      api_password=s.vault.enc(password), exchange=ex,
                      **({"active": 0} if changed and not u["paper"] else {}))
-    quote_bal = bal.get(s.cfg.quote, 0)
+    stables = {k: v for k, v in bal.items() if k in ("USDT", "USDC", "USD")}
+    bal_txt = ", ".join(f"{fmt_money(v)} {k}" for k, v in stables.items()) or f"0 {s.cfg.quote}"
     await msg.edit_text(
-        f"✅ {exchange_name(ex)} podłączona. Saldo {s.cfg.quote}: <b>{fmt_money(quote_bal)}</b>\n\n"
-        + ("Zmieniłeś giełdę, więc kopiowanie LIVE zostało wstrzymane – włącz je ponownie w menu."
-           if changed and not u["paper"] else "Na LIVE przełączysz się w menu (jeśli jeszcze jesteś w demo)."),
+        f"✅ <b>{exchange_name(ex)} podłączona.</b> Saldo: {bal_txt}\n\n"
+        + ("Zmieniłeś giełdę, więc kopiowanie LIVE zostało wstrzymane – włącz je ponownie na pulpicie."
+           if changed and not u["paper"] else "Na prawdziwe środki przejdziesz przyciskiem „Przejdź na 💰 LIVE”."),
         parse_mode=ParseMode.HTML)
     text, kb = menu_view(s, s.db.get_user(update.effective_user.id))
     await chat.send_message(text, parse_mode=ParseMode.HTML, reply_markup=kb)
@@ -579,43 +623,15 @@ async def _finish_connect(update: Update, ctx, password):
 async def connect_cancel(update: Update, ctx):
     for k in ("api_key", "api_secret", "exchange"):
         ctx.user_data.pop(k, None)
-    await update.message.reply_text("Anulowano.")
+    await update.message.reply_text("Anulowano. /menu – pulpit")
     return ConversationHandler.END
 
 
-# ---------- admin ----------
+# ---------- admin: komendy ----------
 
 async def cmd_admin(update: Update, ctx):
-    if not is_admin(ctx, update):
-        return
-    s = S(ctx)
-    st = s.db.stats()
-    lines = [
-        "🛠 <b>Panel admina</b>", "",
-        f"Użytkownicy: {st['total']} · kopiuje: {st['active']} · w tym LIVE: {st['live']}",
-        f"Subskrypcje: {st['subs']} aktywnych · przychód: {st['stars']} ⭐"
-        + ("" if paywall_on(s.cfg) else " (płatności wyłączone)"),
-        f"Kopiowanie: {'⏸ wstrzymane' if s.db.get_state('paused') == '1' else '🟢 działa'}",
-        f"Traderzy: {len(s.db.leaders('active'))} aktywnych · {len(s.db.leaders('pending'))} czeka na zatwierdzenie",
-    ]
-    lines += ["", "/traderzy – lista i zatwierdzanie · /sygnal buy BTC/USDT 10 #id", "/pauza · /wznow · "
-              "/ogloszenie tekst · /zwrot ID_użytkownika"]
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
-
-
-async def cmd_pause(update: Update, ctx):
     if is_admin(ctx, update):
-        S(ctx).db.set_state("paused", "1")
-        await update.message.reply_text("⏸ Kopiowanie wstrzymane dla wszystkich.")
-
-
-async def cmd_resume(update: Update, ctx):
-    if is_admin(ctx, update):
-        S(ctx).db.set_state("paused", "0")
-        await update.message.reply_text("▶️ Kopiowanie wznowione.")
-
-
-SIDES = {"buy": "buy", "kup": "buy", "kupno": "buy", "sell": "sell", "sprzedaj": "sell", "sprzedaz": "sell"}
+        await show(update, *admin_view(S(ctx)))
 
 
 async def cmd_broadcast(update: Update, ctx):
@@ -634,33 +650,13 @@ async def cmd_broadcast(update: Update, ctx):
     await update.message.reply_text(f"Wysłano do {sent} osób.")
 
 
-async def cmd_refund(update: Update, ctx):
-    if not is_admin(ctx, update):
-        return
-    s = S(ctx)
-    try:
-        uid = int(ctx.args[0])
-    except (IndexError, ValueError):
-        return await update.message.reply_text("Użycie: /zwrot ID_użytkownika (zwraca ostatnią płatność)")
-    p = s.db.last_payment(uid)
-    if not p:
-        return await update.message.reply_text("Brak płatności do zwrotu.")
-    try:
-        await ctx.bot.refund_star_payment(uid, p["charge_id"])
-    except Exception as e:  # noqa: BLE001
-        return await update.message.reply_text(f"❌ Zwrot nieudany: {e}")
-    s.db.mark_refunded(p["id"], uid)
-    s.db.update_user(uid, active=0)
-    await update.message.reply_text(f"✅ Zwrócono {p['amount']} ⭐ użytkownikowi {uid}.")
-
-
-def summary(res) -> str:
-    return f"✅ {res.get('filled', 0)} · ⚠️ pominięte {res.get('skipped', 0)} · ❌ błędy {res.get('error', 0)}"
-
-
 # ---------- rejestracja ----------
 
 async def on_error(update: object, ctx):
+    if isinstance(ctx.error, Conflict):
+        log.warning("Ten sam BOT_TOKEN działa jeszcze w innym miejscu (np. drugi serwer albo komputer) – "
+                    "wyłącz drugą kopię bota, inaczej wiadomości będą ginąć")
+        return
     if isinstance(ctx.error, NetworkError):  # chwilowe zerwanie połączenia – bot sam ponowi
         log.warning("Problem z siecią: %s", ctx.error)
         return
@@ -691,15 +687,7 @@ def register(app: Application):
     app.add_handler(CommandHandler("mnoznik", cmd_multiplier, filters=private))
     app.add_handler(CommandHandler("limit", cmd_limit, filters=private))
     app.add_handler(CommandHandler("stoploss", cmd_stoploss, filters=private))
-    app.add_handler(CommandHandler("wyniki", cmd_leader))
-    app.add_handler(CommandHandler(["subskrypcja", "sub"], cmd_sub, filters=private))
-    app.add_handler(CommandHandler("paysupport", cmd_paysupport))
-    app.add_handler(CommandHandler("zwrot", cmd_refund))
-    app.add_handler(PreCheckoutQueryHandler(on_precheckout))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, on_payment))
     app.add_handler(CommandHandler("admin", cmd_admin))
-    app.add_handler(CommandHandler("pauza", cmd_pause))
-    app.add_handler(CommandHandler("wznow", cmd_resume))
     app.add_handler(CommandHandler("ogloszenie", cmd_broadcast))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_error_handler(on_error)
@@ -714,3 +702,7 @@ async def make_notify(app: Application):
         except Exception:  # noqa: BLE001
             log.exception("Nie wysłano powiadomienia do %s", tg_id)
     return notify
+
+
+__all__ = ["Services", "S", "SIDES", "SIDE_PL", "admin_ids", "is_admin", "require_accepted", "show", "summary",
+           "exchange_kb", "register", "make_notify", "HOME", "BACK", "header"]

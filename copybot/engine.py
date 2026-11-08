@@ -216,7 +216,14 @@ class CopyEngine:
             async with self.sem:
                 return await self._copy_for(u, order, fraction, title=title)
 
-        return Counter(await asyncio.gather(*(run(u) for u in users)))
+        res = Counter(await asyncio.gather(*(run(u) for u in users)))
+        # śledzący bez kopiowania dostają samo powiadomienie
+        pct = f" ({fraction * 100:.0f}% {'salda' if order.side == 'buy' else 'pozycji'})" if fraction else ""
+        price = f" @ {fmt_money(order.price)}" if order.price else ""
+        for u in self.db.watchers(leader_id):
+            await self.notify(u["tg_id"], f"👁 {name}: {SIDE_PL[order.side]} {order.symbol}{price}{pct}")
+            res["alert"] += 1
+        return res
 
     def m(self, row) -> "Market":
         return self.market.get(user_exchange(self.cfg, row)) if isinstance(self.market, Markets) else self.market

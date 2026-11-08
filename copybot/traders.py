@@ -1,4 +1,4 @@
-"""Traderzy: ranking, profil, wybór kogo kopiować, zgłoszenia „Zostań traderem”, panel tradera."""
+"""Traderzy: lista, profil, kopiuj / obserwuj, dodawanie, zmiana nazwy, usuwanie, sygnały."""
 import html
 import logging
 
@@ -6,10 +6,11 @@ from telegram import InlineKeyboardButton as B
 from telegram import InlineKeyboardMarkup as KB
 from telegram import Update, WebAppInfo
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler,
                           filters)
 
-from .bot import BACK, S, SIDES, admin_ids, exchange_kb, is_admin, require_accepted, show, summary
+from .bot import HOME, S, SIDES, admin_ids, exchange_kb, is_admin, require_accepted, show, summary
 from .config import KEY_HINTS, exchange_name, friendly_error, needs_password, normalize_secret
 from .db import now_ms
 from .engine import SIDE_PL, make_exchange, user_exchange
@@ -17,140 +18,184 @@ from .reports import fmt_pct, leader_report, leader_text, ranking
 from .sizing import LeaderOrder
 
 log = logging.getLogger(__name__)
-A_NAME, A_BIO, A_SOURCE, A_KEY, A_SECRET, A_PASS, A_EXCH = range(10, 17)
-MEDALS = ["🥇", "🥈", "🥉"]
+A_NAME, A_SOURCE, A_EXCH, A_KEY, A_SECRET, A_PASS, R_NAME = range(10, 17)
+TRADERS = [B("« Traderzy", callback_data="traders")]
 
 
-# ---------- ranking i profil ----------
+def src_txt(s, lead) -> str:
+    return f"📡 {exchange_name(user_exchange(s.cfg, lead))}" if lead["source"] == "api" else "✍️ sygnały"
+
+
+async def _ack(update: Update, text=None, alert=False):
+    if update.callback_query:
+        try:
+            await update.callback_query.answer(text, show_alert=alert)
+        except BadRequest:
+            pass
+
+
+# ---------- lista i profil ----------
 
 async def show_traders(update: Update, ctx):
     s = S(ctx)
-    u = s.db.get_user(update.effective_user.id)
+    uid = update.effective_user.id
+    mine = s.db.follows_of(uid)
     rows = await ranking(s)
-    lines = ["🏆 <b>Ranking traderów</b>", "<i>Wyniki z portfeli wzorcowych: każde zlecenie skopiowane 1:1.</i>", ""]
+    lines = ["👥 <b>Traderzy</b>", ""]
     kb = []
     if not rows:
-        lines.append("Nie ma jeszcze aktywnych traderów.")
-    for i, (lead, rep, (_, copying)) in enumerate(rows):
-        medal = MEDALS[i] if i < 3 else f"{i + 1}."
-        mine = " ✔️" if u and u["leader_id"] == lead["id"] else ""
-        wr = f" · trafność {rep['win_rate'] * 100:.0f}%" if rep["win_rate"] is not None else ""
-        lines.append(f"{medal} <b>{html.escape(lead['name'])}</b>{mine}\n"
-                     f"     30 dni {fmt_pct(rep['d30'])} · od startu {fmt_pct(rep['total'])} · "
-                     f"spadek {fmt_pct(-rep['max_dd'])}{wr} · 👥 {copying}")
-        kb.append([B(f"{medal} {lead['name'][:24]}{mine}", callback_data=f"tr:{lead['id']}")])
-    kb.append([B("🎓 Zostań traderem", callback_data="apply")])
-    kb.append(BACK)
+        lines.append("Nie masz jeszcze żadnych traderów. Dodaj pierwszego przyciskiem poniżej 👇")
+    for lead, rep, (_, copying) in rows:
+        status = mine.get(lead["id"])
+        icon = "✅" if status is True else "👁" if status is False else "▫️"
+        lines.append(f"{icon} <b>{html.escape(lead['name'])}</b> · {src_txt(s, lead)}\n"
+                     f"      30 dni {fmt_pct(rep['d30'])} · od startu {fmt_pct(rep['total'])} · "
+                     f"spadek {fmt_pct(-rep['max_dd'])}")
+        kb.append([B(f"{icon} {lead['name'][:28]}", callback_data=f"tr:{lead['id']}")])
+    if rows:
+        lines += ["", "✅ kopiujesz · 👁 tylko powiadomienia · ▫️ nie śledzisz"]
+    kb.append([B("➕ Dodaj tradera", callback_data="add")])
+    kb.append(HOME)
     await show(update, "\n".join(lines), KB(kb))
 
 
-async def show_profile(update: Update, ctx, leader_id: int | None):
+async def show_profile(update: Update, ctx, leader_id: int | None, notice: str | None = None):
     s = S(ctx)
     lead = s.db.get_leader(leader_id)
     if not lead or lead["status"] != "active":
         return await show_traders(update, ctx)
-    u = s.db.get_user(update.effective_user.id)
+    uid = update.effective_user.id
+    status = s.db.follows_of(uid).get(lead["id"])
     rep = await leader_report(s, lead["id"])
     counts = s.db.follower_counts().get(lead["id"], (0, 0))
     text = leader_text(rep, s.cfg.quote, lead, counts)
-    if lead["source"] == "api":
-        text = text.replace("📡 konto giełdowe", f"📡 konto {exchange_name(user_exchange(s.cfg, lead))}", 1)
+    text = text.replace("📡 konto giełdowe, kopiowane automatycznie", src_txt(s, lead) + " – automatycznie", 1)
+    text = text.replace("✍️ sygnały wysyłane przez tradera", "✍️ sygnały wysyłane w bocie", 1)
+    me = {True: "✅ <b>Kopiujesz</b> tego tradera.", False: "👁 <b>Obserwujesz</b> – dostajesz tylko powiadomienia.",
+          None: "▫️ Nie śledzisz tego tradera."}[status]
+    text = (f"ℹ️ {html.escape(notice)}\n\n" if notice else "") + text + f"\n\n{me}"
+    if lead["source"] == "manual" and lead["owner_tg_id"] == uid:
+        text += ("\n\n✍️ <b>Twoje sygnały:</b> <code>/sygnal buy BTC/USDT 10</code> (kup za 10% salda) · "
+                 "<code>/sygnal sell BTC/USDT 100</code> (sprzedaj całość)")
     rows = []
-    if u and u["leader_id"] == lead["id"]:
-        rows.append([B("✔️ Kopiujesz tego tradera", callback_data="noop")])
+    if status is True:
+        rows.append([B("👁 Tylko powiadomienia", callback_data=f"wt:{lead['id']}"),
+                     B("🔕 Przestań śledzić", callback_data=f"uf:{lead['id']}")])
+    elif status is False:
+        rows.append([B("✅ Kopiuj", callback_data=f"cp:{lead['id']}"),
+                     B("🔕 Przestań śledzić", callback_data=f"uf:{lead['id']}")])
     else:
-        rows.append([B("✅ Kopiuj tego tradera", callback_data=f"follow:{lead['id']}")])
+        rows.append([B("✅ Kopiuj", callback_data=f"cp:{lead['id']}"),
+                     B("👁 Tylko powiadomienia", callback_data=f"wt:{lead['id']}")])
     if s.cfg.webapp_url:
-        rows.append([B("📈 Wykres w panelu", web_app=WebAppInfo(f"{s.cfg.webapp_url}/app"))])
-    rows.append([B("« Ranking", callback_data="traders"), *BACK])
+        rows.append([B("📈 Wykres", web_app=WebAppInfo(f"{s.cfg.webapp_url}/app"))])
+    if lead["owner_tg_id"] == uid or uid in admin_ids(s):
+        rows.append([B("✏️ Zmień nazwę", callback_data=f"ren:{lead['id']}"),
+                     B("🗑 Usuń", callback_data=f"del:{lead['id']}")])
+    rows.append(TRADERS + HOME)
     await show(update, text, KB(rows))
 
 
 async def on_trader_button(update: Update, ctx):
     q = update.callback_query
     if not (u := await require_accepted(update, ctx)):
-        return await q.answer()
+        return await _ack(update)
     s = S(ctx)
     data = q.data
     if data == "traders":
-        await q.answer()
+        await _ack(update)
         return await show_traders(update, ctx)
-    if data == "noop":
-        return await q.answer("Już kopiujesz tego tradera")
-    if data.startswith("tr:"):
-        await q.answer()
-        return await show_profile(update, ctx, int(data[3:]))
-    if data.startswith("follow:"):
-        lid = int(data[7:])
-        lead = s.db.get_leader(lid)
-        if not lead or lead["status"] != "active":
-            return await q.answer("Ten trader jest niedostępny", show_alert=True)
-        had = u["leader_id"] and u["leader_id"] != lid
-        s.db.update_user(u["tg_id"], leader_id=lid)
-        msg = f"Kopiujesz: {lead['name']}"
-        if not u["active"]:
-            msg += ". Włącz kopiowanie w menu ▶️"
-        if had:
-            msg += ". Pozycje od poprzedniego tradera zostają – zamkniesz je w 📊 Portfel → 🧹"
-        await q.answer(msg[:200], show_alert=True)
+    action, lid = data.split(":")
+    lid = int(lid)
+    lead = s.db.get_leader(lid)
+    if not lead or lead["status"] != "active":
+        await _ack(update, "Ten trader już nie istnieje", True)
+        return await show_traders(update, ctx)
+    uid = u["tg_id"]
+    if action == "tr":
+        await _ack(update)
         return await show_profile(update, ctx, lid)
+    if action == "cp":
+        s.db.follow(uid, lid, True)
+        msg = f"Kopiujesz: {lead['name']}" + ("" if u["active"] else " – włącz kopiowanie na pulpicie ▶️")
+        await _ack(update, msg[:200], not u["active"])
+        return await show_profile(update, ctx, lid, None if not u["active"] else msg)
+    if action == "wt":
+        s.db.follow(uid, lid, False)
+        await _ack(update, "Tylko powiadomienia 👁")
+        return await show_profile(update, ctx, lid)
+    if action == "uf":
+        s.db.unfollow(uid, lid)
+        await _ack(update, "Nie śledzisz już tego tradera")
+        return await show_profile(update, ctx, lid)
+    can_edit = lead["owner_tg_id"] == uid or uid in admin_ids(s)
+    if action == "del":
+        if not can_edit:
+            return await _ack(update, "Może to zrobić tylko osoba, która dodała tradera", True)
+        await _ack(update)
+        return await show(update, f"🗑 <b>Usunąć tradera „{html.escape(lead['name'])}”?</b>\n\nNikt nie będzie go już "
+                                  "kopiował ani obserwował. Otwarte pozycje zostają na kontach.",
+                          KB([[B("✅ Tak, usuń", callback_data=f"delok:{lid}")], [B("« Wróć", callback_data=f"tr:{lid}")]]))
+    if action == "delok":
+        if not can_edit:
+            return await _ack(update, "Brak uprawnień", True)
+        s.db.delete_leader(lid)
+        if s.watchers:
+            s.watchers.sync()
+        await _ack(update, f"Usunięto {lead['name']}", True)
+        return await show_traders(update, ctx)
 
 
-# ---------- zgłoszenie: zostań traderem ----------
+# ---------- dodawanie tradera ----------
 
-async def apply_start(update: Update, ctx):
-    if update.callback_query:
-        await update.callback_query.answer()
+async def add_start(update: Update, ctx):
+    await _ack(update)
     if not await require_accepted(update, ctx):
         return ConversationHandler.END
+    ctx.user_data["add"] = {}
     await update.effective_chat.send_message(
-        "🎓 <b>Zostań traderem</b>\n\nInni będą mogli kopiować Twoje transakcje. Twoje wyniki będą liczone "
-        "automatycznie i publicznie w rankingu – nie da się ich podkręcić.\n\n"
-        "Jak ma się nazywać Twój profil? (np. <i>Kacper Swing</i>)\n/anuluj – przerwij", parse_mode=ParseMode.HTML)
+        "➕ <b>Nowy trader</b> (krok 1/3)\n\nJak go nazwać? Np. <i>Kacper Swing</i> albo <i>Moje sygnały</i>.\n\n"
+        "/anuluj – przerwij", parse_mode=ParseMode.HTML)
     return A_NAME
 
 
-async def apply_name(update: Update, ctx):
+async def add_name(update: Update, ctx):
     name = update.message.text.strip()[:40]
-    if len(name) < 3:
-        await update.message.reply_text("Nazwa musi mieć min. 3 znaki.")
+    if len(name) < 2:
+        await update.message.reply_text("Nazwa musi mieć min. 2 znaki.")
         return A_NAME
-    ctx.user_data["apply"] = {"name": name}
-    await update.message.reply_text("Krótki opis strategii (1–2 zdania), np. „Swing trading BTC/ETH, trzymam "
-                                    "pozycje kilka dni”. Albo /pomin.")
-    return A_BIO
-
-
-async def apply_bio(update: Update, ctx):
-    text = update.message.text.strip()
-    ctx.user_data["apply"]["bio"] = None if text.lower() == "/pomin" else text[:200]
-    s = S(ctx)
+    ctx.user_data.setdefault("add", {})["name"] = name
     await update.message.reply_text(
-        "Skąd bot ma brać Twoje transakcje?",
-        reply_markup=KB([[B("📡 Moje konto na giełdzie (klucz do odczytu)", callback_data="src:api")],
-                         [B("✍️ Będę wysyłać sygnały w bocie", callback_data="src:manual")]]))
+        "➕ <b>Nowy trader</b> (krok 2/3)\n\nSkąd bot ma brać jego transakcje?\n\n"
+        "📡 <b>Konto na giełdzie</b> – trader daje klucz API <b>tylko do odczytu</b>. Bot widzi każdą jego transakcję "
+        "w około sekundę i kopiuje automatycznie.\n\n"
+        "✍️ <b>Sygnały w bocie</b> – Ty (albo ktoś z dostępem) wysyłasz komendy typu <code>/sygnal buy BTC/USDT 10</code>.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=KB([[B("📡 Konto na giełdzie", callback_data="src:api")],
+                         [B("✍️ Sygnały w bocie", callback_data="src:manual")]]))
     return A_SOURCE
 
 
-async def apply_source(update: Update, ctx):
+async def add_source(update: Update, ctx):
     q = update.callback_query
-    await q.answer()
-    s = S(ctx)
+    await _ack(update)
     if q.data == "src:manual":
-        return await _apply_finish(update, ctx, "manual")
-    await q.edit_message_text("Na której giełdzie handlujesz?", reply_markup=exchange_kb(s.cfg, "aex:"))
+        return await _add_finish(update, ctx, "manual")
+    await q.edit_message_text("➕ <b>Nowy trader</b> (krok 3/3)\n\nNa której giełdzie handluje?",
+                              parse_mode=ParseMode.HTML, reply_markup=exchange_kb(S(ctx).cfg, "aex:"))
     return A_EXCH
 
 
-async def apply_exchange(update: Update, ctx):
+async def add_exchange(update: Update, ctx):
     q = update.callback_query
-    await q.answer()
+    await _ack(update)
     ex = q.data[4:]
-    ctx.user_data["apply"]["exchange"] = ex
+    ctx.user_data.setdefault("add", {})["exchange"] = ex
+    hint = f"\n\n{KEY_HINTS[ex]}" if ex in KEY_HINTS else ""
     await q.edit_message_text(
-        f"🔑 Utwórz na {exchange_name(ex)} klucz API <b>tylko do odczytu</b> (bez handlu i bez wypłat) "
-        "i wyślij <b>API Key</b>. Wiadomość zostanie od razu usunięta."
-        + (f"\n\n{KEY_HINTS[ex]}" if ex in KEY_HINTS else ""), parse_mode=ParseMode.HTML)
+        f"🔑 Na koncie tradera na {exchange_name(ex)} utwórz klucz API <b>tylko do odczytu</b> "
+        f"(bez handlu i bez wypłat).{hint}\n\nWyślij <b>API Key</b> – wiadomość od razu usunę.\n/anuluj – przerwij",
+        parse_mode=ParseMode.HTML)
     return A_KEY
 
 
@@ -161,162 +206,126 @@ async def _wipe(update: Update):
         pass
 
 
-async def apply_key(update: Update, ctx):
-    ctx.user_data["apply"]["api_key"] = update.message.text.strip()
+async def add_key(update: Update, ctx):
+    ctx.user_data.setdefault("add", {})["api_key"] = update.message.text.strip()
     await _wipe(update)
     await update.effective_chat.send_message("Teraz <b>API Secret</b>.", parse_mode=ParseMode.HTML)
     return A_SECRET
 
 
-async def apply_secret(update: Update, ctx):
-    ctx.user_data["apply"]["api_secret"] = normalize_secret(update.message.text)
+async def add_secret(update: Update, ctx):
+    a = ctx.user_data.setdefault("add", {})
+    a["api_secret"] = normalize_secret(update.message.text)
     await _wipe(update)
-    if needs_password(ctx.user_data["apply"].get("exchange", "")):
+    if needs_password(a.get("exchange", "")):
         await update.effective_chat.send_message("Teraz <b>passphrase</b>.", parse_mode=ParseMode.HTML)
         return A_PASS
-    return await _apply_finish(update, ctx, "api")
+    return await _add_finish(update, ctx, "api")
 
 
-async def apply_pass(update: Update, ctx):
-    ctx.user_data["apply"]["api_password"] = update.message.text.strip()
+async def add_pass(update: Update, ctx):
+    ctx.user_data.setdefault("add", {})["api_password"] = update.message.text.strip()
     await _wipe(update)
-    return await _apply_finish(update, ctx, "api")
+    return await _add_finish(update, ctx, "api")
 
 
-async def _apply_finish(update: Update, ctx, source: str):
+async def _add_finish(update: Update, ctx, source: str):
     s = S(ctx)
-    a = ctx.user_data.pop("apply", {})
+    a = ctx.user_data.pop("add", {})
     chat = update.effective_chat
+    uid = update.effective_user.id
+    if not a.get("name"):
+        await chat.send_message("Coś poszło nie tak – zacznij od nowa: /dodaj")
+        return ConversationHandler.END
     keys = {}
     if source == "api":
-        msg = await chat.send_message("⏳ Sprawdzam klucz…")
+        msg = await chat.send_message(f"⏳ Sprawdzam klucz na {exchange_name(a.get('exchange', ''))}…")
         ex = make_exchange(s.cfg, a.get("api_key"), a.get("api_secret"), a.get("api_password"),
                            exchange_id=a.get("exchange"))
         try:
             await ex.fetch_balance()
         except Exception as e:  # noqa: BLE001
-            await msg.edit_text(f"❌ Klucz nie działa: {html.escape(friendly_error(e))}.\n"
-                                "Spróbuj ponownie: /zostan_traderem")
+            await msg.edit_text(f"❌ Klucz nie działa: {html.escape(friendly_error(e))}.\nSpróbuj ponownie: /dodaj")
             return ConversationHandler.END
         finally:
             await ex.close()
         keys = {k: s.vault.enc(a.get(k)) for k in ("api_key", "api_secret", "api_password")}
         keys["exchange"] = a.get("exchange")
-    lid = s.db.create_leader(a["name"], source, update.effective_user.id, "pending", a.get("bio"), **keys)
-    await chat.send_message("✅ Zgłoszenie wysłane. Dostaniesz wiadomość, gdy admin je zatwierdzi.\n"
-                            "Twój panel: /trader")
-    src = f"konto {exchange_name(a.get('exchange') or '')} (klucz do odczytu)" if source == "api" else "sygnały ręczne"
-    for admin in admin_ids(s):
-        try:
-            await ctx.bot.send_message(
-                admin, f"🎓 Nowe zgłoszenie tradera #{lid}\n<b>{html.escape(a['name'])}</b>\n"
-                       f"{html.escape(a.get('bio') or '—')}\nŹródło: {src}\nOd: {update.effective_user.id}",
-                parse_mode=ParseMode.HTML,
-                reply_markup=KB([[B("✅ Zatwierdź", callback_data=f"adm_ok:{lid}"),
-                                  B("❌ Odrzuć", callback_data=f"adm_hide:{lid}")]]))
-        except Exception:  # noqa: BLE001
-            log.exception("Nie powiadomiono admina")
-    return ConversationHandler.END
-
-
-async def apply_cancel(update: Update, ctx):
-    ctx.user_data.pop("apply", None)
-    await update.message.reply_text("Anulowano.")
-    return ConversationHandler.END
-
-
-# ---------- admin ----------
-
-async def on_admin_button(update: Update, ctx):
-    q = update.callback_query
-    if not is_admin(ctx, update):
-        return await q.answer("Tylko dla admina", show_alert=True)
-    s = S(ctx)
-    action, lid = q.data.split(":")
-    lead = s.db.get_leader(int(lid))
-    if not lead:
-        return await q.answer("Nie ma takiego tradera")
-    status = "active" if action == "adm_ok" else "hidden"
-    s.db.update_leader(lead["id"], status=status)
-    if status == "active":
-        s.db.ensure_reference(lead["id"], s.cfg.paper_start, s.cfg.quote)
+    lid = s.db.create_leader(a["name"], source, uid, "active", **keys)
+    s.db.ensure_reference(lid, s.cfg.paper_start, s.cfg.quote)
+    s.db.follow(uid, lid, False)  # dodający od razu obserwuje
     if s.watchers:
         s.watchers.sync()
-    await q.answer("Zapisano")
-    await q.edit_message_text(f"Trader #{lead['id']} {lead['name']}: "
-                              f"{'✅ aktywny' if status == 'active' else '🚫 ukryty'}")
-    if lead["owner_tg_id"]:
-        try:
-            await ctx.bot.send_message(lead["owner_tg_id"], (
-                f"🎉 Twój profil tradera „{lead['name']}” jest aktywny i widoczny w rankingu! Panel: /trader"
-                if status == "active" else f"Profil tradera „{lead['name']}” został ukryty."))
-        except Exception:  # noqa: BLE001
-            pass
-    if status == "hidden":  # obserwujący ukrytego tradera przestają kopiować
-        for u in s.db.active_followers(lead["id"]):
-            s.db.update_user(u["tg_id"], active=0)
-            await s.engine.notify(u["tg_id"], f"⏸ Trader „{lead['name']}” został wycofany. Kopiowanie wstrzymane – "
-                                              "wybierz innego w 🏆 Traderzy.")
+    how = ("Bot śledzi jego konto na żywo." if source == "api" else
+           "Wysyłaj sygnały: <code>/sygnal buy BTC/USDT 10</code> albo <code>/sygnal sell BTC/USDT 100</code>.")
+    await chat.send_message(
+        f"✅ <b>Dodano tradera „{html.escape(a['name'])}”.</b>\n{how}\n\nNa razie dostajesz tylko powiadomienia. "
+        "Kopiować od razu?", parse_mode=ParseMode.HTML,
+        reply_markup=KB([[B("✅ Kopiuj", callback_data=f"cp:{lid}"), B("👁 Tylko powiadomienia", callback_data=f"tr:{lid}")],
+                         TRADERS]))
+    # pozostałe osoby z dostępem dowiadują się o nowym traderze
+    for other in s.db.approved_users():
+        if other["tg_id"] != uid:
+            try:
+                await ctx.bot.send_message(
+                    other["tg_id"], f"➕ Nowy trader w bocie: <b>{html.escape(a['name'])}</b>",
+                    parse_mode=ParseMode.HTML, reply_markup=KB([[B("Zobacz", callback_data=f"tr:{lid}")]]))
+            except Exception:  # noqa: BLE001
+                pass
+    return ConversationHandler.END
 
 
-async def cmd_traders_admin(update: Update, ctx):
-    if not is_admin(ctx, update):  # zwykły użytkownik dostaje ranking
-        if await require_accepted(update, ctx):
-            await show_traders(update, ctx)
-        return
+# ---------- zmiana nazwy ----------
+
+async def rename_start(update: Update, ctx):
     s = S(ctx)
-    counts = s.db.follower_counts()
-    rows, lines = [], ["👥 <b>Traderzy</b>", ""]
-    icon = {"active": "🟢", "pending": "⏳", "hidden": "🚫"}
-    for lead in s.db.leaders(None):
-        w = s.watchers.get(lead["id"]) if s.watchers else None
-        conn = f" · {w.mode}" if w else ""
-        lines.append(f"{icon.get(lead['status'], '•')} #{lead['id']} <b>{html.escape(lead['name'])}</b> "
-                     f"({exchange_name(user_exchange(s.cfg, lead)) if lead['source'] == 'api' else 'sygnały'}{conn}) "
-                     f"· kopiuje {counts.get(lead['id'], (0, 0))[1]}")
-        rows.append([B(f"✅ #{lead['id']}", callback_data=f"adm_ok:{lead['id']}"),
-                     B(f"🚫 #{lead['id']}", callback_data=f"adm_hide:{lead['id']}")])
-    if len(lines) == 2:
-        lines.append("Brak traderów.")
-    await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML, reply_markup=KB(rows) if rows else None)
+    lid = int(update.callback_query.data.split(":")[1])
+    lead = s.db.get_leader(lid)
+    uid = update.effective_user.id
+    if not lead or not (lead["owner_tg_id"] == uid or uid in admin_ids(s)):
+        await _ack(update, "Brak uprawnień", True)
+        return ConversationHandler.END
+    await _ack(update)
+    ctx.user_data["rename"] = lid
+    await update.effective_chat.send_message(f"✏️ Nowa nazwa dla „{html.escape(lead['name'])}”:\n/anuluj – przerwij",
+                                             parse_mode=ParseMode.HTML)
+    return R_NAME
 
 
-# ---------- panel tradera i sygnały ----------
-
-async def cmd_trader_panel(update: Update, ctx):
+async def rename_done(update: Update, ctx):
     s = S(ctx)
-    own = s.db.leaders_owned(update.effective_user.id)
-    if not own:
-        return await update.message.reply_text("Nie masz profilu tradera. Załóż: /zostan_traderem")
-    counts = s.db.follower_counts()
-    for lead in own:
-        st = {"active": "🟢 aktywny", "pending": "⏳ czeka na zatwierdzenie", "hidden": "🚫 ukryty"}[lead["status"]]
-        lines = [f"🎓 <b>{html.escape(lead['name'])}</b> (#{lead['id']}) – {st}"]
-        if lead["status"] == "active":
-            rep = await leader_report(s, lead["id"])
-            n, a = counts.get(lead["id"], (0, 0))
-            lines += [f"Kopiuje Cię: <b>{a}</b> os. (wybrało {n})",
-                      f"Wynik od startu: {fmt_pct(rep['total'])} · 30 dni: {fmt_pct(rep['d30'])}"]
-            if lead["source"] == "manual":
-                lines += ["", "Wysyłanie sygnałów:", "<code>/sygnal buy BTC/USDT 10</code> – kup za 10% salda",
-                          "<code>/sygnal sell BTC/USDT 50</code> – sprzedaj połowę pozycji"]
-            else:
-                w = s.watchers.get(lead["id"]) if s.watchers else None
-                lines.append(f"Śledzenie konta: {'WebSocket ⚡' if w and w.mode == 'ws' else 'odpytywanie'}"
-                             if w else "Śledzenie konta: uruchamia się…")
-        await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+    lid = ctx.user_data.pop("rename", None)
+    name = update.message.text.strip()[:40]
+    if lid and len(name) >= 2:
+        s.db.update_leader(lid, name=name)
+        await update.message.reply_text(f"✅ Nowa nazwa: {name}", reply_markup=KB([[B("Zobacz", callback_data=f"tr:{lid}")]]))
+    return ConversationHandler.END
+
+
+async def conv_cancel(update: Update, ctx):
+    ctx.user_data.pop("add", None)
+    ctx.user_data.pop("rename", None)
+    await update.message.reply_text("Anulowano. /menu – pulpit")
+    return ConversationHandler.END
+
+
+# ---------- komendy ----------
+
+async def cmd_traders(update: Update, ctx):
+    if await require_accepted(update, ctx):
+        await show_traders(update, ctx)
 
 
 def _signal_leader(s, tg_id: int, explicit: int | None, admin: bool):
     if explicit is not None:
         lead = s.db.get_leader(explicit)
-        if lead and lead["status"] == "active" and (admin or lead["owner_tg_id"] == tg_id):
+        if lead and lead["status"] == "active" and lead["source"] == "manual" and (admin or lead["owner_tg_id"] == tg_id):
             return lead
         return None
     own = [lead for lead in s.db.leaders_owned(tg_id) if lead["status"] == "active" and lead["source"] == "manual"]
     if len(own) == 1:
         return own[0]
-    if admin:
+    if admin and not own:
         manual = [lead for lead in s.db.leaders("active") if lead["source"] == "manual"]
         if len(manual) == 1:
             return manual[0]
@@ -324,7 +333,9 @@ def _signal_leader(s, tg_id: int, explicit: int | None, admin: bool):
 
 
 async def cmd_signal(update: Update, ctx):
-    """/sygnal buy BTC/USDT 10 [#id] – trader z sygnałami ręcznymi (albo admin) wysyła zlecenie."""
+    """/sygnal buy BTC/USDT 10 [#id] – sygnał tradera typu „sygnały w bocie”."""
+    if not await require_accepted(update, ctx):
+        return
     s = S(ctx)
     args = list(ctx.args)
     explicit = None
@@ -333,52 +344,53 @@ async def cmd_signal(update: Update, ctx):
             explicit = int(args.pop()[1:])
         except ValueError:
             pass
-    admin = is_admin(ctx, update)
-    lead = _signal_leader(s, update.effective_user.id, explicit, admin)
+    lead = _signal_leader(s, update.effective_user.id, explicit, is_admin(ctx, update))
     if not lead:
-        if not admin and not s.db.leaders_owned(update.effective_user.id):
-            return
-        return await update.message.reply_text("Nie wiem, dla którego tradera. Dopisz numer, np. "
-                                               "/sygnal buy BTC/USDT 10 #3 (lista: /traderzy)")
+        manual = [f"#{ld['id']} {ld['name']}" for ld in s.db.leaders("active") if ld["source"] == "manual"]
+        hint = ("\nTwoi traderzy z sygnałami: " + ", ".join(manual) + "\nDopisz numer, np. /sygnal buy BTC/USDT 10 #3"
+                if manual else "\nNajpierw dodaj tradera typu „✍️ Sygnały w bocie”: /dodaj")
+        return await update.message.reply_text("Nie wiem, dla którego tradera wysłać sygnał." + hint)
     try:
         side = SIDES[args[0].lower()]
         symbol = args[1].upper()
-        pct = float(args[2].replace(",", "."))
+        pct = float(args[2].replace(",", ".").rstrip("%"))
         assert 0 < pct <= 100
     except (IndexError, KeyError, ValueError, AssertionError):
         return await update.message.reply_text(
-            "Użycie: /sygnal buy|sell PARA PROCENT\nnp. /sygnal buy BTC/USDT 10 – kupno za 10% salda\n"
-            "/sygnal sell BTC/USDT 100 – sprzedaż całej pozycji")
+            "Użycie: /sygnal buy|sell PARA PROCENT\n• /sygnal buy BTC/USDT 10 – kup za 10% salda\n"
+            "• /sygnal sell BTC/USDT 100 – sprzedaj całą pozycję")
     market = s.engine.m(lead)
     resolved = await market.resolve(symbol) if hasattr(market, "resolve") else (symbol if await market.has(symbol) else None)
     if not resolved:
         return await update.message.reply_text(f"Para {symbol} nie istnieje na {exchange_name(market.exchange_id)}.")
-    symbol = resolved
-    price = await market.price(symbol)
-    order = LeaderOrder(id=f"manual-{now_ms()}", symbol=symbol, side=side, amount=0, cost=0, price=price, ts=now_ms())
+    price = await market.price(resolved)
+    order = LeaderOrder(id=f"manual-{now_ms()}", symbol=resolved, side=side, amount=0, cost=0, price=price,
+                        ts=now_ms())
     res = await s.engine.copy(order, pct / 100, lead["id"])
-    await update.message.reply_text(f"📡 {lead['name']}: {SIDE_PL[side]} {symbol} {pct:g}% wysłany.\n" + summary(res))
+    await update.message.reply_text(f"📡 {lead['name']}: {SIDE_PL[side]} {resolved} {pct:g}%\n{summary(res)}")
 
 
 def register(app: Application):
     """Rejestrować PRZED bot.register – handlery bota łapią wszystkie pozostałe przyciski."""
     private = filters.ChatType.PRIVATE
     text = filters.TEXT & ~filters.COMMAND & private
+    cancel = [CommandHandler("anuluj", conv_cancel)]
     app.add_handler(ConversationHandler(
-        entry_points=[CallbackQueryHandler(apply_start, pattern="^apply$"),
-                      CommandHandler("zostan_traderem", apply_start, filters=private)],
-        states={A_NAME: [MessageHandler(text, apply_name)],
-                A_BIO: [MessageHandler(text, apply_bio), CommandHandler("pomin", apply_bio)],
-                A_SOURCE: [CallbackQueryHandler(apply_source, pattern="^src:")],
-                A_EXCH: [CallbackQueryHandler(apply_exchange, pattern="^aex:")],
-                A_KEY: [MessageHandler(text, apply_key)],
-                A_SECRET: [MessageHandler(text, apply_secret)],
-                A_PASS: [MessageHandler(text, apply_pass)]},
-        fallbacks=[CommandHandler("anuluj", apply_cancel)],
-        allow_reentry=True, conversation_timeout=600,
+        entry_points=[CallbackQueryHandler(add_start, pattern="^add$"),
+                      CommandHandler(["dodaj", "zostan_traderem"], add_start, filters=private)],
+        states={A_NAME: [MessageHandler(text, add_name)],
+                A_SOURCE: [CallbackQueryHandler(add_source, pattern="^src:")],
+                A_EXCH: [CallbackQueryHandler(add_exchange, pattern="^aex:")],
+                A_KEY: [MessageHandler(text, add_key)],
+                A_SECRET: [MessageHandler(text, add_secret)],
+                A_PASS: [MessageHandler(text, add_pass)]},
+        fallbacks=cancel, allow_reentry=True, conversation_timeout=600,
     ))
-    app.add_handler(CallbackQueryHandler(on_trader_button, pattern=r"^(traders|noop|tr:\d+|follow:\d+)$"))
-    app.add_handler(CallbackQueryHandler(on_admin_button, pattern=r"^adm_(ok|hide):\d+$"))
-    app.add_handler(CommandHandler(["traderzy"], cmd_traders_admin))
-    app.add_handler(CommandHandler(["trader"], cmd_trader_panel))
+    app.add_handler(ConversationHandler(
+        entry_points=[CallbackQueryHandler(rename_start, pattern=r"^ren:\d+$")],
+        states={R_NAME: [MessageHandler(text, rename_done)]},
+        fallbacks=cancel, allow_reentry=True, conversation_timeout=300,
+    ))
+    app.add_handler(CallbackQueryHandler(on_trader_button, pattern=r"^(traders|(tr|cp|wt|uf|del|delok):\d+)$"))
+    app.add_handler(CommandHandler(["traderzy", "wyniki"], cmd_traders))
     app.add_handler(CommandHandler("sygnal", cmd_signal))

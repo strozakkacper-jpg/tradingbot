@@ -70,7 +70,8 @@ def test_paper_copy_end_to_end(tmp_path):
     db.create_leader("T", "manual", None, "active")
     for uid in (1, 2, 3):
         db.ensure_user(uid, None, 1000, "USDT")
-        db.update_user(uid, accepted=1, active=1, max_trade=1000, leader_id=1)
+        db.update_user(uid, accepted=1, approved=1, active=1, max_trade=1000)
+        db.follow(uid, 1, True)
     db.update_user(2, multiplier=2.0)
     db.update_user(3, active=0)
     sent = []
@@ -82,7 +83,7 @@ def test_paper_copy_end_to_end(tmp_path):
     eng = CopyEngine(cfg, db, Vault(cfg.encryption_key), market, notify)
 
     res = asyncio.run(eng.copy(LeaderOrder("A", "BTC/USDT", "buy", 0, 0, 100, 1), 0.25, 1))
-    assert res["filled"] == 2 and sorted(sent) == [1, 2]
+    assert res["filled"] == 2 and res["alert"] == 1 and sorted(sent) == [1, 2, 3]  # 3: tylko powiadomienie
     b1, b2 = db.paper_balances(1), db.paper_balances(2)
     assert b1["USDT"] == pytest.approx(750) and b1["BTC"] == pytest.approx(2.5 * 0.999)
     assert b2["USDT"] == pytest.approx(500)
@@ -91,6 +92,7 @@ def test_paper_copy_end_to_end(tmp_path):
     market.p = 120.0
     res = asyncio.run(eng.copy(LeaderOrder("B", "BTC/USDT", "sell", 0, 0, 120, 2), 1.0, 1))
     assert res["filled"] == 2
+    sent.clear()
     assert "BTC" not in db.paper_balances(1)
     assert db.paper_balances(1)["USDT"] == pytest.approx(750 + 2.5 * 0.999 * 120 * 0.999)
     assert db.history(1)[0]["status"] == "filled"
@@ -111,12 +113,13 @@ def test_first_start_becomes_owner(tmp_path):
     cfg = Config(bot_token="x", encryption_key=Fernet.generate_key().decode(), db_path=":memory:")
     db = DB(":memory:")
     svc = B.Services(cfg, db, Vault(cfg.encryption_key), FakeMarket(1), None, None)
-    ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"svc": svc}))
+    ctx = SimpleNamespace(application=SimpleNamespace(bot_data={"svc": svc}), bot=AsyncMock())
 
     def upd(uid):
         msg = MagicMock(); msg.reply_text = AsyncMock()
+        chat = MagicMock(); chat.send_message = AsyncMock()
         return SimpleNamespace(effective_user=SimpleNamespace(id=uid, username=None), callback_query=None,
-                               effective_message=msg, message=msg)
+                               effective_message=msg, message=msg, effective_chat=chat)
 
     asyncio.run(B.cmd_start(upd(42), ctx))
     asyncio.run(B.cmd_start(upd(7), ctx))

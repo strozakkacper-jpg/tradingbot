@@ -62,7 +62,8 @@ def make(tmp_path, **cfg_kw):
 
 def user(s, uid, **kw):
     s.db.ensure_user(uid, None, s.cfg.paper_start, s.cfg.quote)
-    s.db.update_user(uid, accepted=1, active=1, max_trade=10_000, leader_id=1, **kw)
+    s.db.update_user(uid, accepted=1, approved=1, active=1, max_trade=10_000, **kw)
+    s.db.follow(uid, 1, True)
     return s.db.get_user(uid)
 
 

@@ -48,7 +48,7 @@ def build_app(s) -> web.Application:
             raise web.HTTPUnauthorized(text=json.dumps({"error": "Otwórz panel z poziomu bota w Telegramie."}),
                                        content_type="application/json")
         u = s.db.get_user(int(tg["id"]))
-        if not u or not u["accepted"]:
+        if not u or not u["accepted"] or not u["approved"]:
             raise web.HTTPForbidden(text=json.dumps({"error": "Najpierw napisz /start do bota."}),
                                     content_type="application/json")
         return u
@@ -60,8 +60,10 @@ def build_app(s) -> web.Application:
         except Exception as e:  # noqa: BLE001
             log.exception("Panel: portfel %s", u["tg_id"])
             me = {"error": f"Nie udało się pobrać salda: {str(e)[:120]}"}
-        lead = s.db.get_leader(u["leader_id"])
-        if lead and lead["status"] == "active":
+        copied = s.db.copied_leaders(u["tg_id"])
+        mine = s.db.follows_of(u["tg_id"])
+        lead = copied[0] if copied else None
+        if lead:
             try:
                 leader = dict(await leader_report(s, lead["id"]), name=lead["name"], bio=lead["bio"],
                               source=lead["source"],
@@ -70,11 +72,11 @@ def build_app(s) -> web.Application:
                 log.exception("Panel: trader")
                 leader = {"error": "Brak danych o traderze."}
         else:
-            leader = {"error": "Nie wybrałeś jeszcze tradera – zobacz zakładkę Ranking."}
+            leader = {"error": "Nie kopiujesz jeszcze żadnego tradera – zobacz zakładkę Ranking."}
         try:
             board = [{"id": ld["id"], "name": ld["name"], "bio": ld["bio"], "total": r["total"], "d30": r["d30"],
                       "max_dd": r["max_dd"], "win_rate": r["win_rate"], "closed": r["closed"], "copying": c[1],
-                      "mine": ld["id"] == u["leader_id"], "spark": downsample(r["series"], 40)}
+                      "mine": mine.get(ld["id"]) is True, "spark": downsample(r["series"], 40)}
                      for ld, r, c in await ranking(s)]
         except Exception:  # noqa: BLE001
             log.exception("Panel: ranking")
@@ -94,7 +96,7 @@ def build_app(s) -> web.Application:
         lead = s.db.get_leader(lid)
         if not lead or lead["status"] != "active":
             return web.json_response({"error": "Ten trader jest niedostępny"}, status=404)
-        s.db.update_user(u["tg_id"], leader_id=lid)
+        s.db.follow(u["tg_id"], lid, True)
         return web.json_response({"ok": True, "name": lead["name"], "active": bool(u["active"])})
 
     async def root(_):

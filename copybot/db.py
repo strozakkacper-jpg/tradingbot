@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS leaders (
     status TEXT NOT NULL DEFAULT 'pending',  -- pending | active | hidden
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS follows (
+    tg_id INTEGER NOT NULL, leader_id INTEGER NOT NULL,
+    copy INTEGER NOT NULL DEFAULT 1,         -- 1 = kopiuj transakcje, 0 = tylko powiadomienia
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (tg_id, leader_id)
+);
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, charge_id TEXT NOT NULL UNIQUE,
     amount INTEGER NOT NULL, recurring INTEGER NOT NULL DEFAULT 0, refunded INTEGER NOT NULL DEFAULT 0,
@@ -54,6 +60,8 @@ MIGRATIONS = {
     "max_price_move": "REAL NOT NULL DEFAULT 2",  # % – nie kupuj, jeśli cena uciekła bardziej od ceny lidera
     "daily_report": "INTEGER NOT NULL DEFAULT 1",
     "exchange": "TEXT",  # giełda użytkownika (NULL = domyślna z .env)
+    "approved": "INTEGER NOT NULL DEFAULT 0",  # bot prywatny: dostęp tylko dla wpuszczonych
+    "requested": "INTEGER NOT NULL DEFAULT 0",  # czy właściciel dostał już prośbę o dostęp
 }
 
 
@@ -64,7 +72,7 @@ def ref_id(leader_id: int) -> int:
 
 USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_trade",
                "api_key", "api_secret", "api_password", "stop_loss", "start_equity", "paid_until",
-               "leader_id", "max_price_move", "daily_report", "exchange"}
+               "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
                  "exchange"}
 
@@ -84,6 +92,12 @@ class DB:
             for name, ddl in MIGRATIONS.items():
                 if name not in cols:
                     self.conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
+                    if name == "approved":  # użytkownicy sprzed wersji prywatnej zachowują dostęp
+                        self.conn.execute("UPDATE users SET approved = 1 WHERE accepted = 1")
+            # wersja 2 miała jednego wybranego tradera (users.leader_id) – przenosimy do listy śledzonych
+            self.conn.execute("""INSERT OR IGNORE INTO follows (tg_id, leader_id, copy, created_at)
+                                 SELECT tg_id, leader_id, 1, created_at FROM users WHERE leader_id IS NOT NULL""")
+            self.conn.execute("UPDATE users SET leader_id = NULL WHERE leader_id IS NOT NULL")
 
     def _q(self, sql, args=()):
         with self.lock, self.conn:
@@ -111,15 +125,53 @@ class DB:
         self._q(f"UPDATE users SET {sets} WHERE tg_id = ?", (*fields.values(), tg_id))
 
     def active_users(self) -> list[sqlite3.Row]:
-        return self._q("SELECT * FROM users WHERE active = 1 AND accepted = 1")
+        return self._q("SELECT * FROM users WHERE active = 1 AND accepted = 1 AND approved = 1")
 
     def active_followers(self, leader_id: int) -> list[sqlite3.Row]:
-        return self._q("SELECT * FROM users WHERE active = 1 AND accepted = 1 AND leader_id = ?", (leader_id,))
+        """Kto kopiuje tradera teraz: śledzi go z kopiowaniem i ma włączone kopiowanie."""
+        return self._q("""SELECT u.* FROM users u JOIN follows f ON f.tg_id = u.tg_id
+                          WHERE f.leader_id = ? AND f.copy = 1 AND u.active = 1 AND u.accepted = 1
+                          AND u.approved = 1""", (leader_id,))
+
+    def watchers(self, leader_id: int) -> list[sqlite3.Row]:
+        """Kto dostaje tylko powiadomienie: śledzi bez kopiowania albo ma kopiowanie wyłączone."""
+        return self._q("""SELECT u.* FROM users u JOIN follows f ON f.tg_id = u.tg_id
+                          WHERE f.leader_id = ? AND u.accepted = 1 AND u.approved = 1
+                          AND (f.copy = 0 OR u.active = 0)""", (leader_id,))
 
     def follower_counts(self) -> dict[int, tuple[int, int]]:
-        """leader_id -> (wszyscy wybierający, aktywnie kopiujący)"""
-        return {r["leader_id"]: (r["n"], r["a"] or 0) for r in self._q(
-            "SELECT leader_id, COUNT(*) n, SUM(active) a FROM users WHERE leader_id IS NOT NULL GROUP BY leader_id")}
+        """leader_id -> (śledzący, kopiujący)"""
+        return {r["leader_id"]: (r["n"], r["c"] or 0) for r in self._q(
+            "SELECT leader_id, COUNT(*) n, SUM(copy) c FROM follows GROUP BY leader_id")}
+
+    # --- śledzeni traderzy ---
+    def follow(self, tg_id: int, leader_id: int, copy: bool):
+        self._q("""INSERT INTO follows VALUES (?, ?, ?, ?)
+                   ON CONFLICT(tg_id, leader_id) DO UPDATE SET copy = excluded.copy""",
+                (tg_id, leader_id, int(copy), now_ms()))
+
+    def unfollow(self, tg_id: int, leader_id: int):
+        self._q("DELETE FROM follows WHERE tg_id = ? AND leader_id = ?", (tg_id, leader_id))
+
+    def follows_of(self, tg_id: int) -> dict[int, bool]:
+        """leader_id -> czy kopiuje (tylko aktywni traderzy)"""
+        return {r["leader_id"]: bool(r["copy"]) for r in self._q(
+            """SELECT f.leader_id, f.copy FROM follows f JOIN leaders l ON l.id = f.leader_id
+               WHERE f.tg_id = ? AND l.status = 'active' ORDER BY f.created_at""", (tg_id,))}
+
+    def copied_leaders(self, tg_id: int) -> list[sqlite3.Row]:
+        return self._q("""SELECT l.* FROM follows f JOIN leaders l ON l.id = f.leader_id
+                          WHERE f.tg_id = ? AND f.copy = 1 AND l.status = 'active' ORDER BY f.created_at""", (tg_id,))
+
+    def delete_leader(self, leader_id: int):
+        with self.lock, self.conn:
+            self.conn.execute("UPDATE leaders SET status = 'deleted', api_key = NULL, api_secret = NULL, "
+                              "api_password = NULL WHERE id = ?", (leader_id,))
+            self.conn.execute("DELETE FROM follows WHERE leader_id = ?", (leader_id,))
+
+    # --- dostęp (bot prywatny) ---
+    def approved_users(self) -> list[sqlite3.Row]:
+        return self._q("SELECT * FROM users WHERE approved = 1 ORDER BY created_at")
 
     # --- traderzy ---
     def create_leader(self, name: str, source: str, owner_tg_id: int | None, status: str = "pending",
@@ -140,11 +192,11 @@ class DB:
 
     def leaders(self, status: str | None = "active") -> list[sqlite3.Row]:
         if status is None:
-            return self._q("SELECT * FROM leaders ORDER BY id")
+            return self._q("SELECT * FROM leaders WHERE status != 'deleted' ORDER BY id")
         return self._q("SELECT * FROM leaders WHERE status = ? ORDER BY id", (status,))
 
     def leaders_owned(self, tg_id: int) -> list[sqlite3.Row]:
-        return self._q("SELECT * FROM leaders WHERE owner_tg_id = ? ORDER BY id", (tg_id,))
+        return self._q("SELECT * FROM leaders WHERE owner_tg_id = ? AND status != 'deleted' ORDER BY id", (tg_id,))
 
     def update_leader(self, leader_id: int, **fields):
         if bad := set(fields) - LEADER_FIELDS:
@@ -156,6 +208,8 @@ class DB:
         """Wersja 1 miała jednego lidera (portfel wzorcowy tg_id=0). Przenosimy go jako tradera #1."""
         if self._q("SELECT 1 FROM leaders LIMIT 1"):
             return None
+        if not self._q("SELECT 1 FROM users LIMIT 1") and self.get_state("reference_start") is None:
+            return None  # świeża instalacja – nie ma czego przenosić
         lid = make_first_leader()
         with self.lock, self.conn:
             for table in ("paper_balances", "equity", "copies"):
@@ -166,11 +220,12 @@ class DB:
             since = self.conn.execute("SELECT value FROM state WHERE key = 'leader_since'").fetchone()
             if since:
                 self.conn.execute("INSERT OR REPLACE INTO state VALUES (?, ?)", (f"leader_since:{lid}", since[0]))
-            self.conn.execute("UPDATE users SET leader_id = ? WHERE leader_id IS NULL", (lid,))
+            self.conn.execute("INSERT OR IGNORE INTO follows (tg_id, leader_id, copy, created_at) "
+                              "SELECT tg_id, ?, 1, created_at FROM users", (lid,))
         return lid
 
     def all_user_ids(self) -> list[int]:
-        return [r["tg_id"] for r in self._q("SELECT tg_id FROM users")]
+        return [r["tg_id"] for r in self._q("SELECT tg_id FROM users WHERE approved = 1")]
 
     def stats(self) -> dict:
         r = self._q("""SELECT COUNT(*) total, SUM(active) active,
