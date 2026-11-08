@@ -132,6 +132,8 @@ async def sync(s, u, reason: str = "", notify: bool = True) -> Counter:
                 res["error"] += 1
                 log.exception("Lustro %s %s %s", u["tg_id"], side, asset)
                 lines.append(f"❌ {asset}: {str(e)[:120]}")
+        if res:
+            log.info("Lustro %s (%s): %s · zgodność przed %.0f%%", u["tg_id"], reason or "-", dict(res), p.match * 100)
         if notify and lines:
             after = await plan(s, s.db.get_user(u["tg_id"]) or u, p.target)
             await s.engine.notify(u["tg_id"], "🪞 Lustro: wyrównano portfel do tradera"

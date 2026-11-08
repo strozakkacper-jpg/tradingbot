@@ -17,7 +17,7 @@ from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, Con
 
 from .config import KEY_HINTS, Config, exchange_name, friendly_error, needs_password, normalize_secret
 from .db import DB
-from .engine import SIDE_PL, CopyEngine, Market, fmt_amount, fmt_money, user_exchange
+from .engine import SIDE_PL, CopyEngine, Market, fmt_amount, fmt_money, fmt_price, user_exchange
 from .security import Vault
 
 log = logging.getLogger(__name__)
@@ -244,7 +244,7 @@ def history_text(s: Services, u) -> str:
         mode = "demo" if r["paper"] else "LIVE"
         if r["status"] == "filled":
             lines.append(f"{'🟢' if r['side'] == 'buy' else '🔴'} <b>{r['symbol']}</b> {fmt_amount(r['amount'])} "
-                         f"@ {fmt_money(r['price'])} = {fmt_money(r['cost'])} {s.cfg.quote} <i>({mode})</i>")
+                         f"@ {fmt_price(r['price'])} = {fmt_money(r['cost'])} {s.cfg.quote} <i>({mode})</i>")
         else:
             icon = "⚠️" if r["status"] == "skipped" else "❌"
             lines.append(f"{icon} {r['symbol']}: <i>{html.escape((r['info'] or '')[:80])}</i>")
@@ -565,7 +565,7 @@ async def on_button(update: Update, ctx):
     elif data == "closeall_ok":
         await ack("Sprzedaję…")
         s.db.update_user(uid, active=0)
-        res = await s.engine.close_positions(u)
+        res = await s.engine.close_positions(u, title="🧹 Zamknięcie pozycji: sprzedano")
         return await show(update, f"🧹 Gotowe. Sprzedane pozycje: {res.get('filled', 0)}, błędy: "
                                   f"{res.get('error', 0)}. Kopiowanie wyłączone.", KB([HOME]))
     elif data == "history":

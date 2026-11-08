@@ -94,27 +94,42 @@ class LeaderWatcher:
     async def _balance(self) -> dict[str, float]:
         return {k: float(v) for k, v in ((await self.rest.fetch_balance()).get("total") or {}).items() if v}
 
-    def _symbols_for(self, balance: dict[str, float]) -> set[str]:
+    def _symbols_for(self, balance: dict[str, float], min_value: float = 1.0) -> set[str]:
+        """Pary do sprawdzania przy odpytywaniu: monety z salda warte min. 1 USDT (pył pomijamy –
+        oszczędza limity API giełdy). Monety bez znanej ceny zostają na liście."""
         q = self.cfg.quote
         markets = self.market.ex.markets or {}
         out = set()
-        for a in balance:
-            if a != q and a not in STABLES and (sym := resolve_symbol(markets, f"{a}/{q}")):
+        for a, amount in balance.items():
+            if a == q or a in STABLES or not (sym := resolve_symbol(markets, f"{a}/{q}")):
+                continue
+            hit = self.market.cached(sym) if hasattr(self.market, "cached") else None
+            if hit is None or amount * hit[0] >= min_value:
                 out.add(sym)
         return out
+
+    async def _prefetch(self, balance: dict[str, float]) -> None:
+        if not hasattr(self.market, "prefetch"):
+            return
+        q, markets = self.cfg.quote, self.market.ex.markets or {}
+        syms = [x for a in balance if a != q and a not in STABLES and (x := resolve_symbol(markets, f"{a}/{q}"))]
+        await self.market.prefetch(syms)
 
     async def poll_once(self):
         await self.market.load()
         if not self.rest.markets:
             self.rest.set_markets(self.market.ex.markets, self.market.ex.currencies)
         if not self._known_symbols:
-            self._known_symbols = self._symbols_for(await self._balance())
+            first = await self._balance()
+            await self._prefetch(first)
+            self._known_symbols = self._symbols_for(first)
         symbols = self._known_symbols | set(self.cfg.leader_symbols)
         since = max(self.start_ts, now_ms() - LOOKBACK_MS)
         trades = []
         for sym in symbols:
             trades += await self.rest.fetch_my_trades(sym, since=since)
         balance = await self._balance()
+        await self._prefetch(balance)
         # pamiętamy pary z poprzedniego i obecnego salda – żeby nie przegapić sprzedaży „do zera”
         self._known_symbols = self._symbols_for(balance) | {t["symbol"] for t in trades}
         await self.process(trades, balance)

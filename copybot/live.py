@@ -8,17 +8,9 @@ from zoneinfo import ZoneInfo
 from telegram.constants import ParseMode
 from telegram.error import BadRequest, Forbidden
 
-from .engine import _resolve, fmt_money
+from .engine import _resolve, fmt_money, fmt_price  # noqa: F401 (fmt_price używane też przez demo)
 
 log = logging.getLogger(__name__)
-
-
-def fmt_price(p: float) -> str:
-    if p >= 1000:
-        return f"{p:,.0f}".replace(",", " ")
-    if p >= 1:
-        return f"{p:,.2f}".replace(",", " ")
-    return f"{p:.4g}"
 
 
 def fmt_change(ch: float | None) -> str:

@@ -371,3 +371,17 @@ def test_friendly_errors():
     assert "odrzuciła klucz" in friendly_error(ccxt.AuthenticationError("coinbase 401 Unauthorized"))
     assert "format" in friendly_error(ValueError("Non-base16 digit found"))
     assert "nie odpowiada" in friendly_error(ccxt.RequestTimeout("timeout"))
+
+
+def test_polling_skips_dust_coins(tmp_path):
+    s, _ = setup(tmp_path)
+    rest = MagicMock()
+    w, _ = make_watcher(s, rest)
+
+    class PricedMarket(FakeMarket):
+        def cached(self, sym, max_age=300):
+            return {"BTC/USDT": (50_000.0, None), "SHIB/USDT": (0.00001, None)}.get(sym)
+
+    w.market = PricedMarket(symbols=("BTC/USDT", "SHIB/USDT", "ETH/USDT"))
+    syms = w._symbols_for({"USDT": 100, "BTC": 0.01, "SHIB": 1000, "ETH": 2})
+    assert syms == {"BTC/USDT", "ETH/USDT"}  # SHIB wart 0,01 USDT pominięty, ETH bez ceny zostaje

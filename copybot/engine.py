@@ -80,6 +80,19 @@ def fmt_money(x: float) -> str:
     return f"{x:,.2f}".replace(",", " ")
 
 
+def fmt_price(p: float) -> str:
+    """Cena czytelnie także dla tanich monet: 75 896 · 89.58 · 0.07123 · 0.00001234."""
+    if p >= 1000:
+        return f"{p:,.0f}".replace(",", " ")
+    if p >= 1:
+        return f"{p:,.2f}".replace(",", " ")
+    if p <= 0:
+        return "0"
+    import math
+    decimals = min(12, 3 - math.floor(math.log10(p)))  # 4 cyfry znaczące, bez notacji naukowej
+    return f"{p:.{decimals}f}"
+
+
 def fmt_amount(x: float) -> str:
     return f"{x:.8g}"
 
@@ -125,6 +138,23 @@ class Market:
         """(cena, zmiana 24 h w %) – z pamięci podręcznej, jeśli świeża."""
         price = await self.price(symbol, max_age)
         return price, self._change.get(symbol)
+
+    async def prefetch(self, symbols: list[str], max_age: float = 60.0) -> None:
+        """Ceny wielu par jednym zapytaniem (fetchTickers) – zamiast osobnego zapytania na każdą parę."""
+        now = time.monotonic()
+        stale = [x for x in symbols if not (x in self._prices and now - self._prices[x][0] < max_age)]
+        if not stale or not self.ex.has.get("fetchTickers"):
+            return
+        try:
+            tickers = await self.ex.fetch_tickers(stale)
+        except Exception:  # noqa: BLE001 – część giełd nie przyjmuje listy symboli; wtedy ceny dociągną się pojedynczo
+            return
+        for sym, tk in tickers.items():
+            price = float(tk.get("last") or tk.get("close") or 0)
+            if price:
+                self._prices[sym] = (now, price)
+                if tk.get("percentage") is not None:
+                    self._change[sym] = float(tk["percentage"])
 
     def cached(self, symbol: str, max_age: float = 300.0) -> tuple[float, float | None] | None:
         """Ostatnia znana cena bez łączenia z giełdą (do szybkiego pulpitu)."""
@@ -220,13 +250,14 @@ class CopyEngine:
         self.after_trade = None  # async (leader_id) -> None; ustawiane w main (lustro portfela)
 
     async def copy(self, order: LeaderOrder, fraction: float, leader_id: int) -> Counter:
-        users = []
+        users, mirror_only = [], []
         for u in self.db.active_followers(leader_id):
             if not has_access(self.cfg, u):
                 continue
             if (u["copy_mode"] if "copy_mode" in u.keys() else "trades") == "mirror":
                 if not u["mirror_trades"]:
-                    continue  # lustro bez kopiowania transakcji – tylko wyrównanie po ruchu tradera (after_trade)
+                    mirror_only.append(u)  # bez kopiowania transakcji – powiadomienie + wyrównanie (after_trade)
+                    continue
                 # lustro + transakcje: ta sama transakcja od razu, 1:1 – bez mnożnika, limitu i ochrony ceny,
                 # bo i tak dążymy do identycznych proporcji; resztę różnic poprawi lustro zaraz potem
                 u = dict(u, multiplier=1.0, max_trade=0, max_price_move=0)
@@ -236,7 +267,8 @@ class CopyEngine:
         log.info("Trader %s: %s %s %.4f%% → %d obserwujących", name, order.side, order.symbol, fraction * 100,
                  len(users))
         await self._copy_reference(order, fraction, leader_id)
-        title = f"✅ Skopiowano: {name}"
+        share = f" ({fraction * 100:.0f}% {'salda' if order.side == 'buy' else 'pozycji'} tradera)" if fraction else ""
+        title = f"✅ Skopiowano: {name}{share}"
 
         async def run(u):
             async with self.sem:
@@ -245,9 +277,13 @@ class CopyEngine:
         res = Counter(await asyncio.gather(*(run(u) for u in users)))
         # śledzący bez kopiowania dostają samo powiadomienie
         pct = f" ({fraction * 100:.0f}% {'salda' if order.side == 'buy' else 'pozycji'})" if fraction else ""
-        price = f" @ {fmt_money(order.price)}" if order.price else ""
+        price = f" @ {fmt_price(order.price)}" if order.price else ""
         for u in self.db.watchers(leader_id):
             await self.notify(u["tg_id"], f"👁 {name}: {SIDE_PL[order.side]} {order.symbol}{price}{pct}")
+            res["alert"] += 1
+        for u in mirror_only:
+            await self.notify(u["tg_id"], f"👁 {name}: {SIDE_PL[order.side]} {order.symbol}{price}{pct}\n"
+                                          "🪞 Lustro zaraz wyrówna Twój portfel.")
             res["alert"] += 1
         if self.after_trade is not None:
             try:
@@ -369,7 +405,7 @@ class CopyEngine:
                             "filled", None, paper)
         await self.notify(u["tg_id"], (
             f"{title}\n{side_txt}\n"
-            f"Ilość: {fmt_amount(fill.amount)} · Cena: {fmt_money(fill.price)}\n"
+            f"Ilość: {fmt_amount(fill.amount)} · Cena: {fmt_price(fill.price)}\n"
             f"Wartość: {fmt_money(fill.cost)} {self.cfg.quote} · Tryb: {mode}"))
         return "filled"
 
@@ -415,7 +451,7 @@ class CopyEngine:
         finally:
             await ex.close()
 
-    async def close_positions(self, u) -> Counter:
+    async def close_positions(self, u, title: str = "🛑 Stop-loss: sprzedano") -> Counter:
         """Sprzedaje wszystko, co bot kupił użytkownikowi (np. po stop-lossie).
         Nie rusza innych monet, których bot nigdy nie handlował."""
         u = dict(u, multiplier=1.0)
@@ -423,7 +459,7 @@ class CopyEngine:
         for symbol in self.db.traded_symbols(u["tg_id"]):
             order = LeaderOrder(id=f"stoploss-{now_ms()}", symbol=symbol, side="sell", amount=0, cost=0,
                                 price=0, ts=now_ms())
-            res[await self._copy_for(u, order, 1.0, title="🛑 Stop-loss: sprzedano", quiet_skip=True)] += 1
+            res[await self._copy_for(u, order, 1.0, title=title, quiet_skip=True)] += 1
         return res
 
     async def equity_of(self, u) -> float:
