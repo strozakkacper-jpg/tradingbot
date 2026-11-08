@@ -105,10 +105,10 @@ class Config:
     def from_env(cls) -> "Config":
         load_dotenv()
         token = os.getenv("BOT_TOKEN", "")
-        if not token:
+        if not token or token.startswith("123456:"):
             raise SystemExit("BRAK BOT_TOKEN. Na Railway: zakładka Variables → dodaj BOT_TOKEN (token od @BotFather) "
                              "i kliknij Deploy. Na własnym serwerze: wpisz BOT_TOKEN w pliku .env.")
-        db_path = os.getenv("DB_PATH", "copybot.db")
+        db_path = _db_path()
         key = os.getenv("ENCRYPTION_KEY", "") or load_or_create_key(db_path)
         return cls(
             bot_token=token,
@@ -133,10 +133,18 @@ class Config:
             webapp_url=_webapp_url(),
             # hostingi typu Railway/Render podają port w zmiennej PORT i wymagają nasłuchu na 0.0.0.0
             web_host=os.getenv("WEB_HOST") or ("0.0.0.0" if os.getenv("PORT") else "127.0.0.1"),
-            web_port=int(os.getenv("WEB_PORT") or os.getenv("PORT") or "8080"),
+            web_port=int(os.getenv("PORT") or os.getenv("WEB_PORT") or "8080"),  # PORT od hostingu ma pierwszeństwo
             sub_price_stars=int(os.getenv("SUB_PRICE_STARS", "0")),
             sub_scope=os.getenv("SUB_SCOPE", "live").strip().lower(),
         )
+
+
+def _db_path() -> str:
+    """Na hostingu z trwałym dyskiem (/data) baza MUSI leżeć na nim – inaczej każda aktualizacja ją kasuje."""
+    path = os.getenv("DB_PATH", "").strip() or "copybot.db"
+    if os.path.isdir("/data") and not path.startswith("/data/"):
+        path = os.path.join("/data", os.path.basename(path))
+    return path
 
 
 def _webapp_url() -> str:
