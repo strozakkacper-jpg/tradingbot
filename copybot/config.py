@@ -106,7 +106,8 @@ class Config:
         load_dotenv()
         token = os.getenv("BOT_TOKEN", "")
         if not token:
-            raise SystemExit("Ustaw BOT_TOKEN w pliku .env (token od @BotFather, patrz .env.example)")
+            raise SystemExit("BRAK BOT_TOKEN. Na Railway: zakładka Variables → dodaj BOT_TOKEN (token od @BotFather) "
+                             "i kliknij Deploy. Na własnym serwerze: wpisz BOT_TOKEN w pliku .env.")
         db_path = os.getenv("DB_PATH", "copybot.db")
         key = os.getenv("ENCRYPTION_KEY", "") or load_or_create_key(db_path)
         return cls(
