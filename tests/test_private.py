@@ -236,3 +236,18 @@ def test_dashboard_and_toggle(tmp_path):
     text = last_text(u)
     assert "Kopiujesz:</b> Kacper" in text and "włączone" in text and "Admin" in str(
         u.callback_query.edit_message_text.call_args)
+
+
+def test_history_shows_source(tmp_path):
+    s, ctx, _ = setup(tmp_path)
+    onboard(s, ctx, OWNER)
+    lid = s.db.create_leader("Kacper", "manual", OWNER, "active")
+    s.db.follow(OWNER, lid, True)
+    s.db.update_user(OWNER, active=1, max_trade=10_000)
+    asyncio.run(s.engine.copy(LeaderOrder("A", "BTC/USDT", "buy", 0, 0, 100, 1), 0.2, lid))
+    asyncio.run(s.engine.trade_value(s.db.get_user(OWNER), "ETH/USDT", "buy", 50, tag="manual"))
+    asyncio.run(s.engine.close_positions(s.db.get_user(OWNER)))
+    u = upd(OWNER, data="history")
+    asyncio.run(B.on_button(u, ctx))
+    text = last_text(u)
+    assert "demo · Kacper" in text and "✋ ręcznie" in text and "🛑 stop-loss" in text

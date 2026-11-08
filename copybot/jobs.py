@@ -22,6 +22,15 @@ async def snapshot_job(ctx: ContextTypes.DEFAULT_TYPE):
         except Exception:  # noqa: BLE001
             log.exception("Nie zapisano wartości portfela wzorcowego tradera %s", lead["id"])
 
+    # wartość portfela zapisujemy też u osób z wyłączonym kopiowaniem – pulpit i wykres nie pokazują wtedy starych liczb
+    for u in s.db.approved_users():
+        if u["active"] or not u["accepted"]:
+            continue
+        try:
+            s.db.add_equity(u["tg_id"], await s.engine.equity_of(u), bool(u["paper"]))
+        except Exception:  # noqa: BLE001
+            log.debug("Nie wyceniono portfela %s", u["tg_id"])
+
     for u in s.db.active_users():
         if not has_access(s.cfg, u):
             await expire_subscription(ctx, s, u)
@@ -47,6 +56,10 @@ async def trigger_stop_loss(s, u, equity: float):
         f"(z {fmt_money(u['start_equity'])} do {fmt_money(equity)} {s.cfg.quote}).\n"
         "Kopiowanie wyłączone, sprzedaję pozycje otwarte przez bota…"))
     res = await s.engine.close_positions(u)
+    try:
+        s.db.add_equity(uid, await s.engine.equity_of(u), bool(u["paper"]))
+    except Exception:  # noqa: BLE001
+        pass
     await s.engine.notify(uid, f"Gotowe. Sprzedane pozycje: {res.get('filled', 0)}, błędy: {res.get('error', 0)}.\n"
                                "Możesz włączyć kopiowanie ponownie w /menu.")
 

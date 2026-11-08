@@ -272,7 +272,7 @@ class CopyEngine:
 
         async def run(u):
             async with self.sem:
-                return await self._copy_for(u, order, fraction, title=title)
+                return await self._copy_for(u, order, fraction, title=title, source=name)
 
         res = Counter(await asyncio.gather(*(run(u) for u in users)))
         # śledzący bez kopiowania dostają samo powiadomienie
@@ -368,7 +368,7 @@ class CopyEngine:
             log.exception("Błąd portfela wzorcowego")
 
     async def _copy_for(self, u, order: LeaderOrder, fraction: float, title: str = "✅ Skopiowano zlecenie lidera",
-                        quiet_skip: bool = False) -> str:
+                        quiet_skip: bool = False, source: str | None = None) -> str:
         paper = bool(u["paper"])
         mode = "🧪 demo" if paper else "💰 LIVE"
         side_txt = f"{SIDE_PL[order.side]} {order.symbol}"
@@ -402,7 +402,7 @@ class CopyEngine:
             return "error"
 
         self.db.record_copy(order.id, u["tg_id"], order.symbol, order.side, fill.amount, fill.price, fill.cost,
-                            "filled", None, paper)
+                            "filled", source, paper)
         await self.notify(u["tg_id"], (
             f"{title}\n{side_txt}\n"
             f"Ilość: {fmt_amount(fill.amount)} · Cena: {fmt_price(fill.price)}\n"
@@ -459,7 +459,8 @@ class CopyEngine:
         for symbol in self.db.traded_symbols(u["tg_id"]):
             order = LeaderOrder(id=f"stoploss-{now_ms()}", symbol=symbol, side="sell", amount=0, cost=0,
                                 price=0, ts=now_ms())
-            res[await self._copy_for(u, order, 1.0, title=title, quiet_skip=True)] += 1
+            src = "stop-loss" if "Stop-loss" in title else "zamknięcie"
+            res[await self._copy_for(u, order, 1.0, title=title, quiet_skip=True, source=src)] += 1
         return res
 
     async def equity_of(self, u) -> float:

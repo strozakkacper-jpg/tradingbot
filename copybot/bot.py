@@ -243,8 +243,11 @@ def history_text(s: Services, u) -> str:
     for r in rows:
         mode = "demo" if r["paper"] else "LIVE"
         if r["status"] == "filled":
+            src = {"mirror": "🪞 lustro", "manual": "✋ ręcznie", "stop-loss": "🛑 stop-loss",
+                   "zamknięcie": "🧹 zamknięcie"}.get(r["info"] or "", html.escape(r["info"] or ""))
             lines.append(f"{'🟢' if r['side'] == 'buy' else '🔴'} <b>{r['symbol']}</b> {fmt_amount(r['amount'])} "
-                         f"@ {fmt_price(r['price'])} = {fmt_money(r['cost'])} {s.cfg.quote} <i>({mode})</i>")
+                         f"@ {fmt_price(r['price'])} = {fmt_money(r['cost'])} {s.cfg.quote} "
+                         f"<i>({mode}{' · ' + src if src else ''})</i>")
         else:
             icon = "⚠️" if r["status"] == "skipped" else "❌"
             lines.append(f"{icon} {r['symbol']}: <i>{html.escape((r['info'] or '')[:80])}</i>")
