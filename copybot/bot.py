@@ -96,7 +96,12 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
     follows = s.db.follows_of(u["tg_id"])
     watching = sum(1 for c in follows.values() if not c)
 
-    lines = ["🏠 <b>Pulpit</b>", ""]
+    lines = ["🏠 <b>Pulpit</b>"]
+    from .live import cached_prices_line
+    prices = cached_prices_line(s, s.engine.m(u))
+    if prices:
+        lines.append(prices)
+    lines.append("")
     state = "▶️ <b>włączone</b>" if u["active"] else "⏸ wyłączone"
     lines.append(f"<b>Kopiowanie:</b> {state}")
     mode = "🧪 demo" if u["paper"] else f"💰 <b>LIVE</b> · {ex}"
@@ -122,6 +127,7 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
 
     rows = [[B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="toggle")],
             [B("💼 Portfel", callback_data="status"), B("👥 Traderzy", callback_data="traders")],
+            [B("🎮 Handel demo", callback_data="dt")],
             [B("📜 Historia", callback_data="history"), B("⚙️ Ustawienia", callback_data="settings")],
             [B(f"🏦 Giełda: {ex}" if u["api_key"] else "🏦 Podłącz giełdę", callback_data="exchange"),
              B("Przejdź na 💰 LIVE" if u["paper"] else "Przejdź na 🧪 demo", callback_data="mode")]]
@@ -156,6 +162,8 @@ def settings_view(s: Services, u) -> tuple[str, KB]:
         "i sprzedaje pozycje bota.\n"
         f"Ochrona ceny <b>{pm_txt(u)}</b> – nie kupuj, jeśli cena uciekła od ceny tradera.\n\n"
         "🔔 <b>Powiadomienia</b>\n"
+        f"📌 Przypięta wiadomość u góry czatu (ceny, portfel, kopiowanie – co {s.cfg.live_seconds} s): "
+        f"<b>{'włączona' if u['live_pin'] else 'wyłączona'}</b>\n"
         f"Raport dzienny o {s.cfg.daily_report_hour}:00: <b>{'włączony' if u['daily_report'] else 'wyłączony'}</b>\n\n"
         "<i>Własne wartości: /mnoznik 1.2 · /limit 75 · /stoploss 25</i>"
     )
@@ -180,8 +188,9 @@ def settings_view(s: Services, u) -> tuple[str, KB]:
         [B(mark(u["stop_loss"], v, f"−{v:g}%" if v else "wył"), callback_data=f"sl:{v}") for v in STOP_LOSSES],
         header("Ochrona ceny"),
         [B(mark(u["max_price_move"], v, f"+{v:g}%" if v else "wył"), callback_data=f"pm:{v}") for v in PRICE_MOVES],
-        [B(f"🌙 Raport dzienny: {'✓ wł' if u['daily_report'] else 'wył'}", callback_data="daily"),
-         B("🔄 Reset demo", callback_data="paper_reset")],
+        [B(f"📌 Na żywo u góry: {'✓ wł' if u['live_pin'] else 'wył'}", callback_data="pin"),
+         B(f"🌙 Raport dzienny: {'✓ wł' if u['daily_report'] else 'wył'}", callback_data="daily")],
+        [B("🔄 Reset konta demo", callback_data="paper_reset")],
         HOME,
     ])
     return text, kb
@@ -348,6 +357,9 @@ async def cmd_start(update: Update, ctx):
             parse_mode=ParseMode.HTML)
     if u := await require_accepted(update, ctx):
         await show(update, *menu_view(s, u))
+        if u["live_pin"] and not u["pin_msg_id"]:
+            from . import live
+            asyncio.create_task(live.refresh(ctx.bot, s, u))
 
 
 async def cmd_help(update: Update, ctx):
@@ -359,7 +371,8 @@ async def cmd_help(update: Update, ctx):
         "3. Włączasz kopiowanie. Trader kupi za X% swojego salda → bot w około sekundę kupi u Ciebie za X% "
         "Twojego (× mnożnik, maks. limit). Sprzeda część pozycji → sprzedasz ten sam procent.\n\n"
         "<b>Komendy</b>\n/menu – pulpit\n/traderzy – lista traderów\n/dodaj – dodaj tradera\n"
-        "/sygnal buy BTC/USDT 10 – sygnał (dla traderów „sygnały”)\n/polacz – podłącz giełdę\n"
+        "/sygnal buy BTC/USDT 10 – sygnał (dla traderów „sygnały”)\n"
+        "/kup BTC 50 · /sprzedaj BTC 50% – handel demo\n/polacz – podłącz giełdę\n"
         "/mnoznik 1.5 · /limit 100 · /stoploss 25\n/anuluj – przerwij bieżącą czynność",
         parse_mode=ParseMode.HTML)
 
@@ -507,6 +520,16 @@ async def on_button(update: Update, ctx):
         text, kb = await compare_view(s, s.db.get_user(uid))
         return await show(update, f"🪞 Wyrównano: zleceń {res.get('filled', 0)}, pominięte {res.get('skipped', 0)}, "
                                   f"błędy {res.get('error', 0)}.\n\n" + text, kb)
+    elif data == "pin":
+        from . import live
+        if u["live_pin"]:
+            await live.disable(ctx.bot, s, u)
+            await ack("Przypięta wiadomość wyłączona")
+        else:
+            s.db.update_user(uid, live_pin=1)
+            await ack("📌 Przypinam informacje na żywo u góry czatu")
+            asyncio.create_task(live.refresh(ctx.bot, s, s.db.get_user(uid)))
+        return await show(update, *settings_view(s, s.db.get_user(uid)))
     elif data == "daily":
         s.db.update_user(uid, daily_report=0 if u["daily_report"] else 1)
         await ack("Zapisano")

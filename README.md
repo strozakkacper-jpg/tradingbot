@@ -26,6 +26,10 @@ a kogo tylko obserwujesz. Bot w około sekundę powtarza ich transakcje na Twoim
 - **Model kopiowania: procent portfela.** Trader kupi za 20% salda, to Ty kupisz za 20% (× mnożnik, maks. limit).
   Sprzeda połowę, to Ty też sprzedasz połowę.
 - **🛡 Ochrona:** stop-loss portfela, ochrona ceny, limit na zakup, „🧹 Sprzedaj wszystko”, globalna pauza.
+- **🎮 Handel demo**: ręczne kupno i sprzedaż za wirtualne USDT po prawdziwych cenach. Przyciski: kup za 10/50/100 USDT
+  lub 25/50/100% gotówki, sprzedaj 25/50/100%. Komendy: `/kup PEPE 20`, `/sprzedaj BTC 50%`.
+- **📌 Na żywo u góry czatu**: przypięta wiadomość odświeżana co `LIVE_SECONDS` s, z cenami (`LIVE_COINS`) i zmianą 24 h,
+  wartością portfela, wynikiem, stanem kopiowania i ostatnią transakcją. Pulpit też pokazuje ceny u góry.
 - **🌙 Raport dzienny**, **📈 panel Mini App** (portfel, mój trader, ranking), **🧪 tryb demo** na prawdziwych cenach.
 
 ## Uruchomienie
@@ -64,6 +68,7 @@ docker build -t copybot . && docker run -d --env-file .env -v copybot-data:/data
 | `/traderzy` | lista traderów: kopiuj / obserwuj / szczegóły |
 | `/dodaj` | dodaj tradera (konto giełdowe albo sygnały) |
 | `/sygnal buy BTC/USDT 10 [#id]` | sygnał dla tradera typu „sygnały w bocie” |
+| `/kup BTC 50` · `/sprzedaj BTC 50%` | handel demo (wirtualne środki) |
 | `/polacz` | podłącz giełdę (klucze są szyfrowane, wiadomości od razu kasowane) |
 | `/mnoznik 1.5` · `/limit 100` · `/stoploss 25` | własne ustawienia |
 | `/admin` | właściciel: osoby z dostępem, pauza |
@@ -80,6 +85,8 @@ copybot/
   watchers.py – obserwatorzy kont traderów: WebSocket + zapasowe odpytywanie
   traders.py  – lista, profil, kopiuj/obserwuj, dodawanie, zmiana nazwy, usuwanie, sygnały
   mirror.py   – lustro portfela 1:1: porównanie proporcji i wyrównywanie
+  demo.py     – handel demo (ręczne kupno/sprzedaż)
+  live.py     – przypięta wiadomość „na żywo” u góry czatu
   reports.py  – raporty: wyniki lidera, portfel użytkownika
   jobs.py     – zadania okresowe: wartości portfeli, stop-loss, wygasanie subskrypcji
   billing.py  – subskrypcje w Telegram Stars

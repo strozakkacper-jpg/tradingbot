@@ -8,7 +8,8 @@ from telegram import BotCommand, MenuButtonWebApp, WebAppInfo
 from telegram.ext import Application
 from telegram.warnings import PTBUserWarning
 
-from . import mirror, traders
+from . import demo, mirror, traders
+from .live import live_job
 from .bot import Services, make_notify, register
 from .config import Config
 from .db import DB
@@ -76,13 +77,15 @@ async def post_init(app: Application):
 
     app.job_queue.run_repeating(snapshot_job, interval=cfg.snapshot_minutes * 60, first=60)
     app.job_queue.run_repeating(mirror_job, interval=cfg.mirror_minutes * 60, first=90)
+    app.job_queue.run_repeating(live_job, interval=cfg.live_seconds, first=20)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("Panel", WebAppInfo(f"{cfg.webapp_url}/app")))
     log.info("Giełdy: %s · traderzy aktywni: %d", ", ".join(cfg.exchanges), len(db.leaders("active")))
     await app.bot.set_my_commands([
         BotCommand("menu", "Pulpit"), BotCommand("traderzy", "Traderzy"), BotCommand("dodaj", "Dodaj tradera"),
-        BotCommand("sygnal", "Wyślij sygnał"), BotCommand("polacz", "Podłącz giełdę"),
+        BotCommand("sygnal", "Wyślij sygnał"), BotCommand("kup", "Kup (demo)"),
+        BotCommand("sprzedaj", "Sprzedaj (demo)"), BotCommand("polacz", "Podłącz giełdę"),
         BotCommand("pomoc", "Jak to działa"),
     ])
 
@@ -120,6 +123,7 @@ def main():
            .post_init(post_init).post_shutdown(post_shutdown).build())
     app.bot_data["cfg"] = cfg
     traders.register(app)  # najpierw – handlery bota łapią wszystkie pozostałe przyciski
+    demo.register(app)
     register(app)
     app.run_polling(drop_pending_updates=False, bootstrap_retries=-1)
 

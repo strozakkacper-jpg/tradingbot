@@ -64,7 +64,9 @@ MIGRATIONS = {
     "requested": "INTEGER NOT NULL DEFAULT 0",  # czy właściciel dostał już prośbę o dostęp
     "copy_mode": "TEXT NOT NULL DEFAULT 'trades'",  # trades = kopiuj transakcje, mirror = lustro portfela 1:1
     "mirror_tolerance": "REAL NOT NULL DEFAULT 2",  # % – mniejszych odchyleń lustro nie wyrównuje (oszczędza prowizje)
-    "mirror_trades": "INTEGER NOT NULL DEFAULT 1",  # w lustrze kopiuj też każdą transakcję od razu (1) czy tylko wyrównuj (0)
+    "mirror_trades": "INTEGER NOT NULL DEFAULT 1",
+    "live_pin": "INTEGER NOT NULL DEFAULT 1",  # przypięta wiadomość „na żywo” u góry czatu
+    "pin_msg_id": "INTEGER",  # id tej wiadomości (do edycji co minutę)  # w lustrze kopiuj też każdą transakcję od razu (1) czy tylko wyrównuj (0)
 }
 
 
@@ -76,7 +78,7 @@ def ref_id(leader_id: int) -> int:
 USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_trade",
                "api_key", "api_secret", "api_password", "stop_loss", "start_equity", "paid_until",
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
-               "copy_mode", "mirror_tolerance", "mirror_trades"}
+               "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
                  "exchange"}
 
@@ -183,6 +185,9 @@ class DB:
             self.conn.execute("DELETE FROM follows WHERE leader_id = ?", (leader_id,))
 
     # --- dostęp (bot prywatny) ---
+    def live_pin_users(self) -> list[sqlite3.Row]:
+        return self._q("SELECT * FROM users WHERE approved = 1 AND accepted = 1 AND live_pin = 1")
+
     def approved_users(self) -> list[sqlite3.Row]:
         return self._q("SELECT * FROM users WHERE approved = 1 ORDER BY created_at")
 

@@ -83,7 +83,10 @@ class Config:
     db_path: str = "copybot.db"
     snapshot_minutes: int = 15
     realtime: bool = True  # WebSocket giełdy zamiast odpytywania
-    mirror_minutes: int = 5  # co ile minut lustro sprawdza zgodność portfeli (poza reakcją na ruch tradera)
+    mirror_minutes: int = 5
+    live_seconds: int = 60  # co ile sekund odświeżać przypiętą wiadomość „na żywo”
+    live_coins: tuple[str, ...] = ("BTC", "ETH", "SOL")  # ceny pokazywane u góry
+    demo_coins: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB")  # szybki wybór w handlu demo  # co ile minut lustro sprawdza zgodność portfeli (poza reakcją na ruch tradera)
     daily_report_hour: int = 20
     timezone: str = "Europe/Warsaw"
     # Panel (Telegram Mini App): publiczny adres HTTPS, pod którym widać serwer www bota
@@ -129,6 +132,10 @@ class Config:
             snapshot_minutes=int(os.getenv("SNAPSHOT_MINUTES", "15")),
             realtime=_bool(os.getenv("REALTIME"), True),
             mirror_minutes=int(os.getenv("MIRROR_MINUTES", "5")),
+            live_seconds=max(30, int(os.getenv("LIVE_SECONDS", "60"))),
+            live_coins=tuple(c.strip().upper() for c in os.getenv("LIVE_COINS", "BTC,ETH,SOL").split(",") if c.strip()),
+            demo_coins=tuple(c.strip().upper() for c in os.getenv("DEMO_COINS", "BTC,ETH,SOL,XRP,DOGE,BNB").split(",")
+                             if c.strip()),
             daily_report_hour=int(os.getenv("DAILY_REPORT_HOUR", "20")),
             timezone=os.getenv("TIMEZONE", "Europe/Warsaw"),
             # Telegram otwiera Mini App tylko przez HTTPS

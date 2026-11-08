@@ -96,6 +96,7 @@ class Market:
         self.ex = make_exchange(cfg, exchange_id=self.exchange_id)
         self._lock = asyncio.Lock()
         self._prices: dict[str, tuple[float, float]] = {}  # symbol -> (czas, cena)
+        self._change: dict[str, float] = {}  # symbol -> zmiana 24 h w %
 
     async def load(self):
         async with self._lock:
@@ -116,7 +117,21 @@ class Market:
         t = await self.ex.fetch_ticker(symbol)
         p = float(t.get("last") or t.get("close") or 0)
         self._prices[symbol] = (time.monotonic(), p)
+        if t.get("percentage") is not None:
+            self._change[symbol] = float(t["percentage"])
         return p
+
+    async def ticker(self, symbol: str, max_age: float = 30.0) -> tuple[float, float | None]:
+        """(cena, zmiana 24 h w %) – z pamięci podręcznej, jeśli świeża."""
+        price = await self.price(symbol, max_age)
+        return price, self._change.get(symbol)
+
+    def cached(self, symbol: str, max_age: float = 300.0) -> tuple[float, float | None] | None:
+        """Ostatnia znana cena bez łączenia z giełdą (do szybkiego pulpitu)."""
+        hit = self._prices.get(symbol)
+        if hit and time.monotonic() - hit[0] < max_age:
+            return hit[1], self._change.get(symbol)
+        return None
 
     async def min_cost(self, symbol: str) -> float:
         await self.load()
