@@ -108,8 +108,11 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
         lines.append(f"<b>Portfel:</b> ≈ {fmt_money(value)} {q} ({(value / base - 1) * 100:+.2f}%)")
     names = ", ".join(html.escape(c["name"]) for c in copied)
     lines.append(f"<b>Kopiujesz:</b> {names if names else '— nikogo'}")
-    lines.append("<b>Sposób:</b> " + ("🪞 lustro portfela 1:1" if u["copy_mode"] == "mirror"
-                                       else "🔁 każda transakcja osobno"))
+    if u["copy_mode"] == "mirror":
+        how = "🪞 lustro 1:1 + każda transakcja" if u["mirror_trades"] else "🪞 lustro 1:1 (tylko wyrównywanie)"
+    else:
+        how = "🔁 każda transakcja osobno"
+    lines.append(f"<b>Sposób:</b> {how}")
     if watching:
         lines.append(f"<b>Obserwujesz:</b> {watching} (tylko powiadomienia)")
     if not copied:
@@ -137,9 +140,11 @@ def settings_view(s: Services, u) -> tuple[str, KB]:
     text = (
         "⚙️ <b>Ustawienia</b>\n\n"
         "🔁 <b>Sposób kopiowania</b>\n"
-        + ("<b>🪞 Lustro 1:1</b> – bot cały czas porównuje Twój portfel z portfelem tradera i trzyma te same "
-           f"proporcje (np. 50% BTC / 30% USDT). Wyrównuje po każdym ruchu tradera i co {s.cfg.mirror_minutes} min. "
-           f"Tolerancja <b>{u['mirror_tolerance']:g}%</b> – mniejszych różnic nie poprawia (oszczędza prowizje).\n\n"
+        + ("<b>🪞 Lustro 1:1</b> – bot trzyma te same proporcje co trader (np. 50% BTC / 30% USDT).\n"
+           + ("• <b>Każda transakcja</b> tradera kopiowana od razu, 1:1.\n" if u["mirror_trades"] else
+              "• Transakcje nie są kopiowane osobno – tylko wyrównanie portfela.\n")
+           + f"• Po każdym ruchu tradera i co {s.cfg.mirror_minutes} min bot porównuje portfele i poprawia różnice.\n"
+           f"• Tolerancja <b>{u['mirror_tolerance']:g}%</b> – mniejszych różnic nie poprawia (oszczędza prowizje).\n\n"
            if mirror else
            "<b>Transakcje</b> – każda transakcja tradera kopiowana osobno, procentem salda.\n\n")
         + "💵 <b>Wielkość zleceń</b>"
@@ -162,7 +167,9 @@ def settings_view(s: Services, u) -> tuple[str, KB]:
                  [B(("✓ " if not mirror else "") + "🔁 Transakcje", callback_data="cm:trades"),
                   B(("✓ " if mirror else "") + "🪞 Lustro 1:1", callback_data="cm:mirror")]]
     if mirror:
-        mode_rows += [header("Tolerancja lustra"),
+        mode_rows += [[B(f"Kopiuj też każdą transakcję: {'✓ wł' if u['mirror_trades'] else 'wył'}",
+                         callback_data="mtr")],
+                      header("Tolerancja lustra"),
                       [B(mark(u["mirror_tolerance"], t, f"{t:g}%"), callback_data=f"tol:{t}") for t in TOLERANCES]]
     kb = KB(mode_rows + [
         header("Mnożnik"),
@@ -477,6 +484,10 @@ async def on_button(update: Update, ctx):
         if mode == "mirror" and u["active"]:
             from . import mirror
             asyncio.create_task(mirror.sync(s, s.db.get_user(uid), "włączono lustro"))
+        return await show(update, *settings_view(s, s.db.get_user(uid)))
+    elif data == "mtr":
+        s.db.update_user(uid, mirror_trades=0 if u["mirror_trades"] else 1)
+        await ack("Lustro + transakcje ✅" if not u["mirror_trades"] else "Lustro: tylko wyrównywanie")
         return await show(update, *settings_view(s, s.db.get_user(uid)))
     elif data.startswith("tol:"):
         s.db.update_user(uid, mirror_tolerance=float(data[4:]))

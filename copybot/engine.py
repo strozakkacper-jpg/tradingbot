@@ -205,9 +205,17 @@ class CopyEngine:
         self.after_trade = None  # async (leader_id) -> None; ustawiane w main (lustro portfela)
 
     async def copy(self, order: LeaderOrder, fraction: float, leader_id: int) -> Counter:
-        # tryb lustra nie kopiuje pojedynczych transakcji – wyrównuje cały portfel po ruchu tradera (after_trade)
-        users = [u for u in self.db.active_followers(leader_id) if has_access(self.cfg, u)
-                 and (u["copy_mode"] if "copy_mode" in u.keys() else "trades") != "mirror"]
+        users = []
+        for u in self.db.active_followers(leader_id):
+            if not has_access(self.cfg, u):
+                continue
+            if (u["copy_mode"] if "copy_mode" in u.keys() else "trades") == "mirror":
+                if not u["mirror_trades"]:
+                    continue  # lustro bez kopiowania transakcji – tylko wyrównanie po ruchu tradera (after_trade)
+                # lustro + transakcje: ta sama transakcja od razu, 1:1 – bez mnożnika, limitu i ochrony ceny,
+                # bo i tak dążymy do identycznych proporcji; resztę różnic poprawi lustro zaraz potem
+                u = dict(u, multiplier=1.0, max_trade=0, max_price_move=0)
+            users.append(u)
         leader = self.db.get_leader(leader_id)
         name = leader["name"] if leader else f"#{leader_id}"
         log.info("Trader %s: %s %s %.4f%% → %d obserwujących", name, order.side, order.symbol, fraction * 100,

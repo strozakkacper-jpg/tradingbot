@@ -64,6 +64,7 @@ MIGRATIONS = {
     "requested": "INTEGER NOT NULL DEFAULT 0",  # czy właściciel dostał już prośbę o dostęp
     "copy_mode": "TEXT NOT NULL DEFAULT 'trades'",  # trades = kopiuj transakcje, mirror = lustro portfela 1:1
     "mirror_tolerance": "REAL NOT NULL DEFAULT 2",  # % – mniejszych odchyleń lustro nie wyrównuje (oszczędza prowizje)
+    "mirror_trades": "INTEGER NOT NULL DEFAULT 1",  # w lustrze kopiuj też każdą transakcję od razu (1) czy tylko wyrównuj (0)
 }
 
 
@@ -75,7 +76,7 @@ def ref_id(leader_id: int) -> int:
 USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_trade",
                "api_key", "api_secret", "api_password", "stop_loss", "start_equity", "paid_until",
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
-               "copy_mode", "mirror_tolerance"}
+               "copy_mode", "mirror_tolerance", "mirror_trades"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
                  "exchange"}
 

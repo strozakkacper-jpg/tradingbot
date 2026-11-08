@@ -67,24 +67,40 @@ def test_sync_sells_when_trader_sells_and_keeps_foreign_coins(tmp_path):
     assert bal.get("BTC", 0) < 1e-9 and bal["DOGE"] == 1000
 
 
-def test_mirror_users_skip_trade_copy_and_sync_after_trade(tmp_path):
-    s, ctx, _ = setup(tmp_path)
-    lid = trader_with_btc(s, half=False)
-    mirror_user(s, ctx, OWNER, lid)
-    s.db.ensure_user(FRIEND, None, 1000, "USDT")
-    s.db.update_user(FRIEND, approved=1, accepted=1, active=1, max_trade=10_000)
-    s.db.follow(FRIEND, lid, True)
-    called = []
-
+def _hook(s, called):
     async def after(leader_id):
         called.append(leader_id)
         for u in s.db.mirror_followers(leader_id):
             await mirror.sync(s, u)
-    s.engine.after_trade = after
+    return after
+
+
+def test_mirror_copies_trade_immediately_without_doubling(tmp_path):
+    s, ctx, sent = setup(tmp_path)
+    lid = trader_with_btc(s, half=False)
+    mirror_user(s, ctx, OWNER, lid, multiplier=3.0, max_trade=10)  # mnożnik i limit nie psują lustra
+    s.db.ensure_user(FRIEND, None, 1000, "USDT")
+    s.db.update_user(FRIEND, approved=1, accepted=1, active=1, max_trade=10_000)
+    s.db.follow(FRIEND, lid, True)
+    called = []
+    s.engine.after_trade = _hook(s, called)
     res = asyncio.run(s.engine.copy(LeaderOrder("A", "BTC/USDT", "buy", 0, 0, 100, 1), 0.5, lid))
-    assert res["filled"] == 1  # tylko kumpel w trybie transakcji
-    assert called == [lid]
-    # lustro wyrównało właściciela do portfela wzorcowego (~50% BTC)
+    assert res["filled"] == 2 and called == [lid]  # właściciel (lustro) też dostał transakcję od razu
+    assert any(uid == OWNER and "Skopiowano" in t for uid, t in sent)
+    p = asyncio.run(mirror.plan(s, s.db.get_user(OWNER)))
+    assert p.current.get("BTC", 0) == pytest.approx(0.5, abs=0.02)  # 50%, a nie 100% – bez dublowania
+    assert p.orders == []
+
+
+def test_mirror_without_trade_copy_only_rebalances(tmp_path):
+    s, ctx, sent = setup(tmp_path)
+    lid = trader_with_btc(s, half=False)
+    mirror_user(s, ctx, OWNER, lid, mirror_trades=0)
+    called = []
+    s.engine.after_trade = _hook(s, called)
+    res = asyncio.run(s.engine.copy(LeaderOrder("A", "BTC/USDT", "buy", 0, 0, 100, 1), 0.5, lid))
+    assert res.get("filled", 0) == 0 and called == [lid]
+    assert not any("Skopiowano" in t for _, t in sent) and any("Lustro" in t for _, t in sent)
     p = asyncio.run(mirror.plan(s, s.db.get_user(OWNER)))
     assert p.current.get("BTC", 0) == pytest.approx(0.5, abs=0.02)
 
@@ -99,6 +115,11 @@ def test_mirror_ui(tmp_path):
     assert s.db.get_user(OWNER)["copy_mode"] == "mirror" and "Lustro 1:1" in last_text(u)
     asyncio.run(B.on_button(upd(OWNER, data="tol:5"), ctx))
     assert s.db.get_user(OWNER)["mirror_tolerance"] == 5
+    u = upd(OWNER, data="mtr")
+    asyncio.run(B.on_button(u, ctx))
+    assert s.db.get_user(OWNER)["mirror_trades"] == 0 and "tylko wyrównanie" in last_text(u)
+    asyncio.run(B.on_button(upd(OWNER, data="mtr"), ctx))
+    assert s.db.get_user(OWNER)["mirror_trades"] == 1
     u = upd(OWNER, data="compare")
     asyncio.run(B.on_button(u, ctx))
     text = last_text(u)

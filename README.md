@@ -18,7 +18,8 @@ a kogo tylko obserwujesz. Bot w około sekundę powtarza ich transakcje na Twoim
 - **🔁 8 giełd:** Binance, Bybit, OKX, Coinbase, KuCoin, Bitget, Gate.io i MEXC. Pary dopasowują się między
   stablecoinami, więc BTC/USDT u tradera to BTC/USD na Coinbase.
 - **🪞 Lustro portfela 1:1** (⚙️ Ustawienia → Sposób kopiowania). Bot cały czas porównuje Twój portfel z portfelem
-  tradera i trzyma te same proporcje (np. 50% BTC / 20% ETH / 30% USDT). Wyrównuje zaraz po każdym ruchu tradera
+  tradera i trzyma te same proporcje (np. 50% BTC / 20% ETH / 30% USDT). Domyślnie **kopiuje też od razu każdą
+  transakcję** tradera, 1:1 (bez mnożnika i limitu), a potem dorównuje resztę. Wyrównuje zaraz po każdym ruchu tradera
   i co `MIRROR_MINUTES` minut, więc nadrabia też to, co w zwykłym trybie by umknęło. Odchyleń poniżej tolerancji
   (1/2/5%) nie poprawia, żeby nie przepalać prowizji. Rusza tylko monety tradera i te kupione przez bota.
   Ekran **🔍 Porównaj z traderem** pokazuje Twoje % obok % tradera i zgodność.
