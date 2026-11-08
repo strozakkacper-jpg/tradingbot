@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import html
 import logging
@@ -45,10 +46,6 @@ async def post_init(app: Application):
     if (lid := db.migrate_v2(first_leader_factory(cfg, db, vault))) is not None:
         log.info("Utworzono tradera #%s (migracja z wersji 1)", lid)
     markets = Markets(cfg)
-    try:
-        await markets.load()
-    except Exception:  # noqa: BLE001 – giełda chwilowo niedostępna; spróbujemy przy pierwszym użyciu
-        log.exception("Nie udało się pobrać listy rynków z %s", cfg.exchange_id)
     engine = CopyEngine(cfg, db, vault, markets, await make_notify(app))
 
     async def on_orders(leader_id: int, pairs):
@@ -68,16 +65,21 @@ async def post_init(app: Application):
 
     watchers = Watchers(cfg, db, vault, markets, on_orders)
     svc = app.bot_data["svc"] = Services(cfg, db, vault, markets, engine, watchers)
+    # serwer www (i /health dla hostingu) startuje od razu – zanim zaczniemy łączyć się z giełdami
+    try:
+        app.bot_data["web"] = await start_web(svc)
+    except OSError:
+        log.exception("Nie uruchomiono serwera panelu na porcie %d", cfg.web_port)
+    try:
+        await asyncio.wait_for(markets.load(), 30)
+    except Exception:  # noqa: BLE001 – giełda chwilowo niedostępna; spróbujemy przy pierwszym użyciu
+        log.warning("Nie udało się pobrać listy rynków z %s – spróbuję przy pierwszym użyciu", cfg.exchange_id)
     for lead in db.leaders("active"):
         db.ensure_reference(lead["id"], cfg.paper_start, cfg.quote)
     watchers.sync()
 
     app.job_queue.run_repeating(snapshot_job, interval=cfg.snapshot_minutes * 60, first=60)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
-    try:
-        app.bot_data["web"] = await start_web(svc)
-    except OSError:
-        log.exception("Nie uruchomiono serwera panelu na porcie %d", cfg.web_port)
     if cfg.webapp_url:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("Panel", WebAppInfo(f"{cfg.webapp_url}/app")))
     log.info("Giełdy: %s · traderzy aktywni: %d", ", ".join(cfg.exchanges), len(db.leaders("active")))
