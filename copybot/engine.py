@@ -202,9 +202,12 @@ class CopyEngine:
     def __init__(self, cfg: Config, db: DB, vault: Vault, market: Market, notify: Notify, concurrency: int = 5):
         self.cfg, self.db, self.vault, self.market, self.notify = cfg, db, vault, market, notify
         self.sem = asyncio.Semaphore(concurrency)
+        self.after_trade = None  # async (leader_id) -> None; ustawiane w main (lustro portfela)
 
     async def copy(self, order: LeaderOrder, fraction: float, leader_id: int) -> Counter:
-        users = [u for u in self.db.active_followers(leader_id) if has_access(self.cfg, u)]
+        # tryb lustra nie kopiuje pojedynczych transakcji – wyrównuje cały portfel po ruchu tradera (after_trade)
+        users = [u for u in self.db.active_followers(leader_id) if has_access(self.cfg, u)
+                 and (u["copy_mode"] if "copy_mode" in u.keys() else "trades") != "mirror"]
         leader = self.db.get_leader(leader_id)
         name = leader["name"] if leader else f"#{leader_id}"
         log.info("Trader %s: %s %s %.4f%% → %d obserwujących", name, order.side, order.symbol, fraction * 100,
@@ -223,7 +226,68 @@ class CopyEngine:
         for u in self.db.watchers(leader_id):
             await self.notify(u["tg_id"], f"👁 {name}: {SIDE_PL[order.side]} {order.symbol}{price}{pct}")
             res["alert"] += 1
+        if self.after_trade is not None:
+            try:
+                await self.after_trade(leader_id)
+            except Exception:  # noqa: BLE001
+                log.exception("Lustro po ruchu tradera %s", leader_id)
         return res
+
+    async def trade_value(self, u, symbol: str, side: str, value: float, tag: str = "mirror") -> Fill:
+        """Kupno/sprzedaż za zadaną wartość w walucie kwotowanej (np. „dokup BTC za 37 USDT”)."""
+        market = self.m(u)
+        local = await _resolve(market, symbol)
+        if not local:
+            raise Skip(f"para {symbol} niedostępna na {exchange_name(market.exchange_id)}")
+        price = await market.price(local)
+        min_cost = await market.min_cost(local)
+        base, quote = split_symbol(local)
+        if price <= 0:
+            raise Skip("brak ceny")
+        if u["paper"]:
+            qkey = self.cfg.quote if quote in STABLES else quote
+            bal = self.db.paper_balances(u["tg_id"])
+            if side == "buy":
+                cost = min(value, bal.get(qkey, 0))
+                amount = cost / price
+                if cost < min_cost:
+                    raise Skip(f"za mała wartość ({cost:.2f} < {min_cost:.2f})")
+                self.db.paper_apply(u["tg_id"], {qkey: -cost, base: amount * (1 - PAPER_FEE)})
+            else:
+                amount = min(value / price, bal.get(base, 0))
+                cost = amount * price
+                if cost < min_cost:
+                    raise Skip(f"za mała wartość ({cost:.2f} < {min_cost:.2f})")
+                self.db.paper_apply(u["tg_id"], {base: -amount, qkey: cost * (1 - PAPER_FEE)})
+            fill = Fill(amount, price, cost)
+        else:
+            ex = make_exchange(self.cfg, self.vault.dec(u["api_key"]), self.vault.dec(u["api_secret"]),
+                               self.vault.dec(u["api_password"]), exchange_id=market.exchange_id)
+            try:
+                ex.set_markets(market.ex.markets, market.ex.currencies)
+                free = (await ex.fetch_balance()).get("free") or {}
+                if side == "buy":
+                    value = min(value, float(free.get(quote) or 0))
+                    raw = value / price
+                else:
+                    raw = min(value / price, float(free.get(base) or 0))
+                if raw * price < min_cost:
+                    raise Skip(f"za mała wartość ({raw * price:.2f} < {min_cost:.2f})")
+                try:
+                    amount = float(ex.amount_to_precision(local, raw))
+                except ccxt.InvalidOrder as e:
+                    raise Skip("ilość poniżej minimalnej precyzji giełdy") from e
+                if amount <= 0:
+                    raise Skip("ilość po zaokrągleniu = 0")
+                o = await ex.create_order(local, "market", side, amount, price)
+                filled = float(o.get("filled") or amount)
+                avg = float(o.get("average") or o.get("price") or price)
+                fill = Fill(filled, avg, float(o.get("cost") or filled * avg))
+            finally:
+                await ex.close()
+        self.db.record_copy(f"{tag}-{now_ms()}", u["tg_id"], local, side, fill.amount, fill.price, fill.cost,
+                            "filled", tag, bool(u["paper"]))
+        return fill
 
     def m(self, row) -> "Market":
         return self.market.get(user_exchange(self.cfg, row)) if isinstance(self.market, Markets) else self.market

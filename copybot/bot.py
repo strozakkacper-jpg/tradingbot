@@ -37,6 +37,7 @@ MULTIPLIERS = (0.5, 1.0, 1.5, 2.0, 3.0)
 LIMITS = (10, 25, 50, 100, 250, 1000)
 STOP_LOSSES = (0, 10, 20, 30, 50)
 PRICE_MOVES = (0, 1, 2, 5)
+TOLERANCES = (1, 2, 5)
 UI_TIMEOUT = 20  # s – dłużej nie czekamy na giełdę w odpowiedzi na kliknięcie
 SIDES = {"buy": "buy", "kup": "buy", "kupno": "buy", "sell": "sell", "sprzedaj": "sell", "sprzedaz": "sell"}
 
@@ -107,6 +108,8 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
         lines.append(f"<b>Portfel:</b> ≈ {fmt_money(value)} {q} ({(value / base - 1) * 100:+.2f}%)")
     names = ", ".join(html.escape(c["name"]) for c in copied)
     lines.append(f"<b>Kopiujesz:</b> {names if names else '— nikogo'}")
+    lines.append("<b>Sposób:</b> " + ("🪞 lustro portfela 1:1" if u["copy_mode"] == "mirror"
+                                       else "🔁 każda transakcja osobno"))
     if watching:
         lines.append(f"<b>Obserwujesz:</b> {watching} (tylko powiadomienia)")
     if not copied:
@@ -130,9 +133,17 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
 
 def settings_view(s: Services, u) -> tuple[str, KB]:
     q = s.cfg.quote
+    mirror = u["copy_mode"] == "mirror"
     text = (
         "⚙️ <b>Ustawienia</b>\n\n"
-        "💵 <b>Wielkość zleceń</b>\n"
+        "🔁 <b>Sposób kopiowania</b>\n"
+        + ("<b>🪞 Lustro 1:1</b> – bot cały czas porównuje Twój portfel z portfelem tradera i trzyma te same "
+           f"proporcje (np. 50% BTC / 30% USDT). Wyrównuje po każdym ruchu tradera i co {s.cfg.mirror_minutes} min. "
+           f"Tolerancja <b>{u['mirror_tolerance']:g}%</b> – mniejszych różnic nie poprawia (oszczędza prowizje).\n\n"
+           if mirror else
+           "<b>Transakcje</b> – każda transakcja tradera kopiowana osobno, procentem salda.\n\n")
+        + "💵 <b>Wielkość zleceń</b>"
+        + (" <i>(w trybie lustra nie dotyczy – liczą się proporcje)</i>\n" if mirror else "\n") +
         f"Mnożnik <b>{u['multiplier']:g}x</b> – trader wyda 10% salda, Ty wydasz {min(10 * u['multiplier'], 100):g}%.\n"
         f"Limit <b>{u['max_trade']:g} {q}</b> na jeden zakup (sprzedaże bez limitu).\n\n"
         "🛡 <b>Ochrona</b>\n"
@@ -147,7 +158,13 @@ def settings_view(s: Services, u) -> tuple[str, KB]:
     def mark(cur, v, label):
         return f"✓ {label}" if abs((cur or 0) - v) < 1e-9 else label
 
-    kb = KB([
+    mode_rows = [header("Sposób kopiowania"),
+                 [B(("✓ " if not mirror else "") + "🔁 Transakcje", callback_data="cm:trades"),
+                  B(("✓ " if mirror else "") + "🪞 Lustro 1:1", callback_data="cm:mirror")]]
+    if mirror:
+        mode_rows += [header("Tolerancja lustra"),
+                      [B(mark(u["mirror_tolerance"], t, f"{t:g}%"), callback_data=f"tol:{t}") for t in TOLERANCES]]
+    kb = KB(mode_rows + [
         header("Mnożnik"),
         [B(mark(u["multiplier"], m, f"{m:g}x"), callback_data=f"mult:{m}") for m in MULTIPLIERS],
         header(f"Limit na zakup ({q})"),
@@ -161,6 +178,16 @@ def settings_view(s: Services, u) -> tuple[str, KB]:
         HOME,
     ])
     return text, kb
+
+
+async def compare_view(s: Services, u) -> tuple[str, KB]:
+    from . import mirror
+    p = await mirror.plan(s, u)
+    rows = []
+    if p.orders:
+        rows.append([B("🪞 Wyrównaj teraz", callback_data="mirror_now")])
+    rows += [[B("🔄 Odśwież", callback_data="compare"), B("💼 Portfel", callback_data="status")], HOME]
+    return mirror.plan_text(s, u, p), KB(rows)
 
 
 async def status_text(s: Services, u) -> str:
@@ -415,6 +442,10 @@ async def on_button(update: Update, ctx):
             s.db.update_user(uid, active=1, start_equity=start)
             s.db.add_equity(uid, start, bool(u["paper"]))
             alert = "Kopiowanie włączone ▶️"
+            if u["copy_mode"] == "mirror":
+                from . import mirror
+                asyncio.create_task(mirror.sync(s, s.db.get_user(uid), "start lustra"))
+                alert += " – wyrównuję portfel do tradera 🪞"
     elif data == "mode":
         if u["paper"]:
             if not u["api_key"]:
@@ -439,6 +470,32 @@ async def on_button(update: Update, ctx):
         s.db.update_user(uid, **{field: float(val)})
         await ack("Zapisano")
         return await show(update, *settings_view(s, s.db.get_user(uid)))
+    elif data.startswith("cm:"):
+        mode = data[3:]
+        s.db.update_user(uid, copy_mode=mode)
+        await ack("Lustro 1:1 🪞" if mode == "mirror" else "Kopiowanie transakcji 🔁")
+        if mode == "mirror" and u["active"]:
+            from . import mirror
+            asyncio.create_task(mirror.sync(s, s.db.get_user(uid), "włączono lustro"))
+        return await show(update, *settings_view(s, s.db.get_user(uid)))
+    elif data.startswith("tol:"):
+        s.db.update_user(uid, mirror_tolerance=float(data[4:]))
+        await ack("Zapisano")
+        return await show(update, *settings_view(s, s.db.get_user(uid)))
+    elif data == "compare":
+        await ack("Porównuję…")
+        try:
+            return await show(update, *await asyncio.wait_for(compare_view(s, u), UI_TIMEOUT))
+        except Exception as e:  # noqa: BLE001
+            return await show(update, f"❌ Nie udało się porównać: {html.escape(friendly_error(e) if str(e) else 'przekroczony czas')}",
+                              KB([HOME]))
+    elif data == "mirror_now":
+        await ack("Wyrównuję…")
+        from . import mirror
+        res = await mirror.sync(s, u, "ręcznie", notify=False)
+        text, kb = await compare_view(s, s.db.get_user(uid))
+        return await show(update, f"🪞 Wyrównano: zleceń {res.get('filled', 0)}, pominięte {res.get('skipped', 0)}, "
+                                  f"błędy {res.get('error', 0)}.\n\n" + text, kb)
     elif data == "daily":
         s.db.update_user(uid, daily_report=0 if u["daily_report"] else 1)
         await ack("Zapisano")
@@ -463,7 +520,8 @@ async def on_button(update: Update, ctx):
             text = await asyncio.wait_for(status_text(s, u), UI_TIMEOUT)
         except Exception as e:  # noqa: BLE001
             text = f"❌ Nie udało się pobrać salda: {html.escape(friendly_error(e) if str(e) else 'przekroczony czas')}"
-        return await show(update, text, KB([[B("🔄 Odśwież", callback_data="status"),
+        return await show(update, text, KB([[B("🔍 Porównaj z traderem", callback_data="compare")],
+                                            [B("🔄 Odśwież", callback_data="status"),
                                              B("🧹 Sprzedaj wszystko", callback_data="closeall")], HOME]))
     elif data == "closeall":
         await ack()

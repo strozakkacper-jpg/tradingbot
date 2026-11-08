@@ -17,6 +17,11 @@ a kogo tylko obserwujesz. Bot w około sekundę powtarza ich transakcje na Twoim
 - **Wyniki traderów** z portfela wzorcowego (każde zlecenie 1:1): 30 dni, od startu, największy spadek, trafność.
 - **🔁 8 giełd:** Binance, Bybit, OKX, Coinbase, KuCoin, Bitget, Gate.io i MEXC. Pary dopasowują się między
   stablecoinami, więc BTC/USDT u tradera to BTC/USD na Coinbase.
+- **🪞 Lustro portfela 1:1** (⚙️ Ustawienia → Sposób kopiowania). Bot cały czas porównuje Twój portfel z portfelem
+  tradera i trzyma te same proporcje (np. 50% BTC / 20% ETH / 30% USDT). Wyrównuje zaraz po każdym ruchu tradera
+  i co `MIRROR_MINUTES` minut, więc nadrabia też to, co w zwykłym trybie by umknęło. Odchyleń poniżej tolerancji
+  (1/2/5%) nie poprawia, żeby nie przepalać prowizji. Rusza tylko monety tradera i te kupione przez bota.
+  Ekran **🔍 Porównaj z traderem** pokazuje Twoje % obok % tradera i zgodność.
 - **Model kopiowania: procent portfela.** Trader kupi za 20% salda, to Ty kupisz za 20% (× mnożnik, maks. limit).
   Sprzeda połowę, to Ty też sprzedasz połowę.
 - **🛡 Ochrona:** stop-loss portfela, ochrona ceny, limit na zakup, „🧹 Sprzedaj wszystko”, globalna pauza.
@@ -73,6 +78,7 @@ copybot/
   engine.py   – wykonywanie zleceń (demo + LIVE), rynki wielu giełd, ochrona ceny, stop-loss
   watchers.py – obserwatorzy kont traderów: WebSocket + zapasowe odpytywanie
   traders.py  – lista, profil, kopiuj/obserwuj, dodawanie, zmiana nazwy, usuwanie, sygnały
+  mirror.py   – lustro portfela 1:1: porównanie proporcji i wyrównywanie
   reports.py  – raporty: wyniki lidera, portfel użytkownika
   jobs.py     – zadania okresowe: wartości portfeli, stop-loss, wygasanie subskrypcji
   billing.py  – subskrypcje w Telegram Stars

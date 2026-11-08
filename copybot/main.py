@@ -8,7 +8,7 @@ from telegram import BotCommand, MenuButtonWebApp, WebAppInfo
 from telegram.ext import Application
 from telegram.warnings import PTBUserWarning
 
-from . import traders
+from . import mirror, traders
 from .bot import Services, make_notify, register
 from .config import Config
 from .db import DB
@@ -56,6 +56,11 @@ async def post_init(app: Application):
 
     watchers = Watchers(cfg, db, vault, markets, on_orders)
     svc = app.bot_data["svc"] = Services(cfg, db, vault, markets, engine, watchers)
+
+    async def after_trade(leader_id: int):  # lustro: wyrównaj portfele zaraz po ruchu tradera
+        for u in db.mirror_followers(leader_id):
+            asyncio.create_task(mirror.sync(svc, u, "ruch tradera"))
+    engine.after_trade = after_trade
     # serwer www (i /health dla hostingu) startuje od razu – zanim zaczniemy łączyć się z giełdami
     try:
         app.bot_data["web"] = await start_web(svc)
@@ -70,6 +75,7 @@ async def post_init(app: Application):
     watchers.sync()
 
     app.job_queue.run_repeating(snapshot_job, interval=cfg.snapshot_minutes * 60, first=60)
+    app.job_queue.run_repeating(mirror_job, interval=cfg.mirror_minutes * 60, first=90)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("Panel", WebAppInfo(f"{cfg.webapp_url}/app")))
@@ -79,6 +85,18 @@ async def post_init(app: Application):
         BotCommand("sygnal", "Wyślij sygnał"), BotCommand("polacz", "Podłącz giełdę"),
         BotCommand("pomoc", "Jak to działa"),
     ])
+
+
+async def mirror_job(ctx):
+    """Lustro: regularna kontrola zgodności (nadrabia wpłaty, przerwy, pominięte ruchy)."""
+    s: Services = ctx.application.bot_data["svc"]
+    if s.db.get_state("paused") == "1":
+        return
+    for u in s.db.mirror_followers():
+        try:
+            await mirror.sync(s, u, "kontrola okresowa")
+        except Exception:  # noqa: BLE001
+            log.exception("Lustro: kontrola %s", u["tg_id"])
 
 
 async def post_shutdown(app: Application):

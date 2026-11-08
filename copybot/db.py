@@ -62,6 +62,8 @@ MIGRATIONS = {
     "exchange": "TEXT",  # giełda użytkownika (NULL = domyślna z .env)
     "approved": "INTEGER NOT NULL DEFAULT 0",  # bot prywatny: dostęp tylko dla wpuszczonych
     "requested": "INTEGER NOT NULL DEFAULT 0",  # czy właściciel dostał już prośbę o dostęp
+    "copy_mode": "TEXT NOT NULL DEFAULT 'trades'",  # trades = kopiuj transakcje, mirror = lustro portfela 1:1
+    "mirror_tolerance": "REAL NOT NULL DEFAULT 2",  # % – mniejszych odchyleń lustro nie wyrównuje (oszczędza prowizje)
 }
 
 
@@ -72,7 +74,8 @@ def ref_id(leader_id: int) -> int:
 
 USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_trade",
                "api_key", "api_secret", "api_password", "stop_loss", "start_equity", "paid_until",
-               "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested"}
+               "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
+               "copy_mode", "mirror_tolerance"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
                  "exchange"}
 
@@ -132,6 +135,15 @@ class DB:
         return self._q("""SELECT u.* FROM users u JOIN follows f ON f.tg_id = u.tg_id
                           WHERE f.leader_id = ? AND f.copy = 1 AND u.active = 1 AND u.accepted = 1
                           AND u.approved = 1""", (leader_id,))
+
+    def mirror_followers(self, leader_id: int | None = None) -> list[sqlite3.Row]:
+        """Kopiujący w trybie lustra (wszyscy albo konkretnego tradera)."""
+        if leader_id is None:
+            return self._q("""SELECT * FROM users WHERE active = 1 AND accepted = 1 AND approved = 1
+                              AND copy_mode = 'mirror'""")
+        return self._q("""SELECT u.* FROM users u JOIN follows f ON f.tg_id = u.tg_id
+                          WHERE f.leader_id = ? AND f.copy = 1 AND u.active = 1 AND u.accepted = 1
+                          AND u.approved = 1 AND u.copy_mode = 'mirror'""", (leader_id,))
 
     def watchers(self, leader_id: int) -> list[sqlite3.Row]:
         """Kto dostaje tylko powiadomienie: śledzi bez kopiowania albo ma kopiowanie wyłączone."""

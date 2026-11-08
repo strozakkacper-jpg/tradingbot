@@ -83,6 +83,7 @@ class Config:
     db_path: str = "copybot.db"
     snapshot_minutes: int = 15
     realtime: bool = True  # WebSocket giełdy zamiast odpytywania
+    mirror_minutes: int = 5  # co ile minut lustro sprawdza zgodność portfeli (poza reakcją na ruch tradera)
     daily_report_hour: int = 20
     timezone: str = "Europe/Warsaw"
     # Panel (Telegram Mini App): publiczny adres HTTPS, pod którym widać serwer www bota
@@ -127,6 +128,7 @@ class Config:
             db_path=db_path,
             snapshot_minutes=int(os.getenv("SNAPSHOT_MINUTES", "15")),
             realtime=_bool(os.getenv("REALTIME"), True),
+            mirror_minutes=int(os.getenv("MIRROR_MINUTES", "5")),
             daily_report_hour=int(os.getenv("DAILY_REPORT_HOUR", "20")),
             timezone=os.getenv("TIMEZONE", "Europe/Warsaw"),
             # Telegram otwiera Mini App tylko przez HTTPS
