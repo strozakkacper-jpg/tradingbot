@@ -30,10 +30,14 @@ a kogo tylko obserwujesz. Bot w około sekundę powtarza ich transakcje na Twoim
   „🟣 Portfel Solana” i wklej adres. Bot nasłuchuje portfel przez **Helius** i kopiuje wymiany przez **Jupitera**:
   stała kwota albo ten sam % SOL, sprzedaż proporcjonalna, limit na zakup, poślizg, demo/LIVE, wypłata i eksport
   klucza. Każde powiadomienie pokazuje czas „⚡ X ms od wykrycia”. Obsługiwany jest też nowy format transakcji (wersja 1).
-  Opóźnienie:
-  - z `HELIUS_API_KEY`: Enhanced WebSocket na statusie *processed*, pełna transakcja w powiadomieniu,
-    bez dodatkowego zapytania;
-  - bez klucza: publiczny RPC i dociągnięcie transakcji (zmierzone ok. 2,2 s wolniej, plus niskie limity zapytań);
+  Opóźnienie (zmierzone na mainnecie, darmowy plan Helius i Jupiter): **wykrycie ok. 75 ms** od potwierdzenia
+  transakcji tradera, **zlecenie po ok. 250 ms** od sygnału.
+  - płatny plan Helius: Enhanced WebSocket na statusie *processed*, pełna transakcja w powiadomieniu
+    (jeszcze ok. 0,5–1 s wcześniej); darmowy: `logsSubscribe` na *confirmed* i jedno `getTransaction`;
+  - logi filtrowane po programach giełd (Jupiter, Pump.fun, PumpSwap, Raydium, Meteora, Orca, Moonshot), więc bot
+    nie pobiera setek zbędnych transakcji z portfeli botów;
+  - kopie spóźnione bardziej niż `SOL_MAX_DELAY_S` (10 s) są pomijane, bo cena memecoina mogła już uciec;
+  - wspólna wycena Jupitera, gdy kilka osób kupuje za tę samą kwotę (oszczędza limit: darmowy klucz to 10 zapytań / 10 s);
   - wykonanie: wycena i budowa transakcji w Jupiterze (`JUPITER_API_KEY` = wyższe limity), wysyłka bez sprawdzania
     wstępnego, ponawianie co 400 ms aż do potwierdzenia, równolegle dla wszystkich kopiujących.
 - **🎮 Handel demo**: ręczne kupno i sprzedaż za wirtualne USDT po prawdziwych cenach. Przyciski: kup za 10/50/100 USDT

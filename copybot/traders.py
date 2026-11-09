@@ -231,6 +231,16 @@ async def add_wallet(update: Update, ctx):
         lam = await asyncio.wait_for(s.sol.rpc.balance(addr), 10)
         tokens = await asyncio.wait_for(s.sol.rpc.token_accounts(addr), 15)
         preview = f"\nPodgląd: {lam / 1e9:.3f} SOL · {len(tokens)} tokenów w portfelu."
+        sigs = await asyncio.wait_for(s.sol.rpc.call("getSignaturesForAddress", [addr, {"limit": 50}]), 10)
+        times = [x["blockTime"] for x in sigs if x.get("blockTime")]
+        if len(times) >= 10:
+            span_min = max((max(times) - min(times)) / 60, 1 / 60)
+            per_min = len(times) / span_min
+            preview += f"\nAktywność: ok. {per_min:.0f} transakcji/min."
+            if per_min > 20:
+                preview += ("\n⚠️ To wygląda na <b>bota wysokiej częstotliwości</b> – kopiowanie go zwykle nie ma "
+                            "sensu (opłaty, opóźnienie, limity). Lepiej wybrać tradera, który robi kilka–kilkanaście "
+                            "transakcji dziennie.")
     except Exception:  # noqa: BLE001
         preview = "\n(Podgląd portfela chwilowo niedostępny – śledzenie i tak zadziała.)"
     ctx.user_data.setdefault("add", {})["wallet"] = addr

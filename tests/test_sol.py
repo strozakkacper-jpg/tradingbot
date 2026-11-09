@@ -231,3 +231,68 @@ def test_parser_transaction_version_1():
     assert parse_swap(tx, _keys(tx)[0]) is None  # pośrednik nic nie kupił
     sw = parse_swap(tx, "GTXo3RCDkn35dpwPiCVz32XjvCATYe2hvZnYhwXQgVAG")
     assert sw.side == "buy" and sw.quote_symbol == "USDC" and sw.quote_amount == pytest.approx(19.339, abs=0.01)
+
+
+def test_enhanced_forbidden_falls_back_immediately():
+    import aiohttp
+    calls = []
+
+    class Sess:
+        def ws_connect(self, url, **kw):
+            calls.append(url)
+            if "atlas" in url:
+                raise aiohttp.WSServerHandshakeError(request_info=MagicMock(real_url="wss://atlas"), history=(),
+                                                     status=403, message="Forbidden")
+            return FakeWS([])
+
+    w = SolWatcher("wss://std", "wss://atlas", None, Sess(), lambda: {WALLET}, AsyncMock())
+
+    async def go():
+        t = asyncio.create_task(w.run())
+        await asyncio.sleep(0.5)
+        t.cancel()
+    asyncio.run(go())
+    assert w.enhanced_failed and w.mode == "logs" and calls[0] == "wss://atlas" and "wss://std" in calls
+
+
+def test_log_prefilter_skips_non_swaps():
+    from copybot.sol.watcher import looks_like_swap
+    assert looks_like_swap(["Program 6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P invoke [2]", "Program log: x"])
+    assert looks_like_swap(["Program Abc invoke [1]", "Program log: Instruction: Swap"])
+    assert not looks_like_swap(["Program 11111111111111111111111111111111 invoke [1]",
+                                "Program ComputeBudget111111111111111111111111111111 invoke [1]"])
+    assert looks_like_swap(None)
+
+
+def test_same_quote_shared_between_followers():
+    from copybot.sol.chain import Jupiter
+    calls = []
+
+    class J(Jupiter):
+        async def _quote(self, *a):
+            calls.append(a)
+            await asyncio.sleep(0.05)
+            return {"outAmount": "123"}
+
+    j = J("https://x", "", None)
+
+    async def go():
+        return await asyncio.gather(*(j.quote(SOL_MINT, TOKEN, 50_000_000, 1000) for _ in range(3)),
+                                    j.quote(SOL_MINT, TOKEN, 70_000_000, 1000))
+    res = asyncio.run(go())
+    assert len(calls) == 2 and res[0]["outAmount"] == "123"
+
+
+def test_stale_copy_skipped_and_ratio_message(tmp_path):
+    s, ctx, sent = sol_setup(tmp_path)
+    lid = s.db.create_leader("Sol", "sol", OWNER, "active", wallet=WALLET)
+    s.db.ensure_user(OWNER, None, 1000, "USDT")
+    s.db.update_user(OWNER, approved=1, accepted=1, active=1)
+    s.db.follow(OWNER, lid, True)
+    s.sol.wallet(OWNER)
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic() - 30))  # 30 s spóźnienia
+    assert res["skipped"] == 1 and any("za późno" in t for _, t in sent)
+    s.db.update_user(OWNER, sol_buy_mode="ratio")
+    sent.clear()
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.0001, "s9"), time.monotonic()))
+    assert any("poniżej minimum" in t and "stałą kwotę" in t for _, t in sent)

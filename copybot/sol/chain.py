@@ -21,13 +21,33 @@ class ChainError(Exception):
     pass
 
 
+class RateLimiter:
+    """Prosty limit zapytań na sekundę (darmowy Helius: ok. 10/s) – bez burz błędów 429."""
+
+    def __init__(self, per_second: float):
+        self.interval = 1 / per_second if per_second > 0 else 0
+        self._next = 0.0
+        self._lock = asyncio.Lock()
+
+    async def wait(self):
+        if not self.interval:
+            return
+        async with self._lock:
+            now = time.monotonic()
+            if self._next > now:
+                await asyncio.sleep(self._next - now)
+            self._next = max(now, self._next) + self.interval
+
+
 class Rpc:
-    def __init__(self, url: str, session: aiohttp.ClientSession):
+    def __init__(self, url: str, session: aiohttp.ClientSession, rps: float = 0):
         self.url, self.session = url, session
         self._id = 0
+        self.limit = RateLimiter(rps)
 
     async def call(self, method: str, params: list | None = None):
         for attempt in range(4):
+            await self.limit.wait()
             self._id += 1
             async with self.session.post(self.url, json={"jsonrpc": "2.0", "id": self._id, "method": method,
                                                          "params": params or []}) as r:
@@ -102,22 +122,45 @@ class Jupiter:
     def __init__(self, base: str, api_key: str, session: aiohttp.ClientSession):
         self.base, self.session = base.rstrip("/"), session
         self.headers = {"x-api-key": api_key} if api_key else {}
+        self._quotes: dict[tuple, tuple[float, asyncio.Future]] = {}  # wspólna wycena dla tych samych parametrów
 
     async def _request(self, method: str, path: str, **kw) -> tuple[int, dict]:
-        """Zapytanie z krótkimi ponowieniami przy limicie (429) – zamiast od razu tracić transakcję."""
-        delay = 0.15
-        for attempt in range(4):
+        """Zapytanie z obsługą limitu Jupitera: przy 429 czekamy do odnowienia okna (nagłówek x-ratelimit-reset)
+        zamiast tracić transakcję. Darmowy klucz: 10 zapytań / 10 s."""
+        for attempt in range(5):
             async with self.session.request(method, f"{self.base}{path}", headers=self.headers, **kw) as r:
                 data = await r.json(content_type=None)
                 status = r.status
+                reset = r.headers.get("x-ratelimit-reset")
             limited = status == 429 or "Too many requests" in str(data)
-            if not limited or attempt == 3:
+            if not limited or attempt == 4:
                 return status, data
-            await asyncio.sleep(delay)
-            delay *= 2
+            wait = 0.2 * (attempt + 1)
+            if reset and reset.isdigit():
+                wait = max(wait, min(int(reset) - time.time() + 0.05, 10))
+            log.info("Jupiter: limit zapytań – czekam %.1f s", wait)
+            await asyncio.sleep(wait)
         return status, data
 
     async def quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
+        """Ta sama wycena w ciągu 2 s (np. Ty i kumpel kupujecie za 0,05 SOL) = jedno zapytanie do Jupitera."""
+        key = (in_mint, out_mint, amount, slippage_bps)
+        now = time.monotonic()
+        hit = self._quotes.get(key)
+        if hit and now - hit[0] < 2.0:
+            return await asyncio.shield(hit[1])
+        fut = asyncio.ensure_future(self._quote(in_mint, out_mint, amount, slippage_bps))
+        self._quotes[key] = (now, fut)
+        if len(self._quotes) > 500:
+            for k in [k for k, (t, _) in self._quotes.items() if now - t > 5]:
+                self._quotes.pop(k, None)
+        try:
+            return await asyncio.shield(fut)
+        except Exception:
+            self._quotes.pop(key, None)
+            raise
+
+    async def _quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
         params = {"inputMint": in_mint, "outputMint": out_mint, "amount": str(amount),
                   "slippageBps": str(slippage_bps), "restrictIntermediateTokens": "true"}
         status, data = await self._request("GET", "/swap/v1/quote", params=params)

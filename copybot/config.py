@@ -92,6 +92,8 @@ class Config:
     sol_paper_start: float = 5.0  # wirtualne SOL na start w trybie demo
     sol_priority_max_lamports: int = 2_000_000  # maks. 0,002 SOL opłaty priorytetowej (szybsze wejście)
     sol_reserve: float = 0.01  # SOL zostawiane na opłaty sieci
+    sol_rpc_rps: float = 9.0  # limit zapytań RPC na sekundę (darmowy Helius ~10/s; płatny – ustaw więcej)
+    sol_max_delay_s: float = 10.0  # kopie spóźnione bardziej niż tyle sekund są pomijane (cena mogła uciec)
     live_seconds: int = 60  # co ile sekund odświeżać przypiętą wiadomość „na żywo”
     live_coins: tuple[str, ...] = ("BTC", "ETH", "SOL")  # ceny pokazywane u góry
     demo_coins: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB")  # szybki wybór w handlu demo  # co ile minut lustro sprawdza zgodność portfeli (poza reakcją na ruch tradera)
@@ -167,6 +169,8 @@ class Config:
             jupiter_api_key=os.getenv("JUPITER_API_KEY", "").strip(),
             sol_rpc_url=os.getenv("SOL_RPC_URL", "").strip(),
             sol_paper_start=float(os.getenv("SOL_PAPER_START", "5")),
+            sol_max_delay_s=float(os.getenv("SOL_MAX_DELAY_S", "10")),
+            sol_rpc_rps=float(os.getenv("SOL_RPC_RPS", "9")),
             sol_priority_max_lamports=int(os.getenv("SOL_PRIORITY_MAX_LAMPORTS", "2000000")),
             live_coins=tuple(c.strip().upper() for c in os.getenv("LIVE_COINS", "BTC,ETH,SOL").split(",") if c.strip()),
             demo_coins=tuple(c.strip().upper() for c in os.getenv("DEMO_COINS", "BTC,ETH,SOL,XRP,DOGE,BNB").split(",")

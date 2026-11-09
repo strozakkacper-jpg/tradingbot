@@ -69,7 +69,7 @@ async def post_init(app: Application):
         session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=20),
                                         connector=aiohttp.TCPConnector(limit=100, ttl_dns_cache=300,
                                                                        keepalive_timeout=60))
-        rpc = Rpc(cfg.sol_rpc, session)
+        rpc = Rpc(cfg.sol_rpc, session, cfg.sol_rpc_rps)
         svc.sol = SolEngine(cfg, db, vault, rpc, Jupiter(cfg.jup_base, cfg.jupiter_api_key, session), engine.notify)
         sol_watcher = SolWatcher(cfg.sol_ws, cfg.sol_ws_enhanced, rpc, session, svc.sol.watched_wallets,
                                  svc.sol.on_swap)

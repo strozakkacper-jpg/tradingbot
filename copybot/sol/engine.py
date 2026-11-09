@@ -162,15 +162,22 @@ class SolEngine:
             res += await self.copy_leader(lead, sw, t_recv)
         return res
 
+    def cached_token(self, mint: str) -> tuple[str, int] | None:
+        rows = self.db._q("SELECT * FROM sol_tokens WHERE mint = ?", (mint,))
+        return (rows[0]["symbol"], rows[0]["decimals"]) if rows else None
+
     async def copy_leader(self, lead, sw: Swap, t_recv: float) -> Counter:
-        symbol, decimals = await self.token_info(sw.mint, sw.decimals)
+        # nazwa tokena tylko do powiadomień – pobieramy ją RÓWNOLEGLE, kopiowanie rusza od razu
+        # (miejsca po przecinku znamy z samej transakcji tradera)
+        info_task = asyncio.create_task(self.token_info(sw.mint, sw.decimals))
         followers = [u for u in self.db.active_followers(lead["id"]) if self.has_wallet(u["tg_id"])]
 
         async def run(u):
             async with self.sem:
-                return await self._copy(u, lead, sw, symbol, decimals, t_recv)
+                return await self._copy(u, lead, sw, info_task, t_recv)
 
         res = Counter(await asyncio.gather(*(run(u) for u in followers)))
+        symbol, decimals = await info_task
         line = self._leader_line(lead["name"], sw, symbol, decimals)
         for u in self.db.watchers(lead["id"]):
             await self.notify(u["tg_id"], f"👁 {line}")
@@ -186,10 +193,11 @@ class SolEngine:
         return (f"{name} {verb} {fmt_tokens(sw.token_raw / 10 ** decimals)} {symbol} "
                 f"za {sw.quote_amount:.4g} {sw.quote_symbol}{pct}")
 
-    async def _copy(self, u, lead, sw: Swap, symbol: str, decimals: int, t_recv: float) -> str:
+    async def _copy(self, u, lead, sw: Swap, info_task, t_recv: float) -> str:
         live = self.is_live(u)
-        head = "🟣 " + self._leader_line(lead["name"], sw, symbol, decimals)
+        err: Exception | None = None
         try:
+            self._fresh(t_recv)
             if sw.side == "buy":
                 amount = await self.buy_amount(u, sw)
             else:
@@ -197,7 +205,14 @@ class SolEngine:
                 if held <= 0:
                     return "none"
                 amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
-            fill = await self.execute(u, sw.side, sw.mint, amount, t_recv)
+            fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals)
+        except Exception as e:  # noqa: BLE001
+            err = e
+        symbol, decimals = await info_task
+        head = "🟣 " + self._leader_line(lead["name"], sw, symbol, decimals)
+        try:
+            if err is not None:
+                raise err
         except Skip as e:
             self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "skipped", str(e), not live)
             await self.notify(u["tg_id"], f"{head}\n⚠️ Pominięto: {e}")
@@ -217,25 +232,43 @@ class SolEngine:
                                       + (f"\nhttps://solscan.io/tx/{fill.sig}" if fill.sig else ""))
         return "filled"
 
+    def _fresh(self, t_recv: float | None):
+        """Kopia spóźniona o więcej niż SOL_MAX_DELAY_S nie ma sensu – cena memecoina mogła już uciec."""
+        if t_recv is None:
+            return
+        late = time.monotonic() - t_recv
+        if late > self.cfg.sol_max_delay_s:
+            raise Skip(f"za późno – {late:.0f} s od ruchu tradera (limit {self.cfg.sol_max_delay_s:g} s), "
+                       "cena mogła uciec")
+
     async def buy_amount(self, u, sw: Swap) -> int:
         bal = await self.sol_lamports(u)
         reserve = int(self.cfg.sol_reserve * LAMPORTS) if self.is_live(u) else 0
-        want = int(bal * sw.fraction * u["sol_mult"]) if u["sol_buy_mode"] == "ratio" else int(u["sol_buy"] * LAMPORTS)
+        ratio = u["sol_buy_mode"] == "ratio"
+        want = int(bal * sw.fraction * u["sol_mult"]) if ratio else int(u["sol_buy"] * LAMPORTS)
         if u["sol_max"] > 0:
             want = min(want, int(u["sol_max"] * LAMPORTS))
+        if ratio and want < MIN_BUY:
+            raise Skip(f"trader użył {sw.fraction * 100:.2g}% swoich SOL – u Ciebie to {want / LAMPORTS:.5f} SOL, "
+                       "poniżej minimum 0,001 SOL (ustaw stałą kwotę w ⚙️ Ustawieniach Solany)")
         want = min(want, bal - reserve)
         if want < MIN_BUY:
             raise Skip(f"za mało SOL (saldo {bal / LAMPORTS:.4f})")
         return want
 
-    async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None) -> Fill:
+    async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,
+                      decimals: int | None = None) -> Fill:
         """Kupno: amount_raw = lamporty SOL. Sprzedaż: jednostki tokena."""
         t0 = t_recv or time.monotonic()
         in_mint, out_mint = (SOL_MINT, mint) if side == "buy" else (mint, SOL_MINT)
-        _, decimals = await self.token_info(mint)
+        if decimals is None:  # bez zapytania do sieci, jeśli znamy token
+            cached = self.cached_token(mint)
+            decimals = cached[1] if cached else (await self.token_info(mint))[1]
         try:
             quote = await self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]))
         except ChainError as e:
+            if "Too many requests" in str(e) or "429" in str(e):
+                raise Skip("limit zapytań Jupitera – za dużo transakcji naraz (wyższy plan Jupitera to zniesie)") from e
             raise Skip(f"brak trasy wymiany ({e})") from e
         out = int(quote["outAmount"])
         sol_raw, tok_raw = (amount_raw, out) if side == "buy" else (out, amount_raw)
@@ -247,6 +280,7 @@ class SolEngine:
                 self.paper_apply(u["tg_id"], {mint: -amount_raw, SOL_MINT: out - PAPER_TX_FEE})
             return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, lat)
         pub, kp = self.wallet(u["tg_id"])
+        self._fresh(t_recv)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
         tx = await self.jup.swap(quote, kp, self.cfg.sol_priority_max_lamports)
         lat = int((time.monotonic() - t0) * 1000)  # do momentu wysłania transakcji
         self._bal.pop(pub, None)
