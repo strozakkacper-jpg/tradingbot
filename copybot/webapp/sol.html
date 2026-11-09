@@ -78,7 +78,7 @@ const tg = window.Telegram && Telegram.WebApp;
 try { tg.ready(); tg.expand(); tg.setHeaderColor('#0b0d13'); tg.setBackgroundColor('#0b0d13'); } catch (e) {}
 // initData od Telegrama (albo z adresu – gdy skrypt Telegrama nie zdążył się wczytać)
 const INIT = (tg && tg.initData) || new URLSearchParams(location.hash.slice(1)).get('tgWebAppData') || '';
-let S = null, TAB = 'home', SHEET = null, ADMIN = null, TREND = null, LAST_FEED = null;
+let S = null, TAB = ({saved: 'traders', traders: 'traders', tokens: 'tokens', history: 'history', settings: 'settings'})[new URLSearchParams(location.search).get('tab')] || 'home', SHEET = null, ADMIN = null, TREND = null, LAST_FEED = null;
 
 // ---------- pomocnicze ----------
 const $ = s => document.querySelector(s);
@@ -238,7 +238,7 @@ function home() {
 function ownTxt(o) { return o.sol ? o.sol + ' SOL' : o.pct ? o.pct + '% jego kwoty' : ''; }
 function walletItem(w) {
   return `<div class="item" onclick="openWallet(${w.id})">${avatar(w.name)}
-    <div class="sp"><div class="b">${esc(w.name)}</div>
+    <div class="sp"><div class="b">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
       <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}</div></div>
     <div style="width:64px">${chart(w.spark, 28, true)}</div><div style="min-width:58px;text-align:right">${pct(w.result)}</div></div>`;
 }
@@ -254,23 +254,106 @@ function feedItem(f) {
 }
 
 // ---------- traderzy ----------
+let SAVED = null, SAVED_Q = '', SAVED_N = 40, SAVED_F = 'all', SCAN_T = null;
 function traders() {
+  if (!SAVED) loadSaved();
   return `
   <h2 style="margin-top:4px">Dodaj tradera</h2>
   <div class="card">
     <textarea id="addw" placeholder="Wklej adres portfela, np. 7xKX…AsU Kowal&#10;Kilku naraz? Każdy w nowej linii."></textarea>
     <button class="btn" style="margin-top:10px" onclick="addWallets()">➕ Dodaj i kopiuj</button>
-    <div class="mut tiny" style="margin-top:8px">Dobrych traderów znajdziesz na gmgn.ai, kolscan.io albo w Axiom. Po adresie możesz dopisać nazwę.</div>
+    <input type="file" id="impf" accept=".json,.txt,.csv,application/json,text/plain" style="display:none" onchange="importFile(this)">
+    <button class="btn ghost" style="margin-top:8px" onclick="$('#impf').click()">📥 Import listy z Axiom (.json)</button>
+    <div class="mut tiny" style="margin-top:8px">Axiom → Wallet Tracker → Export. Zaimportowani są ⚪ wyłączeni – włączasz, kogo chcesz. ⭐ dostają ci z wyskakującymi alertami w Axiom.</div>
   </div>
-  <h2>Twoi traderzy (${S.wallets.length})</h2>
-  <div class="card">${S.wallets.length ? S.wallets.map(walletItem).join('') : '<div class="empty">Nikogo jeszcze nie kopiujesz.</div>'}</div>
-  <div class="mut tiny c">✅ = bot kopiuje jego ruchy · 👁 = dostajesz tylko powiadomienia</div>`;
+  <h2 id="savedh">Traderzy${SAVED ? ' (' + SAVED.items.length + ')' : ''}</h2>
+  <div id="saved">${savedHtml()}</div>`;
 }
+const looksImport = t => /^\s*[\[{]/.test(t) || t.includes('trackedWalletAddress');
 async function addWallets() {
   const t = $('#addw').value.trim();
   if (!t) return toast('Wklej adres portfela');
+  if (looksImport(t)) return doImport(t);
   const r = await act('add_wallets', {text: t});
+  if (r) loadSaved();
   if (r && r.ids && r.ids.length === 1) openWallet(r.ids[0]);
+}
+function importFile(inp) {
+  const f = inp.files && inp.files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => doImport(String(rd.result || ''));
+  rd.readAsText(f); inp.value = '';
+}
+async function doImport(text) {
+  const r = await act('import', {text}, {reload: false});
+  if (r) { SAVED_F = 'all'; await loadSaved(); document.getElementById('savedh')?.scrollIntoView({behavior: 'smooth'}); }
+}
+async function loadSaved() {
+  try { SAVED = await api('/api/sol/saved'); } catch (e) { SAVED = {items: [], copied: 0, max_copied: 30}; }
+  if (TAB === 'traders') {
+    const el = $('#saved'); if (el) el.innerHTML = savedHtml();
+    const h = $('#savedh'); if (h) h.textContent = 'Traderzy (' + SAVED.items.length + ')';
+  }
+  clearTimeout(SCAN_T);
+  if (SAVED.scan && SAVED.scan.running) SCAN_T = setTimeout(() => { if (TAB === 'traders' && !SHEET) loadSaved(); }, 8000);
+}
+function agoTxt(it) {
+  if (!it.checked_at) return '';
+  if (!it.last_active) return '<span class="r">brak świeżych transakcji</span>';
+  const m = Math.round((SAVED.now - it.last_active) / 60000);
+  const t = m < 60 ? m + ' min temu' : m < 2880 ? Math.round(m / 60) + ' h temu' : Math.round(m / 1440) + ' dni temu';
+  return `<span class="${m < 1440 ? 'g' : m < 10080 ? 'y' : 'r'}">aktywny ${t}</span>`;
+}
+const DAY = 864e5;
+function savedFiltered() {
+  const q = SAVED_Q.toLowerCase();
+  return SAVED.items.filter(it => (!q || (it.name || '').toLowerCase().includes(q) || it.wallet.toLowerCase().includes(q))
+    && (SAVED_F === 'all' || (SAVED_F === 'on' && it.status === 'copy') || (SAVED_F === 'star' && it.priority)
+        || (SAVED_F === 'active' && it.last_active && SAVED.now - it.last_active < DAY)));
+}
+function savedHtml() {
+  if (!SAVED) return '<div class="card"><div class="loader"></div></div>';
+  if (!SAVED.items.length) return '<div class="card"><div class="empty">Nikogo jeszcze nie ma – dodaj portfel albo zaimportuj listę z Axiom.</div></div>';
+  const sc = SAVED.scan;
+  const chip = (k, l) => `<button class="chip ${SAVED_F === k ? 'on' : ''}" onclick="SAVED_F='${k}';SAVED_N=40;$('#saved').innerHTML=savedHtml()">${l}</button>`;
+  return `<div class="card">
+    <div class="row"><div class="sp"><div class="b">Kopiujesz ${SAVED.copied}/${SAVED.max_copied}</div>
+      <div class="mut tiny">🟢 włączony = bot powtarza jego zakupy i sprzedaże · ⭐ = priorytet, zawsze na górze</div></div></div>
+    <input style="margin-top:10px" placeholder="🔍 Szukaj po nazwie albo adresie" value="${esc(SAVED_Q)}" oninput="SAVED_Q=this.value;SAVED_N=40;$('#savedl').innerHTML=savedRows()">
+    <div class="chips" style="margin-top:10px">${chip('all', 'Wszyscy')}${chip('on', '🟢 Włączeni')}${chip('star', '⭐ Priorytet')}${chip('active', '🔥 Aktywni 24 h')}</div>
+    <button class="btn ghost" style="margin-top:10px" ${sc && sc.running ? 'disabled' : ''} onclick="scanActivity()">${sc && sc.running
+      ? `🔍 Sprawdzam aktywność… ${sc.done}/${sc.total}` : '🔍 Sprawdź, kto naprawdę handluje'}</button>
+  </div>
+  <div class="card" id="savedl">${savedRows()}</div>`;
+}
+function savedRows() {
+  const list = savedFiltered();
+  const rows = list.slice(0, SAVED_N).map(it => {
+    const on = it.status === 'copy', w = esc(it.wallet);
+    const open = it.lid ? `openWallet(${it.lid})` : `openLink('https://gmgn.ai/sol/address/${w}')`;
+    return `<div class="item" style="cursor:default">
+      <div class="av" onclick="${open}">${esc(it.emoji || (it.name || '?').slice(0, 2).toUpperCase())}</div>
+      <div class="sp" onclick="${open}" style="cursor:pointer"><div class="b">${esc(it.name || short(it.wallet))}</div>
+        <div class="mut tiny">${short(it.wallet)}${it.status === 'watch' ? ' · 👁 obserwujesz' : ''}${agoTxt(it) ? ' · ' + agoTxt(it) : ''}</div></div>
+      <button class="chip" style="padding:6px 10px;${it.priority ? 'color:var(--y);border-color:var(--y)' : ''}" onclick="setPrio('${w}', ${!it.priority})">${it.priority ? '⭐' : '☆'}</button>
+      <label class="toggle"><input type="checkbox" ${on ? 'checked' : ''} onchange="setSwitch('${w}', this.checked, this)"><span></span></label></div>`;
+  }).join('');
+  return (rows || '<div class="empty">Nic nie pasuje</div>') + (list.length > SAVED_N
+    ? `<button class="btn ghost" style="margin-top:8px" onclick="SAVED_N+=60;$('#savedl').innerHTML=savedRows()">Pokaż więcej (${list.length - SAVED_N})</button>` : '');
+}
+async function setSwitch(wallet, on, el) {
+  try { await act('switch', {wallet, on}, {reload: false}); } catch (e) { if (el) el.checked = !on; return; }
+  await loadSaved(); load();
+}
+async function setPrio(wallet, on) {
+  await act('priority', {wallet, on}, {reload: false, quiet: true});
+  toast(on ? '⭐ Na samej górze' : 'Bez priorytetu', 1200);
+  await loadSaved();
+}
+async function scanActivity() {
+  await act('scan_activity', {}, {reload: false});
+  setTimeout(loadSaved, 1500);
 }
 
 function sheet(html) {

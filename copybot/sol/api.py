@@ -18,6 +18,7 @@ from .ui import buy_txt, mode_txt, valid_address
 
 log = logging.getLogger(__name__)
 DAY_MS = 24 * 3600 * 1000
+MAX_COPIED = 30  # bezpiecznik: każdy kopiowany portfel to Twoje zakupy – przy setkach saldo zniknęłoby w minuty
 
 # pole -> (typ, min, max) – nic spoza tej listy nie da się zmienić z aplikacji
 SETTINGS = {
@@ -41,6 +42,114 @@ def _trade(s, r) -> dict:
 def settings_of(u) -> dict:
     return {k: (bool(u[k]) if t is bool else u[k]) for k, (t, *_r) in SETTINGS.items()} | {
         "summary": buy_txt(u), "presets": [float(x) for x in (u["sol_presets"] or "0.05,0.1,0.5,1").split(",") if x]}
+
+
+def copied_count(s, uid: int) -> int:
+    from .axiom import sol_leaders
+    return sum(1 for _, c in sol_leaders(s, uid) if c)
+
+
+def check_copy_limit(s, uid: int, adding: int = 1):
+    if copied_count(s, uid) + adding > MAX_COPIED:
+        raise ApiError(f"Możesz kopiować maks. {MAX_COPIED} portfeli naraz – każdy ich zakup to Twój zakup. "
+                       "Resztę ustaw na 👁 obserwuj albo zostaw na liście Zapisane.")
+
+
+def saved_list(s, uid: int) -> list[dict]:
+    """Jedna lista traderów: zapisani (np. z Axiom) + śledzeni. Kolejność: ⭐ priorytet, włączeni, aktywni."""
+    follows = {r["wallet"]: r for r in s.db._q(
+        """SELECT l.id, l.wallet, l.name, f.copy, f.priority FROM follows f JOIN leaders l ON l.id = f.leader_id
+           WHERE f.tg_id = ? AND l.source = 'sol' AND l.status = 'active'""", (uid,))}
+    out, seen = [], set()
+    for i, r in enumerate(s.db.saved_wallets(uid)):
+        f = follows.get(r["wallet"])
+        seen.add(r["wallet"])
+        out.append({"wallet": r["wallet"], "name": r["name"] or (f["name"] if f else None), "emoji": r["emoji"],
+                    "status": (("copy" if f["copy"] else "watch") if f else None), "lid": f["id"] if f else None,
+                    "priority": bool(r["priority"] or (f and f["priority"])), "last_active": r["last_active"],
+                    "checked_at": r["checked_at"], "order": i})
+    for w, f in follows.items():
+        if w not in seen:
+            out.append({"wallet": w, "name": f["name"], "emoji": None, "status": "copy" if f["copy"] else "watch",
+                        "lid": f["id"], "priority": bool(f["priority"]), "last_active": None, "checked_at": None,
+                        "order": -1})
+    out.sort(key=lambda x: (not x["priority"], x["status"] != "copy", -(x["last_active"] or 0), x["order"]))
+    return out
+
+
+def ensure_saved(s, uid: int, wallet: str):
+    """Trader wyłączony nie znika – zostaje na liście (z nazwą tradera)."""
+    if not any(r["wallet"] == wallet for r in s.db.saved_wallets(uid)):
+        rows = s.db._q("SELECT name FROM leaders WHERE source = 'sol' AND wallet = ? AND status = 'active'", (wallet,))
+        s.db.save_wallets(uid, [(wallet, rows[0]["name"] if rows else None, None)], "manual")
+
+
+def switch(s, uid: int, wallet: str, on: bool) -> str:
+    if on:
+        fr = s.db._q("""SELECT f.copy FROM follows f JOIN leaders l ON l.id = f.leader_id
+                        WHERE f.tg_id = ? AND l.wallet = ? AND l.source = 'sol'""", (uid, wallet))
+        if not (fr and fr[0]["copy"]):
+            check_copy_limit(s, uid)
+        follow_saved(s, uid, wallet, True)
+        return "🟢 Włączony – bot kopiuje jego ruchy"
+    ensure_saved(s, uid, wallet)
+    for r in s.db._q("SELECT id FROM leaders WHERE source = 'sol' AND wallet = ?", (wallet,)):
+        s.db.unfollow(uid, r["id"])
+    return "⚪ Wyłączony – zostaje na liście"
+
+
+_SCANS: dict[int, dict] = {}
+
+
+async def last_own_trade(s, wallet: str) -> int | None:
+    """Czas (ms) ostatniej udanej transakcji PODPISANEJ przez ten portfel – spam od innych się nie liczy."""
+    sigs = await s.sol.rpc.call("getSignaturesForAddress", [wallet, {"limit": 100, "commitment": "confirmed"}])
+    for x in [x for x in sigs if x.get("err") is None][:6]:
+        tx = await s.sol.rpc.transaction(x["signature"])
+        keys = (tx or {}).get("transaction", {}).get("message", {}).get("accountKeys") or []
+        first = keys[0]["pubkey"] if keys and isinstance(keys[0], dict) else (keys[0] if keys else None)
+        if first == wallet:
+            return int((x.get("blockTime") or tx.get("blockTime") or 0) * 1000) or None
+    return None
+
+
+def start_scan(s, uid: int, force: bool = False) -> bool:
+    st = _SCANS.get(uid)
+    if (st and st["running"]) or not hasattr(s.sol.rpc, "call"):
+        return False
+    asyncio.create_task(scan_activity(s, uid, 0 if force else 30 * 60 * 1000))
+    return True
+
+
+async def scan_activity(s, uid: int, only_stale_ms: int = 30 * 60 * 1000):
+    """W tle: sprawdza aktywność portfeli z listy (powoli, żeby nie zabrać limitu RPC kopiowaniu)."""
+    items = [it for it in saved_list(s, uid) if not it["checked_at"] or now_ms() - it["checked_at"] > only_stale_ms]
+    st = _SCANS[uid] = {"total": len(items), "done": 0, "running": True}
+    try:
+        for it in items:
+            try:
+                s.db.set_activity(it["wallet"], await asyncio.wait_for(last_own_trade(s, it["wallet"]), 30))
+            except Exception:  # noqa: BLE001
+                log.debug("Aktywność %s", it["wallet"], exc_info=True)
+            st["done"] += 1
+            await asyncio.sleep(0.6)
+    finally:
+        st["running"] = False
+
+
+def follow_saved(s, uid: int, wallet: str, copy: bool) -> int:
+    """Z listy Zapisane do śledzonych – z nazwą i emoji z importu."""
+    from .axiom import _ensure_leader
+    row = next((r for r in s.db.saved_wallets(uid) if r["wallet"] == wallet), None)
+    lid = _ensure_leader(s, uid, wallet)
+    lead = s.db.get_leader(lid)
+    if row and row["name"] and lead["name"].startswith("Portfel "):
+        s.db.update_leader(lid, name=f"{row['emoji'] + ' ' if row['emoji'] else ''}{row['name']}"[:40])
+    s.db.follow(uid, lid, copy)
+    if row and row["priority"]:
+        s.db.set_priority(uid, wallet, True)
+    s.sol.wallet(uid)
+    return lid
 
 
 def own_amount(fr) -> dict:
@@ -68,10 +177,13 @@ async def state(s, u) -> dict:
         n = s.db._q("SELECT COUNT(*) n FROM sol_trades WHERE tg_id = ? AND leader_id = ? AND status = 'filled' "
                     "AND ts >= ?", (uid, lead["id"], day_ago))[0]["n"]
         ok = isinstance(rep, dict)
+        fr = s.db.follow_row(uid, lead["id"])
         wallets.append({"id": lead["id"], "name": lead["name"], "wallet": lead["wallet"], "copy": copy, "n24": n,
+                        "priority": bool(fr and fr["priority"]),
                         "result": rep["total"] * 100 if ok else None,
                         "spark": [v for _, v in rep["series"]][-30:] if ok else [],
-                        "own": own_amount(s.db.follow_row(uid, lead["id"]))})
+                        "own": own_amount(fr)})
+    wallets.sort(key=lambda w: (not w["priority"], not w["copy"]))
     start = s.cfg.sol_paper_start
     series = s.db.sol_equity_series(uid, not live, now_ms() - 7 * DAY_MS) + [(now_ms(), pf["total"])]
     last = s.db._q("SELECT latency_ms FROM sol_trades WHERE tg_id = ? AND latency_ms IS NOT NULL ORDER BY id DESC "
@@ -173,6 +285,7 @@ async def action(s, u, body: dict) -> dict:
         many = wallet_lines(str(body.get("text", "")))
         if not many:
             raise ApiError("Nie widzę adresu portfela Solany (32–44 znaki)")
+        check_copy_limit(s, uid, len(many))
         for addr, name in many:
             lid = _ensure_leader(s, uid, addr)
             if name:
@@ -193,6 +306,9 @@ async def action(s, u, body: dict) -> dict:
                 return {"msg": "Usunięto z listy"}
             if mode not in ("copy", "watch"):
                 raise ApiError("Nieznana opcja")
+            fr = s.db.follow_row(uid, lid)
+            if mode == "copy" and not (fr and fr["copy"]):
+                check_copy_limit(s, uid)
             s.db.follow(uid, lid, mode == "copy")
             se.wallet(uid)
             return {"msg": "✅ Kopiujesz" if mode == "copy" else "👁 Tylko powiadomienia"}
@@ -213,6 +329,48 @@ async def action(s, u, body: dict) -> dict:
         else:
             s.db.set_follow_amount(uid, lid)
         return {"msg": "Zapisano kwotę"}
+    if act == "import":
+        from .importer import parse_wallets
+        items = parse_wallets(str(body.get("text", "")))
+        if not items:
+            raise ApiError("Nie znalazłem żadnego adresu portfela w tym pliku")
+        new, upd = s.db.save_wallets(uid, items, "import")
+        start_scan(s, uid)
+        return {"msg": f"📥 Zapisano {len(items)} portfeli (nowe: {new}) – sprawdzam, kto jest aktywny. "
+                       "Włącz 🟢 tych, których chcesz kopiować.", "count": len(items)}
+    if act in ("saved_follow", "saved_remove"):
+        wallet = valid_address(str(body.get("wallet", "")))
+        if not wallet:
+            raise ApiError("Zły adres portfela")
+        if act == "saved_remove":
+            s.db.unsave_wallet(uid, wallet)
+            return {"msg": "Usunięto z listy Zapisane"}
+        mode = body.get("mode")
+        if mode not in ("copy", "watch"):
+            raise ApiError("Nieznana opcja")
+        if mode == "copy":
+            check_copy_limit(s, uid)
+        lid = follow_saved(s, uid, wallet, mode == "copy")
+        return {"msg": ("🟢 Kopiujesz" if mode == "copy" else "👁 Obserwujesz") +
+                ("" if u["active"] or mode != "copy" else " – włącz kopiowanie ▶️ na pulpicie"), "lid": lid}
+    if act in ("switch", "priority"):
+        wallet = valid_address(str(body.get("wallet", "")))
+        if not wallet:
+            raise ApiError("Zły adres portfela")
+        on = bool(body.get("on"))
+        if act == "switch":
+            return {"msg": switch(s, uid, wallet, on) + ("" if not on or u["active"] else ". Włącz kopiowanie ▶️")}
+        ensure_saved(s, uid, wallet)
+        s.db.set_priority(uid, wallet, on)
+        return {"msg": "⭐ Priorytet – na samej górze listy" if on else "Bez priorytetu"}
+    if act == "scan_activity":
+        st = _SCANS.get(uid)
+        if st and st["running"]:
+            return {"msg": f"Już sprawdzam: {st['done']}/{st['total']}"}
+        start_scan(s, uid, bool(body.get("all")))
+        n = len(saved_list(s, uid))
+        return {"msg": f"🔍 Sprawdzam aktywność {n} portfeli – potrwa ok. {max(n * 2 // 60, 1)} min, lista sama się "
+                       "odświeży"}
     if act == "settings":
         field = body.get("field")
         if field not in SETTINGS:
@@ -346,6 +504,10 @@ def routes(s, app: web.Application, auth):
             raise ApiError("Złe zapytanie")
         return await action(s, s.db.get_user(u["tg_id"]), body)
 
+    async def h_saved(_, u):
+        return {"items": saved_list(s, u["tg_id"]), "max_copied": MAX_COPIED,
+                "copied": copied_count(s, u["tg_id"]), "scan": _SCANS.get(u["tg_id"]), "now": now_ms()}
+
     async def h_admin_users(_, u):
         if u["tg_id"] not in admin_ids(s):
             raise ApiError("Tylko dla administratora")
@@ -367,5 +529,6 @@ def routes(s, app: web.Application, auth):
     r.add_get("/api/sol/report", handler(h_report))
     r.add_get("/api/sol/deposit", handler(h_deposit))
     r.add_post("/api/sol/action", handler(h_action))
+    r.add_get("/api/sol/saved", handler(h_saved))
     r.add_get("/api/sol/admin/users", handler(h_admin_users))
     r.add_get("/api/sol/admin/user/{uid:\\d+}", handler(h_admin_user))

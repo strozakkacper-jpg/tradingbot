@@ -55,6 +55,12 @@ CREATE TABLE IF NOT EXISTS sol_trades (
     side TEXT NOT NULL, mint TEXT NOT NULL, sol REAL, tokens REAL, status TEXT NOT NULL, info TEXT,
     paper INTEGER NOT NULL, sig TEXT, latency_ms INTEGER, ts INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sol_saved (  -- zapisane portfele (np. import z Axiom) – nic nie kopiują, dopóki ich nie wybierzesz
+    tg_id INTEGER NOT NULL, wallet TEXT NOT NULL, name TEXT, emoji TEXT, source TEXT, created_at INTEGER NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0,
+    last_active INTEGER, checked_at INTEGER,  -- ostatnia WŁASNA transakcja portfela (sprawdzanie aktywności)
+    PRIMARY KEY (tg_id, wallet)
+);
 CREATE TABLE IF NOT EXISTS sol_equity (  -- wartość portfela Solany co 15 min (wykres w aplikacji)
     tg_id INTEGER NOT NULL, ts INTEGER NOT NULL, value REAL NOT NULL, paper INTEGER NOT NULL
 );
@@ -118,7 +124,7 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 # osobne ustawienie dla konkretnego kopiowanego portfela: stała kwota (SOL) albo % kwoty tradera
-FOLLOW_MIGRATIONS = {"sol_buy": "REAL", "sol_pct": "REAL"}
+FOLLOW_MIGRATIONS = {"sol_buy": "REAL", "sol_pct": "REAL", "priority": "INTEGER NOT NULL DEFAULT 0"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
                  "exchange", "wallet"}
 
@@ -319,6 +325,40 @@ class DB:
     # --- historia wartości portfela ---
     def add_equity(self, tg_id: int, value: float, paper: bool, ts: int | None = None):
         self._q("INSERT INTO equity VALUES (?, ?, ?, ?)", (tg_id, ts or now_ms(), value, int(paper)))
+
+    def save_wallets(self, tg_id: int, items: list[tuple], source: str) -> tuple[int, int]:
+        """Zapisuje portfele na liście traderów (wyłączone). items: (adres, nazwa, emoji[, priorytet]).
+        Zwraca (nowe, zaktualizowane)."""
+        have = {r["wallet"] for r in self._q("SELECT wallet FROM sol_saved WHERE tg_id = ?", (tg_id,))}
+        new = 0
+        with self.lock, self.conn:
+            for it in items:
+                wallet, name, emoji = it[:3]
+                prio = int(bool(it[3])) if len(it) > 3 else 0
+                new += wallet not in have
+                self.conn.execute("""INSERT INTO sol_saved (tg_id, wallet, name, emoji, source, created_at, priority)
+                                     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(tg_id, wallet)
+                                     DO UPDATE SET name = COALESCE(excluded.name, name),
+                                     emoji = COALESCE(excluded.emoji, emoji),
+                                     priority = MAX(priority, excluded.priority)""",
+                                  (tg_id, wallet, name, emoji, source, now_ms(), prio))
+        return new, len(items) - new
+
+    def saved_wallets(self, tg_id: int) -> list[sqlite3.Row]:
+        return self._q("SELECT * FROM sol_saved WHERE tg_id = ? ORDER BY created_at, rowid", (tg_id,))
+
+    def unsave_wallet(self, tg_id: int, wallet: str):
+        self._q("DELETE FROM sol_saved WHERE tg_id = ? AND wallet = ?", (tg_id, wallet))
+
+    def set_activity(self, wallet: str, last_active: int | None):
+        """Aktywność to cecha portfela – zapisujemy u wszystkich, którzy go mają na liście."""
+        self._q("UPDATE sol_saved SET last_active = ?, checked_at = ? WHERE wallet = ?", (last_active, now_ms(), wallet))
+
+    def set_priority(self, tg_id: int, wallet: str, on: bool):
+        """⭐ priorytet – na liście saved i przy śledzonym traderze (jeśli jest)."""
+        self._q("UPDATE sol_saved SET priority = ? WHERE tg_id = ? AND wallet = ?", (int(on), tg_id, wallet))
+        self._q("""UPDATE follows SET priority = ? WHERE tg_id = ? AND leader_id IN
+                   (SELECT id FROM leaders WHERE source = 'sol' AND wallet = ?)""", (int(on), tg_id, wallet))
 
     def add_sol_equity(self, tg_id: int, value: float, paper: bool):
         self._q("INSERT INTO sol_equity VALUES (?, ?, ?, ?)", (tg_id, now_ms(), value, int(paper)))

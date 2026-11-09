@@ -65,11 +65,13 @@ def hhmm(s, ms: int) -> str:
 def sol_leaders(s, uid: int) -> list[tuple]:
     """[(trader, kopiuje?), …] – śledzone portfele Solany użytkownika."""
     follows = s.db.follows_of(uid)
+    prio = {r["leader_id"] for r in s.db._q("SELECT leader_id FROM follows WHERE tg_id = ? AND priority = 1", (uid,))}
     out = []
     for lid, copy in follows.items():
         lead = s.db.get_leader(lid)
         if lead and lead["source"] == "sol":
             out.append((lead, copy))
+    out.sort(key=lambda lc: (lc[0]["id"] not in prio, not lc[1]))  # ⭐ priorytet na górze, potem kopiowani
     return out
 
 
@@ -201,7 +203,7 @@ async def home_view(s, u, notice: str | None = None) -> tuple[str, KB]:
     kb = ([[B("📱 Otwórz aplikację (czytelniej)", web_app=WebAppInfo(f"{s.cfg.webapp_url}/app"))]]
           if s.cfg.webapp_url.startswith("https://") else []) + [
           [B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="ax:tog")],
-          [B("➕ Dodaj portfel", callback_data="ax:add")]] + rows + [
+          [B("➕ Dodaj portfel", callback_data="ax:add"), B("👥 Lista / import", callback_data="sv:p:0")]] + rows + [
           [B("💼 Moje tokeny", callback_data="ax:pos"), B("📡 Historia", callback_data="ax:feed")],
           [B("📊 Raport sesji", callback_data="ax:rep"), B("🔥 Popularne", callback_data="ax:trend")],
           [B("⚙️ Ile kupować / ustawienia", callback_data="ax:set")],
@@ -542,6 +544,11 @@ async def on_paste(update: Update, ctx):
     s = S(ctx)
     if not getattr(s, "sol", None):
         return
+    from .importer import looks_like_import
+    if looks_like_import(update.message.text or ""):
+        if u := await require_accepted(update, ctx):
+            await import_text(update, s, u, update.message.text)
+        return
     addr = valid_address(update.message.text or "")
     if not addr:
         if not (u := await require_accepted(update, ctx)):
@@ -578,6 +585,120 @@ async def on_paste(update: Update, ctx):
                          [B("👁 Tylko powiadomienia", callback_data=f"aq:watch:{addr}")], MAIN]))
 
 
+# ---------------- import list portfeli (Axiom / GMGN) i lista „Zapisane” ----------------
+
+SAVED_PAGE = 8
+
+
+async def import_text(update: Update, s, u, text: str):
+    from .importer import parse_wallets
+    items = parse_wallets(text)
+    if not items:
+        return await update.effective_chat.send_message("Nie znalazłem w tym żadnego adresu portfela Solany.")
+    new, _ = s.db.save_wallets(u["tg_id"], items, "import")
+    from .api import start_scan
+    start_scan(s, u["tg_id"])
+    kb = []
+    if s.cfg.webapp_url.startswith("https://"):
+        kb.append([B("📱 Wybierz w aplikacji", web_app=WebAppInfo(f"{s.cfg.webapp_url}/app?tab=saved"))])
+    kb += [[B("👥 Lista – włącz wybranych tutaj", callback_data="sv:p:0")], MAIN]
+    await update.effective_chat.send_message(
+        f"📥 <b>Zapisano {len(items)} portfeli</b> (nowe: {new}).\n\n"
+        "Wszyscy są na liście jako ⚪ wyłączeni – kopiowanie setek portfeli naraz wyczyściłoby saldo w kilka minut. "
+        "⭐ Priorytet dostali ci, którym w Axiom włączyłeś wyskakujące alerty – są na samej górze.\n\n"
+        "🔍 Właśnie sprawdzam, kto naprawdę handluje (wiele portfeli z takich list nie robi nic od tygodni) – "
+        "za kilka minut aktywni będą wyżej na liście. Potem włącz 🟢 3–10 najlepszych.",
+        parse_mode=ParseMode.HTML, reply_markup=KB(kb))
+
+
+async def on_document(update: Update, ctx):
+    s = S(ctx)
+    doc = update.message.document
+    if not getattr(s, "sol", None) or not doc:
+        return
+    if not (u := await require_accepted(update, ctx)):
+        return
+    name = (doc.file_name or "").lower()
+    if not name.endswith((".json", ".txt", ".csv")) or (doc.file_size or 0) > 3_000_000:
+        return await update.message.reply_text("Wyślij plik .json z eksportem portfeli (Axiom → Wallet Tracker → "
+                                               "Export) albo .txt z adresami.")
+    data = await (await doc.get_file()).download_as_bytearray()
+    await import_text(update, s, u, bytes(data).decode("utf-8", "ignore"))
+
+
+def _ago(ms: int | None) -> str:
+    if not ms:
+        return "brak świeżych transakcji"
+    m = max(int((now_ms() - ms) / 60000), 0)
+    return f"{m} min temu" if m < 60 else f"{m // 60} h temu" if m < 48 * 60 else f"{m // 1440} dni temu"
+
+
+def saved_view(s, u, page: int = 0, notice: str | None = None) -> tuple[str, KB]:
+    from .api import MAX_COPIED, copied_count, saved_list
+    items = saved_list(s, u["tg_id"])
+    pages = max((len(items) - 1) // SAVED_PAGE + 1, 1)
+    page = min(max(page, 0), pages - 1)
+    lines = ([f"ℹ️ {html.escape(notice)}", ""] if notice else []) + [
+        f"👥 <b>Lista traderów</b> ({len(items)}) · kopiujesz {copied_count(s, u['tg_id'])}/{MAX_COPIED} · "
+        f"strona {page + 1}/{pages}",
+        "🟢 = włączony (bot kopiuje) · ⚪ = wyłączony · ⭐ = priorytet (na górze)", ""]
+    kb = []
+    for it in items[page * SAVED_PAGE:(page + 1) * SAVED_PAGE]:
+        on = it["status"] == "copy"
+        label = f"{'⭐' if it['priority'] else ''}{it['emoji'] or ''} {it['name'] or short(it['wallet'])}".strip()[:26]
+        act = f" · {_ago(it['last_active'])}" if it["checked_at"] else ""
+        lines.append(f"{'🟢' if on else '👁' if it['status'] == 'watch' else '⚪'} {html.escape(label)} · "
+                     f"<code>{short(it['wallet'])}</code>{act}")
+        kb.append([B(label, url=f"https://gmgn.ai/sol/address/{it['wallet']}"),
+                   B("🟢 WŁ" if on else "⚪ WYŁ", callback_data=f"sv:t:{it['wallet']}"),
+                   B("⭐" if it["priority"] else "☆", callback_data=f"sv:s:{it['wallet']}")])
+    if not items:
+        lines.append("Pusto. Wyślij mi plik eksportu z Axiom (Wallet Tracker → Export) albo wklej listę adresów.")
+    nav = []
+    if page > 0:
+        nav.append(B("« Poprzednia", callback_data=f"sv:p:{page - 1}"))
+    if page < pages - 1:
+        nav.append(B("Następna »", callback_data=f"sv:p:{page + 1}"))
+    if nav:
+        kb.append(nav)
+    if items:
+        kb.append([B("🔍 Sprawdź, kto jest aktywny", callback_data="sv:a:0")])
+    kb.append(MAIN)
+    return "\n".join(lines), KB(kb)
+
+
+async def on_saved_button(update: Update, ctx):
+    if not (u := await require_accepted(update, ctx)):
+        return await _ack(update)
+    s = S(ctx)
+    _, act, arg = update.callback_query.data.split(":", 2)
+    if act == "p":
+        await _ack(update)
+        return await show(update, *saved_view(s, u, int(arg)))
+    from . import api
+    if act == "a":
+        r = await api.action(s, u, {"action": "scan_activity"})
+        await _ack(update, r["msg"][:190], True)
+        return
+    items = api.saved_list(s, u["tg_id"])
+    it = next((x for x in items if x["wallet"] == arg), None)
+    if it is None:
+        return await _ack(update, "Nie ma go już na liście", True)
+    try:
+        if act == "t":
+            msg = api.switch(s, u["tg_id"], arg, it["status"] != "copy")
+        else:
+            api.ensure_saved(s, u["tg_id"], arg)
+            s.db.set_priority(u["tg_id"], arg, not it["priority"])
+            msg = "⭐ Priorytet – na górze listy" if not it["priority"] else "Bez priorytetu"
+    except api.ApiError as e:
+        return await _ack(update, str(e)[:190], True)
+    await _ack(update, msg[:190])
+    items = api.saved_list(s, u["tg_id"])
+    idx = next((i for i, x in enumerate(items) if x["wallet"] == arg), 0)
+    return await show(update, *saved_view(s, s.db.get_user(u["tg_id"]), idx // SAVED_PAGE))
+
+
 # ---------------- rozmowy: dodaj portfel, kup za X SOL ----------------
 
 async def add_start(update: Update, ctx):
@@ -588,13 +709,19 @@ async def add_start(update: Update, ctx):
         "➕ <b>Dodaj portfel do kopiowania</b>\n\nWklej adres portfela tradera (z Axiom, GMGN, Solscan, kolscan.io…).\n"
         "Możesz dopisać nazwę po spacji, np. <code>7xKX…AsU Kowal</code>\n\n"
         "👥 <b>Kilku naraz?</b> Wklej kilka adresów – każdy w nowej linii. Bot będzie kopiował wszystkich "
-        "jednocześnie.\n/anuluj – przerwij", parse_mode=ParseMode.HTML)
+        "jednocześnie.\n\n📥 <b>Masz listę z Axiom?</b> Axiom → Wallet Tracker → Export, a potem wyślij mi ten plik "
+        "(.json). Trafi na listę Zapisane, z której wybierzesz, kogo kopiować.\n/anuluj – przerwij",
+        parse_mode=ParseMode.HTML)
     return ADD_ADDR
 
 
 async def add_addr(update: Update, ctx):
     s = S(ctx)
     uid = update.effective_user.id
+    from .importer import looks_like_import
+    if looks_like_import(update.message.text or ""):
+        await import_text(update, s, s.db.get_user(uid), update.message.text)
+        return ConversationHandler.END
     many = wallet_lines(update.message.text or "")
     if len(many) >= 2:
         await _add_many(update, s, uid, many)
@@ -752,9 +879,11 @@ def register(app: Application):
     app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(buyx_start, pattern=r"^tbx:")],
                                         states={BUY_X: [MessageHandler(text, buyx_amount)]},
                                         fallbacks=cancel, allow_reentry=True, conversation_timeout=120))
+    app.add_handler(CallbackQueryHandler(on_saved_button, pattern=r"^sv:(p:\d+|a:0|[ts]:\w+)$"))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^(home|ax:.*|aw:\d+|a[ap]:\d+:.*|aq:.*|tk:.*|tb:.*|ts:.*)$"))
 
 
 def register_paste(app: Application):
     """Wklejony adres – rejestrować NA KOŃCU (po wszystkich rozmowach), żeby nie przechwytywać ich odpowiedzi."""
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, on_paste))
+    app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, on_document))

@@ -189,3 +189,76 @@ def test_admin_overview_and_roles(tmp_path):
     u = upd(FRIEND + 1, data="adm:users")
     asyncio.run(ADM.on_button(u, ctx))
     u.callback_query.answer.assert_called()
+
+
+AXIOM = json.dumps([
+    {"trackedWalletAddress": WALLET, "name": "mils", "emoji": "👻", "alertsOnToast": True, "groups": ["Main"]},
+    {"trackedWalletAddress": W2, "name": "Cupsey", "emoji": "🐐", "alertsOnToast": False, "groups": ["Main"]},
+])
+
+
+def test_axiom_import_switch_and_priority(tmp_path):
+    from copybot.sol.importer import parse_wallets
+    # ucięty eksport (za długie wklejenie) – bierzemy to, co się da
+    cut = AXIOM[:AXIOM.index("Cupsey") + 12]
+    assert [w for w, *_ in parse_wallets(cut)] == [WALLET, W2] and parse_wallets(cut)[0][3] is True
+    s, _, sent = ready(tmp_path)
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "import", "text": AXIOM})
+        assert st == 200 and j["count"] == 2
+        st, j = await call(OWNER, "/api/sol/saved")
+        assert [i["name"] for i in j["items"]] == ["mils", "Cupsey"] and j["items"][0]["priority"]
+        assert all(i["status"] is None for i in j["items"])  # import niczego nie włącza
+        assert s.sol.watched_wallets() == set()  # i nie nasłuchuje (oszczędza limit RPC)
+        st, j = await call(OWNER, "/api/sol/action", {"action": "switch", "wallet": W2, "on": True})
+        assert st == 200 and s.sol.watched_wallets() == {W2}
+        lead = next(ld for ld in s.db.leaders("active") if ld["wallet"] == W2)
+        assert lead["name"] == "🐐 Cupsey"
+        st, j = await call(OWNER, "/api/sol/action", {"action": "priority", "wallet": W2, "on": True})
+        st, j = await call(OWNER, "/api/sol/saved")
+        assert j["items"][0]["status"] == "copy" and j["items"][0]["priority"]  # ⭐ + włączony = na samej górze
+        st, j = await call(OWNER, "/api/sol/state")
+        assert j["wallets"][0]["priority"]
+        st, j = await call(OWNER, "/api/sol/action", {"action": "switch", "wallet": W2, "on": False})
+        st, j = await call(OWNER, "/api/sol/saved")
+        assert len(j["items"]) == 2 and all(i["status"] is None for i in j["items"])  # wyłączony zostaje na liście
+        # ręcznie dodany i wyłączony też nie znika
+        st, j = await call(OWNER, "/api/sol/action", {"action": "add_wallets", "text": "Wa11et3333333333333333333333333333333333333 Nowy"})
+        st, j = await call(OWNER, "/api/sol/action", {"action": "switch", "wallet": "Wa11et3333333333333333333333333333333333333", "on": False})
+        st, j = await call(OWNER, "/api/sol/saved")
+        assert any(i["name"] == "Nowy" and i["status"] is None for i in j["items"])
+    run(s, steps)
+
+
+def test_copy_limit(tmp_path):
+    from copybot.sol import api
+    s, _, _ = ready(tmp_path)
+    s.db.save_wallets(OWNER, [(f"Wa11et{i:037d}", None, None) for i in range(3)], "t")
+    api.MAX_COPIED, old = 2, api.MAX_COPIED
+    try:
+        for it in api.saved_list(s, OWNER)[:2]:
+            api.switch(s, OWNER, it["wallet"], True)
+        try:
+            api.switch(s, OWNER, api.saved_list(s, OWNER)[2]["wallet"], True)
+            raise AssertionError("limit nie zadziałał")
+        except api.ApiError as e:
+            assert "maks. 2" in str(e)
+    finally:
+        api.MAX_COPIED = old
+
+
+def test_bot_import_file_and_toggle(tmp_path):
+    s, ctx, _ = ready(tmp_path)
+    u = upd(OWNER, text=AXIOM)
+    asyncio.run(AX.on_paste(u, ctx))
+    assert "Zapisano 2 portfeli" in u.effective_chat.send_message.call_args.args[0]
+    u = upd(OWNER, data="sv:p:0")
+    asyncio.run(AX.on_saved_button(u, ctx))
+    text = u.callback_query.edit_message_text.call_args.args[0]
+    assert "⭐👻 mils" in text and "Cupsey" in text
+    asyncio.run(AX.on_saved_button(upd(OWNER, data=f"sv:t:{WALLET}"), ctx))
+    assert s.sol.watched_wallets() == {WALLET}
+    asyncio.run(AX.on_saved_button(upd(OWNER, data=f"sv:s:{W2}"), ctx))
+    from copybot.sol.api import saved_list
+    assert [i["wallet"] for i in saved_list(s, OWNER) if i["priority"]] == [WALLET, W2]

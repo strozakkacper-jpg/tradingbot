@@ -113,8 +113,10 @@ class SolEngine:
         return self.db._q("SELECT * FROM leaders WHERE source = 'sol' AND status = 'active' AND wallet = ?", (wallet,))
 
     def watched_wallets(self) -> set[str]:
+        # tylko portfele, które ktoś kopiuje albo obserwuje – każdy nasłuchiwany portfel to zapytania do RPC i Jupitera
         return {r["wallet"] for r in self.db._q(
-            "SELECT DISTINCT wallet FROM leaders WHERE source = 'sol' AND status = 'active' AND wallet IS NOT NULL")}
+            """SELECT DISTINCT l.wallet FROM leaders l JOIN follows f ON f.leader_id = l.id
+               WHERE l.source = 'sol' AND l.status = 'active' AND l.wallet IS NOT NULL""")}
 
     # ---------- salda ----------
     def is_live(self, u) -> bool:
