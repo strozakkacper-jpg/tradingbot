@@ -25,7 +25,8 @@ SETTINGS = {
     "sol_buy_mode": ("mode", None, None), "sol_buy": (float, 0.001, 100), "sol_pct": (float, 0.1, 1000),
     "sol_mult": (float, 0.01, 100), "sol_max": (float, 0, 1000), "sol_slippage_bps": (int, 50, 5000),
     "sol_tp": (float, 0, 10000), "sol_sl": (float, 0, 100), "sol_day_limit": (float, 0, 1000),
-    "sol_safe": (bool, None, None), "sol_x2": (bool, None, None),
+    "sol_safe": (bool, None, None), "sol_x2": (bool, None, None), "sol_no_add": (bool, None, None),
+    "sol_min_lead": (float, 0, 100), "sol_min_hold": (float, 0, 3600),
 }
 
 
@@ -74,12 +75,13 @@ def saved_list(s, uid: int) -> list[dict]:
         out.append({"wallet": r["wallet"], "name": r["name"] or (f["name"] if f else None), "emoji": r["emoji"],
                     "status": (("copy" if f["copy"] else "watch") if f else None), "lid": f["id"] if f else None,
                     "priority": bool(r["priority"] or (f and f["priority"])), "last_active": r["last_active"],
-                    "checked_at": r["checked_at"], "order": i})
+                    "checked_at": r["checked_at"], "order": i,
+                    "hold": s.sol.hold_stats(f["id"]) if f else None})
     for w, f in follows.items():
         if w not in seen:
             out.append({"wallet": w, "name": f["name"], "emoji": None, "status": "copy" if f["copy"] else "watch",
                         "lid": f["id"], "priority": bool(f["priority"]), "last_active": None, "checked_at": None,
-                        "order": -1})
+                        "order": -1, "hold": s.sol.hold_stats(f["id"])})
     out.sort(key=lambda x: (not x["priority"], x["status"] != "copy", -(x["last_active"] or 0), x["order"]))
     return out
 
@@ -186,6 +188,7 @@ async def state(s, u) -> dict:
         ok = isinstance(rep, dict)
         fr = s.db.follow_row(uid, lead["id"])
         wallets.append({"id": lead["id"], "name": lead["name"], "wallet": lead["wallet"], "copy": copy, "n24": n,
+                        "hold": se.hold_stats(lead["id"]),
                         "priority": bool(fr and fr["priority"]),
                         "result": rep["total"] * 100 if ok else None,
                         "spark": [v for _, v in rep["series"]][-30:] if ok else [],
@@ -228,7 +231,7 @@ async def wallet(s, u, lid: int) -> dict:
         stats = None
     mine = s.db._q("""SELECT side, COUNT(*) n, SUM(sol) sol FROM sol_trades WHERE tg_id = ? AND leader_id = ?
                       AND status = 'filled' GROUP BY side""", (uid, lid))
-    return {"id": lid, "name": lead["name"], "wallet": lead["wallet"],
+    return {"id": lid, "name": lead["name"], "wallet": lead["wallet"], "hold": s.sol.hold_stats(lid),
             "status": None if not fr else ("copy" if fr["copy"] else "watch"), "own": own_amount(fr),
             "stats": stats, "mine": {r["side"]: {"n": r["n"], "sol": r["sol"] or 0} for r in mine},
             "can_rename": lead["owner_tg_id"] == uid or uid in admin_ids(s)}

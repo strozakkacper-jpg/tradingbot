@@ -119,6 +119,10 @@ def plural_wallets(n: int) -> str:
     return f"{n} portfeli"
 
 
+def hold_txt(sec: float) -> str:
+    return f"{sec:.0f} s" if sec < 90 else f"{sec / 60:.0f} min" if sec < 5400 else f"{sec / 3600:.1f} h"
+
+
 def follow_amount_txt(fr) -> str | None:
     """Osobna kwota ustawiona dla konkretnego portfela (None = jak w ustawieniach)."""
     if fr and fr["sol_buy"]:
@@ -281,6 +285,12 @@ async def wallet_card(s, u, lid: int, notice: str | None = None) -> tuple[str, K
                   f"({rep['wins']} z {rep['closed']}) · największy spadek po drodze {pct(-rep['max_dd'] * 100)}"]
     except Exception:  # noqa: BLE001
         lines.append("📊 Wyniki chwilowo niedostępne")
+    hs = s.sol.hold_stats(lid)
+    if hs["median_s"] is not None:
+        lines.append(f"⏱ Trzyma tokeny zwykle {hold_txt(hs['median_s'])} ({hs['n']} zamkniętych)"
+                     + ("\n⚡ <b>Flipper</b> – sprzedaje po kilku sekundach. Kopia dochodzi z opóźnieniem, więc "
+                        "kupujesz drożej i sprzedajesz taniej niż on – zwykle nieopłacalne." if hs["median_s"] < 15
+                        and hs["n"] >= 3 else ""))
     mine = s.db._q("""SELECT side, COUNT(*) n, SUM(sol) sol FROM sol_trades WHERE tg_id = ? AND leader_id = ?
                       AND status = 'filled' GROUP BY side""", (uid, lid))
     d = {r["side"]: (r["n"], r["sol"] or 0) for r in mine}

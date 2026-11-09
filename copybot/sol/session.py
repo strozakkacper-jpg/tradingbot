@@ -117,7 +117,12 @@ async def build(s, u) -> str:
                      f"pominięte {len(skipped)} · błędy {len(errors)}")
         lines.append(f"Wydane na zakupy: {sum(r['sol'] or 0 for r in buys):.4f} SOL · "
                      f"dostane ze sprzedaży: {sum(r['sol'] or 0 for r in sells):.4f} SOL")
-        closed = closed_trades(fills)
+        # koszt liczymy z CAŁEJ historii (token mógł być kupiony przed sesją), a do raportu bierzemy tylko
+        # sprzedaże z tej sesji – inaczej zysk ze sprzedanych nie zgadzał się z wynikiem portfela
+        hist = s.db._q("""SELECT t.*, k.symbol FROM sol_trades t LEFT JOIN sol_tokens k ON k.mint = t.mint
+                          WHERE t.tg_id = ? AND t.status = 'filled' AND t.ts <= ? ORDER BY t.id""", (uid, end_ms))
+        closed = [c for paper in (0, 1) for c in closed_trades([r for r in hist if r["paper"] == paper])
+                  if start_ms <= c["ts"] <= end_ms]
         if closed:
             wins = [c for c in closed if c["pnl"] > 0]
             realized = sum(c["pnl"] for c in closed)

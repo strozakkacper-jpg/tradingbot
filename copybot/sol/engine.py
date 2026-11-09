@@ -29,6 +29,7 @@ class Fill:
     sig: str | None
     latency_ms: int
     confirm_s: float | None = None
+    note: str | None = None  # np. „po cenie tradera” (ćwiczenia, gdy Jupiter nie ma trasy)
 
 
 def short(addr: str) -> str:
@@ -49,6 +50,7 @@ class SolEngine:
         self.sem = asyncio.Semaphore(8)
         self._bal: dict[str, tuple[float, int]] = {}  # pubkey -> (czas, lamporty) – szybsze zakupy LIVE
         self._report_cache: dict[int, tuple[float, dict]] = {}
+        self._hold_cache: dict[int, tuple[float, dict]] = {}
         self.watcher = None  # SolWatcher (ustawiany w main)
 
     # ---------- baza ----------
@@ -241,14 +243,17 @@ class SolEngine:
         try:
             self._fresh(t_recv)
             if sw.side == "buy":
-                await self.guard_buy(u, sw)
+                await self.guard_buy(u, sw, lead)
                 amount = await self.buy_amount(u, sw)
             else:
-                held = await self.token_raw(u, sw.mint)
+                # sprzedajemy tylko tokeny kupione za tym traderem – nie ruszamy kupionych za innym
+                # traderem (ten sam token u dwóch traderów) ani kupionych ręcznie
+                held = min(await self.token_raw(u, sw.mint),
+                           self.attributed_raw(u["tg_id"], lead["id"], sw.mint, not live, sw.decimals))
                 if held <= 0:
                     return "none"
                 amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
-            fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals)
+            fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw)
         except Exception as e:  # noqa: BLE001
             err = e
         symbol, decimals = await info_task
@@ -267,7 +272,7 @@ class SolEngine:
             await self.notify(u["tg_id"], f"{head}\n❌ Nie udało się skopiować: {str(e)[:200]}")
             return "error"
         self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, fill.sol, fill.tokens, "filled",
-                    lead["name"], not live, fill.sig, fill.latency_ms)
+                    lead["name"] + (f" · {fill.note}" if fill.note else ""), not live, fill.sig, fill.latency_ms)
         verb = "Kupiono" if sw.side == "buy" else "Sprzedano"
         speed = (f"⚡ skopiowano w {fill.latency_ms / 1000:.2f} s ({fill.latency_ms} ms od wykrycia)"
                  + (f" · sieć potwierdziła po {fill.confirm_s:.1f} s" if fill.confirm_s is not None else ""))
@@ -298,9 +303,55 @@ class SolEngine:
                              AND paper = ? ORDER BY id""", (tg_id, int(paper)))
         return sum(c["pnl"] for c in closed_trades(rows) if c["ts"] >= since)
 
-    async def guard_buy(self, u, sw: Swap):
-        """Bezpieczniki przed skopiowaniem zakupu: dzienny limit straty i 🛡 filtr ryzykownych tokenów."""
+    def attributed_raw(self, tg_id: int, lid: int, mint: str, paper: bool, decimals: int) -> int:
+        """Ile tokenów (jednostki bazowe) kupiono za tym traderem i jeszcze nie sprzedano."""
+        r = self.db._q("""SELECT SUM(CASE WHEN side = 'buy' THEN tokens ELSE -tokens END) t FROM sol_trades
+                          WHERE tg_id = ? AND leader_id = ? AND mint = ? AND paper = ? AND status = 'filled'""",
+                       (tg_id, lid, mint, int(paper)))[0]["t"] or 0
+        return max(int(round(r * 10 ** decimals)), 0)
+
+    def hold_stats(self, lid: int) -> dict:
+        """Jak długo trader trzyma tokeny (z portfela wzorcowego): mediana w sekundach i liczba zamkniętych pozycji."""
+        hit = self._hold_cache.get(lid)
+        if hit and time.monotonic() - hit[0] < 300:
+            return hit[1]
+        rows = self.db._q("SELECT side, mint, tokens, ts FROM sol_trades WHERE tg_id = ? AND status = 'filled' "
+                          "ORDER BY id", (ref_id(lid),))
+        qty: dict[str, float] = {}
+        start: dict[str, int] = {}
+        holds = []
+        for r in rows:
+            q = qty.get(r["mint"], 0.0)
+            if r["side"] == "buy":
+                if q <= 0:
+                    start[r["mint"]] = r["ts"]
+                qty[r["mint"]] = q + (r["tokens"] or 0)
+            elif q > 0:
+                q -= r["tokens"] or 0
+                qty[r["mint"]] = q
+                if q <= 1e-9 * max(r["tokens"] or 1, 1) or q <= 0:
+                    holds.append((r["ts"] - start.pop(r["mint"], r["ts"])) / 1000)
+                    qty[r["mint"]] = 0.0
+        holds.sort()
+        out = {"median_s": holds[len(holds) // 2] if holds else None, "n": len(holds),
+               "fast_share": sum(h < 10 for h in holds) / len(holds) if holds else None}
+        self._hold_cache[lid] = (time.monotonic(), out)
+        return out
+
+    async def guard_buy(self, u, sw: Swap, lead=None):
+        """Bezpieczniki przed skopiowaniem zakupu: limit straty, filtry tradera, „nie dokupuj”, 🛡 ryzyko."""
         keys = u.keys()
+        if lead is not None and "sol_min_hold" in keys and u["sol_min_hold"] > 0:
+            hs = self.hold_stats(lead["id"])
+            if hs["n"] >= 5 and hs["median_s"] is not None and hs["median_s"] < u["sol_min_hold"]:
+                raise Skip(f"⚡ flipper – trzyma tokeny zwykle ok. {hs['median_s']:.0f} s (Twój próg "
+                           f"{u['sol_min_hold']:g} s), kopiowanie nieopłacalne")
+        if "sol_min_lead" in keys and u["sol_min_lead"] > 0:
+            his = await self.trader_sol(sw)
+            if his is not None and his < u["sol_min_lead"]:
+                raise Skip(f"mały zakup tradera ({his:.3g} SOL, Twój próg {u['sol_min_lead']:g} SOL)")
+        if "sol_no_add" in keys and u["sol_no_add"] and await self.token_raw(u, sw.mint) > 0:
+            raise Skip("masz już ten token – nie dokupuję (opcja „Nie dokupuj”)")
         limit = u["sol_day_limit"] if "sol_day_limit" in keys else 0
         if limit and limit > 0:
             pnl = self.day_pnl(u["tg_id"], not self.is_live(u))
@@ -371,7 +422,7 @@ class SolEngine:
         return want
 
     async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,
-                      decimals: int | None = None) -> Fill:
+                      decimals: int | None = None, fallback: Swap | None = None) -> Fill:
         """Kupno: amount_raw = lamporty SOL. Sprzedaż: jednostki tokena."""
         t0 = t_recv or time.monotonic()
         if u["tg_id"] > 0:  # portfel (i saldo demo) musi istnieć PRZED transakcją – inaczej utworzenie go
@@ -385,7 +436,14 @@ class SolEngine:
         except ChainError as e:
             if "Too many requests" in str(e) or "429" in str(e):
                 raise Skip("limit zapytań Jupitera – za dużo transakcji naraz (wyższy plan Jupitera to zniesie)") from e
-            raise Skip(f"brak trasy wymiany ({e})") from e
+            try:  # druga próba: szersze trasy (przez tokeny pośrednie)
+                quote = await self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]), restrict=False)
+            except ChainError:
+                quote = None
+            if quote is None:
+                if not self.is_live(u) and fallback and fallback.quote_symbol == "SOL" and fallback.token_raw > 0:
+                    return self._paper_at_trader_price(u, side, mint, amount_raw, fallback, t0, decimals)
+                raise Skip(f"brak trasy wymiany – Jupiter jeszcze nie obsługuje tego tokena ({e})") from e
         out = int(quote["outAmount"])
         sol_raw, tok_raw = (amount_raw, out) if side == "buy" else (out, amount_raw)
         if not self.is_live(u):
@@ -402,6 +460,21 @@ class SolEngine:
         self._bal.pop(pub, None)
         sig, confirm_s = await self.rpc.send_and_confirm(tx)
         return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s)
+
+    def _paper_at_trader_price(self, u, side, mint, amount_raw, sw: Swap, t0: float, decimals: int) -> Fill:
+        """Ćwiczenia: Jupiter nie zna jeszcze tokena (np. świeży z Pump.fun) – liczymy po cenie z transakcji
+        tradera, o 2% gorzej (poślizg). Na prawdziwych SOL takiej kopii nie da się zrobić bez trasy."""
+        per = sw.quote_amount * LAMPORTS / sw.token_raw
+        if side == "buy":
+            got = int(amount_raw / per * 0.98)
+            self.paper_apply(u["tg_id"], {SOL_MINT: -(amount_raw + PAPER_TX_FEE), mint: got})
+            sol_raw, tok_raw = amount_raw, got
+        else:
+            out = int(amount_raw * per * 0.98)
+            self.paper_apply(u["tg_id"], {mint: -amount_raw, SOL_MINT: out - PAPER_TX_FEE})
+            sol_raw, tok_raw = out, amount_raw
+        return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, int((time.monotonic() - t0) * 1000),
+                    note="po cenie tradera")
 
     async def sell_manual(self, u, mint: str, pct: int) -> Fill:
         held = await self.token_raw(u, mint)

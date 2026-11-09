@@ -318,3 +318,83 @@ def test_notify_retries_network_errors():
             BM.asyncio.sleep = real
     asyncio.run(go())
     assert bot.send_message.call_count == 2
+
+
+def _two_leaders(s):
+    a = s.db.create_leader("A", "sol", OWNER, "active", wallet=WALLET)
+    b = s.db.create_leader("B", "sol", OWNER, "active", wallet=W2)
+    for lid in (a, b):
+        s.db.follow(OWNER, lid, True)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, active=1)
+    return a, b
+
+
+def test_sell_only_tokens_bought_for_that_trader(tmp_path):
+    """Dwóch traderów kupiło ten sam token – sprzedaż jednego nie zrzuca pozycji kupionej za drugim."""
+    s, _, _ = ready(tmp_path)
+    _two_leaders(s)
+    from dataclasses import replace
+    sw_b = replace(swap("buy", 0.1, "b1"), wallet=W2)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "a1"), time.monotonic()))
+    asyncio.run(s.sol.on_swap(W2, sw_b, time.monotonic()))
+    assert s.sol.paper(OWNER)[TOKEN] == 100_000_000  # 2 × 0,05 SOL
+    asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "a2"), time.monotonic()))  # A sprzedaje wszystko
+    assert s.sol.paper(OWNER)[TOKEN] == 50_000_000  # część kupiona za B zostaje
+    # ręczny zakup też nie jest sprzedawany przez tradera
+    asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.05))
+    sw_b2 = replace(swap("sell", 1.0, "b2"), wallet=W2)
+    asyncio.run(s.sol.on_swap(W2, sw_b2, time.monotonic()))
+    assert s.sol.paper(OWNER)[TOKEN] == 50_000_000
+
+
+def test_filters_no_add_small_buys_and_flippers(tmp_path):
+    s, _, sent = ready(tmp_path)
+    a, _ = _two_leaders(s)
+    s.db.update_user(OWNER, sol_no_add=1)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "x1"), time.monotonic()))
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "x2"), time.monotonic()))
+    assert res["skipped"] == 1 and any("nie dokupuję" in t for _, t in sent)
+    s.db.update_user(OWNER, sol_no_add=0, sol_min_lead=2)  # trader kupuje za 1 SOL < 2 SOL
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "x3"), time.monotonic()))
+    assert res["skipped"] == 1 and any("mały zakup tradera" in t for _, t in sent)
+    # flipper: 5 pozycji zamkniętych po 3 s w portfelu wzorcowym
+    from copybot.db import ref_id
+    for i in range(5):
+        s.db._q("INSERT INTO sol_trades (tg_id, leader_id, side, mint, sol, tokens, status, paper, ts) VALUES "
+                "(?, ?, 'buy', ?, 1, 100, 'filled', 1, ?)", (ref_id(a), a, f"M{i}", 1000 * i * 10))
+        s.db._q("INSERT INTO sol_trades (tg_id, leader_id, side, mint, sol, tokens, status, paper, ts) VALUES "
+                "(?, ?, 'sell', ?, 1, 100, 'filled', 1, ?)", (ref_id(a), a, f"M{i}", 1000 * i * 10 + 3000))
+    assert s.sol.hold_stats(a)["median_s"] == 3 and s.sol.hold_stats(a)["n"] == 5
+    s.db.update_user(OWNER, sol_min_lead=0, sol_min_hold=10)
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "x4"), time.monotonic()))
+    assert res["skipped"] == 1 and any("flipper" in t for _, t in sent)
+
+
+def test_demo_fallback_at_trader_price_when_no_route(tmp_path):
+    from copybot.sol.chain import ChainError
+    s, _, sent = ready(tmp_path)
+    _two_leaders(s)
+
+    async def no_route(*a, **kw):
+        raise ChainError("Jupiter: Could not find any route")
+    s.sol.jup.quote = no_route
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic()))
+    # trader: 1 SOL za 1000 jednostek → 0,05 SOL = 50 jednostek, −2% = 49
+    assert res["filled"] == 1 and s.sol.paper(OWNER)[TOKEN] == 49
+    assert "po cenie tradera" in s.sol.history(OWNER)[0]["info"]
+    s.db.update_user(OWNER, sol_live=1)  # na prawdziwych SOL bez trasy – pomijamy
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "s2"), time.monotonic()))
+    assert res.get("skipped") == 1 or res.get("error") == 1
+
+
+def test_session_report_counts_tokens_bought_before_session(tmp_path):
+    from copybot.sol import session
+    s, ctx, _ = ready(tmp_path)
+    _two_leaders(s)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "p1"), time.monotonic()))  # przed sesją
+    asyncio.run(session.start(s, s.db.get_user(OWNER)))
+    s.sol.jup.token_usd = 0.2
+    asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "p2"), time.monotonic()))
+    rep = asyncio.run(session.build(s, s.db.get_user(OWNER)))
+    assert "Sprzedane tokeny: 1" in rep and "z zyskiem 1" in rep

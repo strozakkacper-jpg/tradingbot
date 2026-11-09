@@ -190,6 +190,13 @@ function slMove(id, el) {
 function slSave(id, el) { const c = SLD[id]; c.save(slVal(c, +el.value)); }
 const fSol = v => (v < 0.01 ? v.toFixed(3) : v < 1 ? String(sig2(v)) : String(sig2(v))) + ' SOL';
 const fPct = v => v + '%';
+const fSec = v => v < 90 ? Math.round(v) + ' s' : v < 5400 ? Math.round(v / 60) + ' min' : (v / 3600).toFixed(1) + ' h';
+function holdTxt(h, long) {
+  if (!h || h.median_s == null) return '';
+  const flip = h.median_s < 15 && h.n >= 3;
+  return `<span class="${flip ? 'r' : h.median_s < 60 ? 'y' : 'g'}">${flip ? '⚡ flipper · ' : '⏱ '}trzyma ~${fSec(h.median_s)}</span>`
+    + (long ? ` <span class="mut">(${h.n} zamkn.)</span>` : '');
+}
 
 // ---------- API ----------
 async function api(path, body) {
@@ -297,7 +304,7 @@ function ownTxt(o) { return o.sol ? o.sol + ' SOL' : o.pct ? o.pct + '% jego kwo
 function walletItem(w) {
   return `<div class="item" onclick="openWallet(${w.id})">${avatar(w.name)}
     <div class="sp"><div class="b">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
-      <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}</div></div>
+      <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}${holdTxt(w.hold) ? ' · ' + holdTxt(w.hold) : ''}</div></div>
     <div style="width:64px">${chart(w.spark, 28, true)}</div><div style="min-width:58px;text-align:right">${pct(w.result)}</div></div>`;
 }
 function feedItem(f) {
@@ -393,7 +400,7 @@ function savedRows() {
     return `<div class="item" style="cursor:default">
       <div class="av" onclick="${open}">${esc(it.emoji || (it.name || '?').slice(0, 2).toUpperCase())}</div>
       <div class="sp" onclick="${open}" style="cursor:pointer"><div class="b">${esc(it.name || short(it.wallet))}</div>
-        <div class="mut tiny">${short(it.wallet)}${it.status === 'watch' ? ' · 👁 obserwujesz' : ''}${agoTxt(it) ? ' · ' + agoTxt(it) : ''}</div></div>
+        <div class="mut tiny">${short(it.wallet)}${it.status === 'watch' ? ' · 👁 obserwujesz' : ''}${agoTxt(it) ? ' · ' + agoTxt(it) : ''}${holdTxt(it.hold) ? ' · ' + holdTxt(it.hold) : ''}</div></div>
       <button class="chip" style="padding:6px 10px;${it.priority ? 'color:var(--y);border-color:var(--y)' : ''}" onclick="setPrio('${w}', ${!it.priority})">${it.priority ? '⭐' : '☆'}</button>
       <label class="toggle"><input type="checkbox" ${on ? 'checked' : ''} onchange="setSwitch('${w}', this.checked, this)"><span></span></label></div>`;
   }).join('');
@@ -443,6 +450,8 @@ function renderWallet() {
         <div class="mut tiny">tyle zarobiłby ktoś, kto kopiuje każdy jego ruch${st ? ' od ' + new Date(st.since).toLocaleDateString('pl-PL') : ''}</div></div>
         ${w.status === 'copy' ? '<span class="pill g">✅ Kopiujesz</span>' : w.status === 'watch' ? '<span class="pill">👁 Obserwujesz</span>' : ''}</div>
       <div style="margin:12px -4px 0">${st ? chart(st.series, 110) : ''}</div>
+      ${w.hold && w.hold.median_s != null ? `<div class="small" style="margin-top:8px">${holdTxt(w.hold, true)}</div>` : ''}
+      ${w.hold && w.hold.median_s != null && w.hold.median_s < 15 && w.hold.n >= 3 ? `<div class="warn">⚡ <b>Flipper</b> – sprzedaje po kilku sekundach. Kopia dochodzi z opóźnieniem, więc kupujesz drożej i sprzedajesz taniej niż on. Na ćwiczeniach może wychodzić na plus, na prawdziwych SOL zwykle traci. Rozważ wyłączenie albo ustaw filtr flipperów w ⚙️.</div>` : ''}
       ${st ? `<div class="grid" style="margin-top:10px">
         <div class="stat"><div class="mut tiny">Ostatnie 7 dni</div><div class="v">${pct(st.d7 != null ? st.d7 * 100 : null)}</div></div>
         <div class="stat"><div class="mut tiny">Udane transakcje</div><div class="v">${st.win_rate != null ? Math.round(st.win_rate * 100) + '%' : '—'}</div><div class="mut tiny">${st.wins} z ${st.closed}</div></div>
@@ -605,6 +614,16 @@ function settings() {
     ${modeSlider}
     ${example ? `<div class="note small" style="border:0;margin-top:6px">💡 ${example}</div>` : ''}
     <div class="mut tiny" style="margin-top:6px">Gdy trader sprzedaje, sprzedajesz tę samą część swoich tokenów. Każdemu traderowi możesz ustawić osobną kwotę na jego karcie.</div>
+  </div>
+  <h2>🎯 Co kopiować</h2>
+  <div class="card">
+    <div class="row"><div class="sp"><div class="b">Nie dokupuj</div><div class="mut tiny">Kopiuj tylko pierwszy zakup tokena. Gdy trader dokupuje po trochu (np. po 0,1 SOL), Ty nie wydajesz za każdym razem pełnej kwoty.</div></div>${tgl('sol_no_add', st.sol_no_add)}</div>
+    ${slider('minlead', 'Pomijaj małe zakupy tradera', {min: 0.01, max: 20, log: true, round: R.sol, fmt: v => 'poniżej ' + fSol(v), off: 'wył.', save: v => setS('sol_min_lead', v)}, st.sol_min_lead)}
+    <div class="mut tiny" style="margin:2px 0 8px">Np. 0,5 SOL: gdy trader kupi tylko za 0,2 SOL (test, drobne dokupienie), bot to pominie.</div>
+    ${chips('sol_min_lead', [0, 0.2, 0.5, 1, 2], v => v ? '< ' + v + ' SOL' : 'wył.', st.sol_min_lead)}
+    ${slider('minhold', 'Pomijaj flipperów (trzymają krócej niż)', {min: 1, max: 600, log: true, round: R.int, fmt: fSec, off: 'wył.', save: v => setS('sol_min_hold', v)}, st.sol_min_hold)}
+    <div class="mut tiny" style="margin:2px 0 8px">Trader, który zwykle sprzedaje po kilku sekundach, jest nieopłacalny do kopiowania. Bot ocenia to po co najmniej 5 jego zamkniętych pozycjach.</div>
+    ${chips('sol_min_hold', [0, 10, 20, 60], v => v ? '< ' + v + ' s' : 'wył.', st.sol_min_hold)}
   </div>
   <h2>🛡 Bezpieczniki</h2>
   <div class="card">

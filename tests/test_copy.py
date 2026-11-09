@@ -83,7 +83,8 @@ def test_paper_copy_end_to_end(tmp_path):
     eng = CopyEngine(cfg, db, Vault(cfg.encryption_key), market, notify)
 
     res = asyncio.run(eng.copy(LeaderOrder("A", "BTC/USDT", "buy", 0, 0, 100, 1), 0.25, 1))
-    assert res["filled"] == 2 and res["alert"] == 1 and sorted(sent) == [1, 2, 3]  # 3: tylko powiadomienie
+    # 3 ma wyłączone kopiowanie ⏸ – nie dostaje ani kopii, ani powiadomienia o ruchu kopiowanego tradera
+    assert res["filled"] == 2 and not res.get("alert") and sorted(sent) == [1, 2]
     b1, b2 = db.paper_balances(1), db.paper_balances(2)
     assert b1["USDT"] == pytest.approx(750) and b1["BTC"] == pytest.approx(2.5 * 0.999)
     assert b2["USDT"] == pytest.approx(500)

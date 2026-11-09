@@ -142,14 +142,14 @@ class Jupiter:
             await asyncio.sleep(wait)
         return status, data
 
-    async def quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
+    async def quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int, restrict: bool = True) -> dict:
         """Ta sama wycena w ciągu 2 s (np. Ty i kumpel kupujecie za 0,05 SOL) = jedno zapytanie do Jupitera."""
-        key = (in_mint, out_mint, amount, slippage_bps)
+        key = (in_mint, out_mint, amount, slippage_bps, restrict)
         now = time.monotonic()
         hit = self._quotes.get(key)
         if hit and now - hit[0] < 2.0:
             return await asyncio.shield(hit[1])
-        fut = asyncio.ensure_future(self._quote(in_mint, out_mint, amount, slippage_bps))
+        fut = asyncio.ensure_future(self._quote(in_mint, out_mint, amount, slippage_bps, restrict))
         self._quotes[key] = (now, fut)
         if len(self._quotes) > 500:
             for k in [k for k, (t, _) in self._quotes.items() if now - t > 5]:
@@ -160,9 +160,9 @@ class Jupiter:
             self._quotes.pop(key, None)
             raise
 
-    async def _quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
+    async def _quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int, restrict: bool = True) -> dict:
         params = {"inputMint": in_mint, "outputMint": out_mint, "amount": str(amount),
-                  "slippageBps": str(slippage_bps), "restrictIntermediateTokens": "true"}
+                  "slippageBps": str(slippage_bps), "restrictIntermediateTokens": "true" if restrict else "false"}
         status, data = await self._request("GET", "/swap/v1/quote", params=params)
         if status != 200 or "outAmount" not in data:
             raise ChainError(f"Jupiter: {data.get('error') or data.get('message') or status}")

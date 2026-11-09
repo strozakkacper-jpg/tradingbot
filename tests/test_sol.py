@@ -44,7 +44,7 @@ class FakeJup:
     async def trending(self, interval="1h", limit=10):
         return [await self.token_full(TOKEN)]
 
-    async def quote(self, i, o, amount, slip):
+    async def quote(self, i, o, amount, slip, **kw):
         self.calls += 1
         return {"outAmount": str(amount * 1_000_000 // LAMPORTS * 1000 if i == SOL_MINT else amount * 1000)}
 
