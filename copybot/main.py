@@ -104,6 +104,7 @@ async def post_init(app: Application):
     if cfg.sol_enabled:
         app.job_queue.run_repeating(axiom.tpsl_job, interval=60, first=45)
         app.job_queue.run_repeating(axiom.sol_equity_job, interval=15 * 60, first=120)
+        app.job_queue.run_repeating(axiom.auto_rank_job, interval=6 * 3600, first=600)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("📱 Aplikacja", WebAppInfo(f"{cfg.webapp_url}/app")))

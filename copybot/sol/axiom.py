@@ -861,7 +861,7 @@ async def tpsl_job(ctx):
     if not getattr(s, "sol", None):
         return
     users = s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id "
-                    "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0 OR u.sol_x2 > 0)")
+                    "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0 OR u.sol_x2 > 0 OR u.sol_trail > 0)")
     for u in users:
         try:
             pf = await portfolio(s, u)
@@ -871,12 +871,23 @@ async def tpsl_job(ctx):
             pnl = pos["pnl"]
             if pnl is None:
                 continue
+            # ruchomy stop-loss: pamiętamy szczyt (wielokrotność kosztu) i sprzedajemy po spadku o X% od szczytu,
+            # ale dopiero gdy token był już co najmniej +30% (żeby nie wyrzucało na zwykłych wahaniach)
+            ratio, trail_hit = 1 + pnl / 100, False
+            pkey = f"peak:{u['tg_id']}:{pos['mint']}"
+            if u["sol_trail"]:
+                peak = max(float(s.db.get_state(pkey) or 0), ratio)
+                s.db.set_state(pkey, f"{peak:.4f}")
+                trail_hit = peak >= 1.3 and ratio <= peak * (1 - u["sol_trail"] / 100)
             hit = ("🎯 <b>TAKE-PROFIT</b> – zysk osiągnięty" if u["sol_tp"] and pnl >= u["sol_tp"] else
-                   "🛑 <b>STOP-LOSS</b> – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else None)
+                   "🛑 <b>STOP-LOSS</b> – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else
+                   f"📉 <b>RUCHOMY STOP</b> – spadek o {u['sol_trail']:g}% od szczytu (było ×{peak:.2f})"
+                   if trail_hit else None)
             sym = html.escape(pos["symbol"])
             try:
                 if hit:
                     fill = await s.sol.sell_manual(u, pos["mint"], 100)
+                    s.db.set_state(pkey, "0")
                     await s.sol.say(u, "auto", f"{hit} · {sym}\nBot sprzedał wszystko za <b>{fill.sol:.4f} SOL</b>"
                                                f"{await s.sol.usd_txt(fill.sol)}{s.sol.pnl_line(fill)}",
                                     [[("📊 Token", f"tkn:{pos['mint']}")]])
@@ -894,6 +905,23 @@ async def tpsl_job(ctx):
                                     [[("📊 Token", f"tkn:{pos['mint']}")]])
             except Exception as e:  # noqa: BLE001
                 log.warning("Auto-sprzedaż %s %s: %s", u["tg_id"], pos["symbol"], e)
+
+
+async def auto_rank_job(ctx):
+    """Co kilka godzin sprawdza, komu należy się automatyczna ocena traderów (co 3 dni) – i ją robi."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None):
+        return
+    from .api import auto_rank
+    for u in s.db._q("SELECT * FROM users WHERE approved = 1 AND sol_auto_rank = 1"):
+        key = f"auto_rank:{u['tg_id']}"
+        if now_ms() - int(s.db.get_state(key) or 0) < 3 * 24 * 3600 * 1000:
+            continue
+        s.db.set_state(key, str(now_ms()))
+        try:
+            await auto_rank(s, u)
+        except Exception:  # noqa: BLE001
+            log.exception("Automatyczna ocena traderów %s", u["tg_id"])
 
 
 async def sol_equity_job(ctx):

@@ -4,6 +4,7 @@ Każde zapytanie jest podpisane przez Telegrama (nagłówek X-Init-Data) – spr
 Odpowiedzi to czyste dane (JSON); wygląd robi copybot/webapp/sol.html.
 """
 import asyncio
+import html
 import json
 import logging
 
@@ -29,6 +30,8 @@ SETTINGS = {
     "sol_safe": (bool, None, None), "sol_x2": (bool, None, None), "sol_no_add": (bool, None, None),
     "sol_min_lead": (float, 0, 100), "sol_min_hold": (float, 0, 3600), "sol_priority": (int, 10_000, 10_000_000),
     "sol_paper_start": (float, 0.01, 1000), "sol_notify": ("notify", None, None),
+    "sol_consensus": (int, 0, 5), "sol_cons_window": (float, 1, 120), "sol_boost": (float, 1, 5),
+    "sol_trail": (float, 0, 90), "sol_auto_rank": (bool, None, None),
 }
 
 
@@ -49,11 +52,12 @@ def recommended(balance: float) -> dict:
     def r(x):
         return float(f"{x:.2g}")
     buy = r(min(max(usable * 0.08, 0.01), 2))  # ok. 12 równoległych pozycji
-    return {"sol_buy_mode": "fixed", "sol_buy": buy, "sol_max": r(buy * 1.5),
+    return {"sol_buy_mode": "fixed", "sol_buy": buy, "sol_max": r(buy * 2),
             "sol_day_limit": r(max(usable * 0.15, 0.005)), "sol_no_add": 1,
             "sol_min_lead": 0.5 if balance < 2 else 1.0, "sol_min_hold": 30, "sol_safe": 1, "sol_x2": 1,
             "sol_tp": 0, "sol_sl": 40, "sol_slippage_bps": 1500,
-            "sol_priority": 50_000 if buy < 0.05 else 100_000 if buy < 0.2 else 300_000}
+            "sol_priority": 50_000 if buy < 0.05 else 100_000 if buy < 0.2 else 300_000,
+            "sol_boost": 2, "sol_trail": 30, "sol_auto_rank": 1, "sol_consensus": 0}
 
 
 def today_stats(s, uid: int, paper: bool) -> dict:
@@ -139,19 +143,61 @@ def start_research(s, uid: int) -> bool:
     _RESEARCH[uid] = {"total": len(wallets), "done": 0, "running": True}
 
     async def run():
-        from .research import analyze_wallet
         try:
-            for w in wallets:
-                try:
-                    s.db.set_research(w, await asyncio.wait_for(analyze_wallet(s.sol.rpc, w), 90))
-                except Exception:  # noqa: BLE001
-                    log.debug("Badanie %s", w, exc_info=True)
-                _RESEARCH[uid]["done"] += 1
-                await asyncio.sleep(0.5)  # nie zabieramy limitu RPC kopiowaniu
+            await research_all(s, uid, wallets)
         finally:
             _RESEARCH[uid]["running"] = False
     asyncio.create_task(run())
     return True
+
+
+async def research_all(s, uid: int, wallets: list[str] | None = None):
+    from .research import analyze_wallet
+    wallets = wallets if wallets is not None else [it["wallet"] for it in saved_list(s, uid)]
+    st = _RESEARCH.setdefault(uid, {"total": len(wallets), "done": 0, "running": True})
+    for w in wallets:
+        try:
+            s.db.set_research(w, await asyncio.wait_for(analyze_wallet(s.sol.rpc, w), 90))
+        except Exception:  # noqa: BLE001
+            log.debug("Badanie %s", w, exc_info=True)
+        st["done"] = st.get("done", 0) + 1
+        await asyncio.sleep(0.5)  # nie zabieramy limitu RPC kopiowaniu
+
+
+BAD_LABELS = ("📉 traci", "😴 nie handluje", "⚡ flipper")
+
+
+def apply_rank(s, uid: int) -> tuple[list[str], list[str]]:
+    """Po badaniu: wyłącza kopiowanych, którzy tracą / nie handlują / flipują, i włącza najlepszych na ich miejsce
+    (tylu, ilu było kopiowanych – min. 3). ⭐ priorytetowych nie wyłącza."""
+    items = saved_list(s, uid)
+    target = max(sum(1 for it in items if it["status"] == "copy"), 3)
+    off = []
+    for it in items:
+        if it["status"] == "copy" and it["label"] in BAD_LABELS and not it["priority"]:
+            switch(s, uid, it["wallet"], False)
+            off.append(it["name"] or short(it["wallet"]))
+    on = enable_best(s, uid, max(target - copied_count(s, uid), 0))
+    return off, on
+
+
+async def auto_rank(s, u) -> tuple[list[str], list[str]]:
+    """Automatyczna ocena: zbadaj całą listę, popraw skład kopiowanych traderów i daj znać."""
+    uid = u["tg_id"]
+    if not saved_list(s, uid):
+        return [], []
+    _RESEARCH[uid] = {"total": len(saved_list(s, uid)), "done": 0, "running": True}
+    try:
+        await research_all(s, uid)
+    finally:
+        _RESEARCH[uid]["running"] = False
+    off, on = apply_rank(s, uid)
+    if off or on:
+        await s.sol.say(u, "auto", "🤖 <b>AUTOMATYCZNA OCENA TRADERÓW</b>\n"
+                        + (f"⚪ Wyłączeni (tracili / nie handlują / flipują): {html.escape(', '.join(off))}\n" if off else "")
+                        + (f"🟢 Włączeni (najlepsze wyniki z 3 dni): {html.escape(', '.join(on))}" if on else
+                           "Brak nowych traderów z oceną 🏆 – kopiujesz mniej osób."))
+    return off, on
 
 
 def remove_inactive(s, uid: int, days: float = 7) -> int:

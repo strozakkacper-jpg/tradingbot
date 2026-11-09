@@ -68,6 +68,7 @@ class SolEngine:
         self._report_cache: dict[int, tuple[float, dict]] = {}
         self._hold_cache: dict[int, tuple[float, dict]] = {}
         self._dec: dict[str, int] = {}  # mint -> miejsca po przecinku (z kont tokenów portfela)
+        self._recent_buys: dict[str, dict[int, float]] = {}  # mint -> {trader: czas zakupu} – sygnał zbiorowy
         self.watcher = None  # SolWatcher (ustawiany w main)
         self.pump = None  # PumpPortal – zapasowa droga dla świeżych tokenów z Pump.fun (ustawiana w main)
 
@@ -284,6 +285,8 @@ class SolEngine:
         # nazwa tokena tylko do powiadomień – pobieramy ją RÓWNOLEGLE, kopiowanie rusza od razu
         # (miejsca po przecinku znamy z samej transakcji tradera)
         info_task = asyncio.create_task(self.token_info(sw.mint, sw.decimals))
+        if sw.side == "buy":
+            self.note_buy(lead["id"], sw.mint)
         followers = []
         paused = self.db.get_state("paused") == "1"  # admin wstrzymał kopiowanie wszystkim
         for u in ([] if paused else self.db.active_followers(lead["id"])):
@@ -321,9 +324,35 @@ class SolEngine:
         err: Exception | None = None
         try:
             self._fresh(t_recv)
+            boost_note = None
             if sw.side == "buy":
-                await self.guard_buy(u, sw, lead)
+                keys = u.keys()
+                need = u["sol_consensus"] if "sol_consensus" in keys else 0
+                boost = u["sol_boost"] if "sol_boost" in keys and u["sol_boost"] else 1
+                cons = self.consensus(u, sw.mint)
+                if need >= 2 and cons < need:
+                    raise Skip(f"⏳ czekam na potwierdzenie – kupił {cons} z {need} Twoich traderów (sygnał zbiorowy)")
+                key = f"boost:{u['tg_id']}:{sw.mint}"
+                already = self.db.get_state(key)
+                holds = await self.token_raw(u, sw.mint) > 0
+                if need >= 2 and already and holds:
+                    raise Skip("już kupione po sygnale zbiorowym – kolejny trader tylko to potwierdza")
+                boosted = cons >= 2 and boost > 1 and not already
+                topup = boosted and holds  # dokładamy do pozycji kupionej za 1. traderem
+                await self.guard_buy(u, sw, lead, allow_add=topup)
                 amount = await self.buy_amount(u, sw)
+                if boosted:
+                    amount = int(amount * ((boost - 1) if topup else boost))
+                    bal = await self.sol_lamports(u)
+                    reserve = int(self.cfg.sol_reserve * LAMPORTS) if live else 0
+                    amount = max(min(amount, bal - reserve - ATA_RENT), 0)
+                    if amount < MIN_BUY:
+                        raise Skip("za mało SOL na podwójną stawkę z sygnału zbiorowego")
+                    boost_note = f"🔥 sygnał zbiorowy ({cons} traderów) ×{boost:g}"
+                elif need >= 2:
+                    boost_note = f"🔥 sygnał zbiorowy ({cons} traderów)"
+                if boosted or need >= 2:
+                    self.db.set_state(key, "1")
             else:
                 # sprzedajemy tylko tokeny kupione za tym traderem – nie ruszamy kupionych za innym
                 # traderem (ten sam token u dwóch traderów) ani kupionych ręcznie
@@ -334,6 +363,8 @@ class SolEngine:
                 amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
             basis = self.cost_basis(u["tg_id"], sw.mint, not live) if sw.side == "sell" else None
             fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw)
+            if boost_note:
+                fill.note = boost_note + (f" · {fill.note}" if fill.note else "")
             if sw.side == "sell":
                 self.sell_pnl(basis, fill)
                 self.after_sell(u, sw.mint, await self.token_raw(u, sw.mint) <= 0 if live else False)
@@ -400,6 +431,22 @@ class SolEngine:
                              AND paper = ? ORDER BY id""", (tg_id, int(paper)))
         return sum(c["pnl"] for c in closed_trades(rows) if c["ts"] >= since)
 
+    def note_buy(self, lid: int, mint: str):
+        now = time.time()
+        self._recent_buys.setdefault(mint, {})[lid] = now
+        if len(self._recent_buys) > 2000:  # sprzątanie starych wpisów
+            for m in [m for m, d in self._recent_buys.items() if now - max(d.values()) > 3600]:
+                self._recent_buys.pop(m, None)
+
+    def consensus(self, u, mint: str) -> int:
+        """Ilu RÓŻNYCH kopiowanych przez Ciebie traderów kupiło ten token w oknie czasu (sygnał zbiorowy)."""
+        keys = u.keys()
+        window = (u["sol_cons_window"] if "sol_cons_window" in keys and u["sol_cons_window"] else 10) * 60
+        mine = {r["leader_id"] for r in self.db._q("SELECT leader_id FROM follows WHERE tg_id = ? AND copy = 1",
+                                                   (u["tg_id"],))}
+        now = time.time()
+        return sum(1 for lid, ts in self._recent_buys.get(mint, {}).items() if lid in mine and now - ts <= window)
+
     def attributed_raw(self, tg_id: int, lid: int, mint: str, paper: bool, decimals: int) -> int:
         """Ile tokenów (jednostki bazowe) kupiono za tym traderem i jeszcze nie sprzedano."""
         r = self.db._q("""SELECT SUM(CASE WHEN side = 'buy' THEN tokens ELSE -tokens END) t FROM sol_trades
@@ -435,7 +482,7 @@ class SolEngine:
         self._hold_cache[lid] = (time.monotonic(), out)
         return out
 
-    async def guard_buy(self, u, sw: Swap, lead=None):
+    async def guard_buy(self, u, sw: Swap, lead=None, allow_add: bool = False):
         """Bezpieczniki przed skopiowaniem zakupu: limit straty, filtry tradera, „nie dokupuj”, 🛡 ryzyko."""
         keys = u.keys()
         if lead is not None and "sol_min_hold" in keys and u["sol_min_hold"] > 0:
@@ -447,7 +494,7 @@ class SolEngine:
             his = await self.trader_sol(sw)
             if his is not None and his < u["sol_min_lead"]:
                 raise Skip(f"mały zakup tradera ({his:.3g} SOL, Twój próg {u['sol_min_lead']:g} SOL)")
-        if "sol_no_add" in keys and u["sol_no_add"] and await self.token_raw(u, sw.mint) > 0:
+        if not allow_add and "sol_no_add" in keys and u["sol_no_add"] and await self.token_raw(u, sw.mint) > 0:
             raise Skip("masz już ten token – nie dokupuję (opcja „Nie dokupuj”)")
         limit = u["sol_day_limit"] if "sol_day_limit" in keys else 0
         if limit and limit > 0:

@@ -552,3 +552,54 @@ def test_clear_notifications_with_pnl_buttons_and_preference(tmp_path):
     asyncio.run(AX.on_button(u, ctx))
     assert "MEME" in u.effective_chat.send_message.call_args.args[0]
     u.callback_query.edit_message_text.assert_not_called()
+
+
+def test_consensus_boost_trailing_and_auto_rank(tmp_path):
+    from dataclasses import replace
+    from copybot.sol import api
+    from copybot.sol.research import summarize
+    s, ctx, sent = ready(tmp_path)
+    a, b = _two_leaders(s)
+    sw_b = lambda side, sig: replace(swap(side, 0.1, sig), wallet=W2)  # noqa: E731
+    # tylko przy potwierdzeniu 2 traderów
+    s.db.update_user(OWNER, sol_consensus=2)
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "c1"), time.monotonic()))
+    assert res["skipped"] == 1 and any("czekam na potwierdzenie" in t for _, t in sent)
+    res = asyncio.run(s.sol.on_swap(W2, sw_b("buy", "c2"), time.monotonic()))
+    assert res["filled"] == 1 and "sygnał zbiorowy" in s.sol.history(OWNER)[0]["info"]
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "c3"), time.monotonic()))  # 3. zakup – już kupione
+    assert res["skipped"] == 1
+    # zawsze kupuj, a przy potwierdzeniu dołóż do ×2
+    s.sol.paper_reset(OWNER)
+    s.sol._recent_buys.clear()
+    s.db._q("DELETE FROM state WHERE key LIKE 'boost:%'")
+    s.db.update_user(OWNER, sol_consensus=0, sol_boost=2, sol_no_add=1, sol_buy=0.05)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "d1"), time.monotonic()))
+    first = s.sol.paper(OWNER)[TOKEN]
+    asyncio.run(s.sol.on_swap(W2, sw_b("buy", "d2"), time.monotonic()))  # potwierdzenie → dokładka mimo „nie dokupuj”
+    assert s.sol.paper(OWNER)[TOKEN] == 2 * first
+    # ruchomy stop: ×3, potem spadek o >30% od szczytu → sprzedaż całości
+    s.db.update_user(OWNER, sol_trail=30, sol_x2=0)
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    s.sol.jup.token_usd = 0.3
+    asyncio.run(AX.tpsl_job(jctx))
+    assert TOKEN in s.sol.paper(OWNER)
+    s.sol.jup.token_usd = 0.19
+    asyncio.run(AX.tpsl_job(jctx))
+    assert TOKEN not in s.sol.paper(OWNER) and any("RUCHOMY STOP" in t for _, t in sent)
+    # automatyczna ocena: tracący trader wyłączony, najlepszy włączony
+    s.db.save_wallets(OWNER, [(WALLET, "A", None), (W2, "B", None), ("Wa11et3333333333333333333333333333333333333", "C", None)], "t")
+    now = time.time()
+    from copybot.sol.parser import Swap as SW
+
+    def x(side, mint, sol):
+        return (now - 100, SW("x", "w", side, mint, 100, 6, "SOL", sol, 1.0, 0))
+    good = summarize("C", [x("buy", "A", 1), (now - 30, x("sell", "A", 2)[1]), x("buy", "B", 1), (now - 20, x("sell", "B", 1.5)[1]),
+                           x("buy", "C", 1), (now - 10, x("sell", "C", 1.2)[1])], 3)
+    bad = summarize("A", [x("buy", "A", 1), (now - 30, x("sell", "A", 0.5)[1]), x("buy", "B", 1), (now - 20, x("sell", "B", 0.4)[1]),
+                          x("buy", "C", 1), (now - 10, x("sell", "C", 0.6)[1])], 3)
+    s.db.set_research("Wa11et3333333333333333333333333333333333333", good)
+    s.db.set_research(WALLET, bad)
+    s.db.set_research(W2, good)
+    off, on = api.apply_rank(s, OWNER)
+    assert off == ["A"] and on == ["C"] and s.sol.watched_wallets() == {W2, "Wa11et3333333333333333333333333333333333333"}

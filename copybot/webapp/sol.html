@@ -661,6 +661,21 @@ function settings() {
     ${example ? `<div class="note small" style="border:0;margin-top:6px">💡 ${example}</div>` : ''}
     <div class="mut tiny" style="margin-top:6px">Gdy trader sprzedaje, sprzedajesz tę samą część swoich tokenów. Każdemu traderowi możesz ustawić osobną kwotę na jego karcie.</div>
   </div>
+  <h2>🚀 Strategia</h2>
+  <div class="card">
+    <div class="b">🔥 Sygnał zbiorowy</div>
+    <div class="mut tiny" style="margin:4px 0 8px">Gdy kilku Twoich traderów kupuje ten sam token w krótkim czasie, to najmocniejszy sygnał. Możesz kupować tylko wtedy albo kupować zawsze, a przy potwierdzeniu dokładać więcej.</div>
+    <div class="seg">${[[0, 'Kupuj zawsze'], [2, 'Tylko gdy 2+'], [3, 'Tylko gdy 3+']].map(([k, l]) => `<button class="${(st.sol_consensus || 0) === k ? 'on' : ''}" onclick="setS('sol_consensus', ${k})">${l}</button>`).join('')}</div>
+    ${slider('boost', 'Stawka przy potwierdzeniu (2+ traderów)', {min: 1, max: 5, round: v => Math.round(v * 2) / 2, fmt: v => v === 1 ? 'zwykła' : '×' + v, save: v => setS('sol_boost', v)}, st.sol_boost || 1)}
+    ${chips('sol_boost', [1, 1.5, 2, 3], v => v === 1 ? 'zwykła' : '×' + v, st.sol_boost || 1)}
+    ${slider('cwin', 'Okno potwierdzenia', {min: 1, max: 60, round: R.int, fmt: v => v + ' min', save: v => setS('sol_cons_window', v)}, st.sol_cons_window || 10)}
+    <div class="b" style="margin-top:16px">📉 Ruchomy stop-loss</div>
+    <div class="mut tiny" style="margin:4px 0 0">Gdy token urośnie (min. +30%), bot pilnuje zysku: sprzeda, jeśli cena spadnie o X% od szczytu. Chroni duże wygrane, gdy trader trzyma za długo.</div>
+    ${slider('trail', 'Sprzedaj po spadku od szczytu o', {min: 5, max: 80, round: R.int, fmt: v => v + '%', off: 'wył.', save: v => setS('sol_trail', v)}, st.sol_trail)}
+    ${chips('sol_trail', [0, 20, 30, 40], v => v ? v + '%' : 'wył.', st.sol_trail)}
+    <div class="row" style="margin-top:16px"><div class="sp"><div class="b">🤖 Automatyczna ocena traderów</div>
+      <div class="mut tiny">Co 3 dni bot bada wszystkich z listy, wyłącza tracących, nieaktywnych i flipperów (oprócz ⭐) i włącza najlepszych na ich miejsce. Dostaniesz podsumowanie w czacie.</div></div>${tgl('sol_auto_rank', st.sol_auto_rank)}</div>
+  </div>
   <h2>🎯 Co kopiować</h2>
   <div class="card">
     <div class="row"><div class="sp"><div class="b">Nie dokupuj</div><div class="mut tiny">Kopiuj tylko pierwszy zakup tokena. Gdy trader dokupuje po trochu (np. po 0,1 SOL), Ty nie wydajesz za każdym razem pełnej kwoty.</div></div>${tgl('sol_no_add', st.sol_no_add)}</div>
@@ -723,10 +738,17 @@ function settings() {
     <button class="btn ghost" onclick="showHtml('Słowniczek', S.glossary)">📖 Słowniczek</button></div></div>`;
 }
 // ustawienia w zwijanych sekcjach – w nagłówku od razu widać, co jest ustawione
-const OPEN = new Set(['Ile wydać']);
+const OPEN = new Set(['Ile wydać', 'Strategia']);
 function secSummary(title) {
   const st = S.settings, f = [];
   if (title.includes('Ile wydać')) return S.default_amount;
+  if (title.includes('Strategia')) {
+    if (st.sol_consensus) f.push('tylko gdy ' + st.sol_consensus + '+ traderów');
+    if (st.sol_boost > 1) f.push('×' + st.sol_boost + ' przy potwierdzeniu');
+    if (st.sol_trail) f.push('ruchomy stop ' + st.sol_trail + '%');
+    if (st.sol_auto_rank) f.push('🤖 auto-ocena');
+    return f.join(' · ') || 'podstawowa – kopiuje każdy zakup';
+  }
   if (title.includes('Co kopiować')) {
     if (st.sol_no_add) f.push('nie dokupuj');
     if (st.sol_min_lead) f.push('zakupy tradera ≥ ' + st.sol_min_lead + ' SOL');
