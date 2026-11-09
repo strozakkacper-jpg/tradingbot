@@ -75,7 +75,7 @@ def score(a: dict) -> float:
     """Wyżej = lepszy do kopiowania. Zysk i skuteczność na plus; flipperzy, brak danych i bezczynność na minus."""
     if not a["closed"]:
         return -100 + a["swaps"]
-    s = a["pnl"] * 10 + (a["win_rate"] or 0) * 40 + min(a["closed"], 15) * 2
+    s = a["pnl"] * 10 + (a["win_rate"] or 0) * 20 + min(a["closed"], 15) * 2
     if a["hold_s"] is not None and a["hold_s"] < 20:
         s -= 60  # flipper – kopia dochodzi za późno
     elif a["hold_s"] is not None and a["hold_s"] < 60:
@@ -90,7 +90,8 @@ def label(a: dict) -> str:
         return "😴 nie handluje"
     if a["hold_s"] is not None and a["hold_s"] < 20:
         return "⚡ flipper"
-    if a["closed"] >= 3 and (a["win_rate"] or 0) >= 0.5 and a["pnl"] > 0:
+    # w memecoinach liczy się wynik: dobry trader często ma mało trafień, ale małe straty i duże wygrane
+    if a["closed"] >= 3 and a["pnl"] > 0:
         return "🏆 dobry"
     if a["closed"] >= 3 and a["pnl"] < 0:
         return "📉 traci"

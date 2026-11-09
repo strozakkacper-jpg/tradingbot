@@ -396,7 +396,7 @@ function savedHtml() {
       <button class="btn ghost" onclick="removeInactive()">🧹 Usuń nieaktywnych</button></div>
     <button class="btn ghost" style="margin-top:8px" ${sc && sc.running ? 'disabled' : ''} onclick="scanActivity()">${sc && sc.running
       ? `🔍 Sprawdzam aktywność… ${sc.done}/${sc.total}` : '🔍 Tylko sprawdź, kto jest aktywny (szybciej)'}</button>
-    <div class="mut tiny" style="margin-top:8px">🏆 dobry = zarabia i trafia ≥50% · ⚡ flipper = trzyma sekundy (kopia nie zdąży) · 📉 traci · 😴 nie handluje</div>
+    <div class="mut tiny" style="margin-top:8px">🏆 dobry = zarabia na zamkniętych pozycjach · ⚡ flipper = trzyma sekundy (kopia nie zdąży) · 📉 traci · 😴 nie handluje</div>
   </div>
   <div class="card" id="savedl">${savedRows()}</div>`;
 }
