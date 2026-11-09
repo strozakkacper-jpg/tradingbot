@@ -110,7 +110,7 @@ def test_copy_demo_fixed_ratio_sell_and_alerts(tmp_path):
     # 10% × 2 z 5 SOL + opłata (sieć + połowa opłaty za szybkość) + depozyt za nowe konto tokena
     from copybot.sol.engine import ATA_RENT, BASE_FEE
     assert s.sol.paper(FRIEND)[SOL_MINT] == 5 * LAMPORTS - LAMPORTS - (BASE_FEE + 250_000) - ATA_RENT
-    assert any(uid == OWNER and "⚡" in t and "ms od wykrycia" in t for uid, t in sent)
+    assert any(uid == OWNER and "⚡" in t and "KUPNO · MEME" in t and "Ty: 0.5000 SOL" in t for uid, t in sent)
     assert any(uid == 300 and "👁 Axiom-wieloryb kupił" in t for uid, t in sent)
     assert s.sol.history(OWNER)[0]["latency_ms"] is not None
 

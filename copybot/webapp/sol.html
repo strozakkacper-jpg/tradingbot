@@ -78,6 +78,13 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;bac
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}.dot.g{background:var(--g);box-shadow:0 0 8px var(--g)}.dot.r{background:var(--r)}
 .ucard{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:12px;margin-bottom:8px;cursor:pointer}
 .ucard:active{transform:scale(.99)}
+details.sec{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);margin-bottom:10px;overflow:hidden}
+details.sec>summary{list-style:none;cursor:pointer;padding:14px;display:flex;align-items:center;gap:10px}
+details.sec>summary::-webkit-details-marker{display:none}
+details.sec>summary .t{font-weight:700}details.sec>summary .s{color:var(--mut);font-size:12px;margin-top:2px}
+details.sec>summary:after{content:"›";margin-left:auto;color:var(--mut);font-size:22px;transition:transform .2s}
+details.sec[open]>summary:after{transform:rotate(90deg)}
+details.sec>.card{border:0;border-top:1px solid var(--line);border-radius:0;margin:0}
 .warn{background:var(--ybg);border:1px solid rgba(234,179,8,.35);border-radius:12px;padding:10px 12px;font-size:13px;margin-top:10px}
 </style>
 </head>
@@ -245,6 +252,7 @@ function render() {
   if (!S) return;
   renderTabs();
   $('#view').innerHTML = ({home, traders, tokens, history, settings, admin: adminTab})[TAB]();
+  if (TAB === 'settings') foldSettings();
 }
 
 function modePill() { return S.live ? '<span class="pill y">💰 Prawdziwe pieniądze</span>' : '<span class="pill a">🧪 Ćwiczenia</span>'; }
@@ -315,7 +323,8 @@ function feedItem(f) {
   return `<div class="item" ${click}><div class="av" style="background:${buy ? 'var(--gbg)' : 'var(--rbg)'}">${buy ? '🟢' : '🔴'}</div>
     <div class="sp"><div class="b">${buy ? 'Kupiono' : 'Sprzedano'} ${esc(f.symbol)}</div>
       <div class="mut tiny">${hhmm(f.ts)} · ${esc(f.info || '')}${f.latency_ms != null ? ' · ⚡' + (f.latency_ms / 1000).toFixed(2) + ' s' : ''}</div></div>
-    <div style="text-align:right"><div class="b">${num(f.sol)} SOL</div><div class="mut tiny">${inUsd(f.sol)}</div></div></div>`;
+    <div style="text-align:right"><div class="b">${buy ? '−' : '+'}${num(f.sol)} SOL</div>
+      ${!buy && f.pnl != null ? `<div class="tiny b ${f.pnl >= 0 ? 'g' : 'r'}">${f.pnl >= 0 ? 'zysk +' : 'strata '}${f.pnl.toFixed(4)}</div>` : `<div class="mut tiny">${inUsd(f.sol)}</div>`}</div></div>`;
 }
 
 // ---------- traderzy ----------
@@ -599,7 +608,15 @@ async function sellTok(p) {
 
 // ---------- historia ----------
 function history() {
+  const d = S.today || {};
   return `
+  <div class="card"><div class="mut small">Dzisiaj</div>
+    <div class="big ${S.today_pnl > 0 ? 'g' : S.today_pnl < 0 ? 'r' : ''}" style="font-size:28px">${solTxt(S.today_pnl, 4)}</div>
+    <div class="mut tiny">${inUsd(S.today_pnl) || ''} wynik na sprzedanych tokenach</div>
+    <div class="kpi" style="margin-top:10px">
+      <div class="stat"><div class="mut tiny">🟢 Kupna</div><div class="v">${d.buys || 0}</div></div>
+      <div class="stat"><div class="mut tiny">🔴 Sprzedaże</div><div class="v">${d.sells || 0}</div><div class="mut tiny">z zyskiem ${d.wins || 0}</div></div>
+      <div class="stat"><div class="mut tiny">⚠️ Pominięte</div><div class="v">${d.skipped || 0}</div></div></div></div>
   <button class="btn" style="margin:4px 0 6px" onclick="openReport()">📊 Raport sesji – ile zarobiłem</button>
   <div class="mut tiny c">Sesja = od włączenia ▶️ do wyłączenia ⏸ kopiowania</div>
   <h2>Wszystkie ruchy</h2>
@@ -636,7 +653,7 @@ function settings() {
   <div class="card" style="border-color:var(--acc)"><div class="b">✨ Ustaw najlepsze pod moje saldo</div>
     <div class="mut tiny" style="margin:4px 0 10px">Bot dobierze kwotę zakupu, limity, filtry i opłaty do tego, ile masz (teraz ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}). Potem możesz wszystko poprawić suwakami.</div>
     <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button></div>
-  <h2>Ile wydać, gdy trader kupi</h2>
+  <h2>💵 Ile wydać, gdy trader kupi</h2>
   <div class="card">
     <div class="seg">${[['fixed', 'Stała kwota'], ['pct', '% jego kwoty'], ['ratio', '% portfela']].map(([k, l]) => `<button class="${m === k ? 'on' : ''}" onclick="setS('sol_buy_mode','${k}')">${l}</button>`).join('')}</div>
     <div class="mut small" style="margin:10px 0 4px">${modeHelp}</div>
@@ -674,10 +691,15 @@ function settings() {
     <div class="mut tiny" style="margin:2px 0 8px">Stop-loss, np. −30% = ucina stratę, zanim urośnie.</div>
     ${chips('sol_sl', [0, 20, 30, 50], v => v ? '−' + v + '%' : 'wył.', st.sol_sl)}
   </div>
-  <h2>Tolerancja ceny</h2>
+  <h2>🎚 Tolerancja ceny</h2>
   <div class="card"><div class="mut tiny">O ile cena może się zmienić, zanim zakup dojdzie do skutku. Memecoiny skaczą – 10–30% to norma; za mało = zakupy często nie wejdą, za dużo = możesz przepłacić.</div>
     ${slider('slip', 'Tolerancja', {min: 50, max: 5000, log: true, round: R.bps, fmt: v => v / 100 + '%', save: v => setS('sol_slippage_bps', v)}, st.sol_slippage_bps)}
     ${chips('sol_slippage_bps', [300, 500, 1000, 2000, 3000], v => v / 100 + '%', st.sol_slippage_bps)}</div>
+  <h2>🔔 Powiadomienia w czacie</h2>
+  <div class="card">
+    <div class="seg">${[['all', 'Wszystkie'], ['sells', 'Tylko wyniki'], ['none', 'Wyłączone']].map(([k, l]) => `<button class="${(st.sol_notify || 'all') === k ? 'on' : ''}" onclick="setS('sol_notify','${k}')">${l}</button>`).join('')}</div>
+    <div class="mut tiny" style="margin-top:8px">${{all: 'Każde kupno, sprzedaż, pominięcie i ruch obserwowanych traderów.', sells: 'Tylko sprzedaże z wynikiem (zysk / strata) i automatyczne sprzedaże – bez zasypywania czatu.', none: 'Bez powiadomień – wszystko widzisz w aplikacji (📜 Historia). Raport sesji i tak przyjdzie.'}[st.sol_notify || 'all']}</div>
+  </div>
   <h2>⚡ Opłata za szybkość</h2>
   <div class="card"><div class="mut tiny">Ile maksymalnie dopłacasz sieci Solana, żeby Twoja transakcja weszła szybciej (tylko 💰 prawdziwe SOL). Przy małych zakupach to realny koszt: 0,002 SOL przy zakupie za 0,05 SOL to 4% w jedną stronę.</div>
     ${slider('prio', 'Maks. opłata na transakcję', {min: 10000, max: 5000000, log: true, round: v => Math.round(v / 1000) * 1000, fmt: v => fSol(v / 1e9), save: v => setS('sol_priority', v)}, st.sol_priority)}
@@ -696,9 +718,47 @@ function settings() {
       <button class="btn ghost" style="margin-top:8px" onclick="resetDemo()">🔄 Zacznij ćwiczenia od nowa</button>
       <div class="mut tiny" style="margin-top:6px">Ćwiczenia liczą prawdziwe koszty: opłatę sieci, opłatę za szybkość i depozyt za konto tokena (wraca po sprzedaży całości).</div>`}
   </div>
-  <h2>Pomoc</h2>
+  <h2>❓ Pomoc</h2>
   <div class="card"><div class="row" style="gap:8px"><button class="btn ghost" onclick="showHtml('Jak to działa', S.help)">❓ Jak to działa</button>
     <button class="btn ghost" onclick="showHtml('Słowniczek', S.glossary)">📖 Słowniczek</button></div></div>`;
+}
+// ustawienia w zwijanych sekcjach – w nagłówku od razu widać, co jest ustawione
+const OPEN = new Set(['Ile wydać']);
+function secSummary(title) {
+  const st = S.settings, f = [];
+  if (title.includes('Ile wydać')) return S.default_amount;
+  if (title.includes('Co kopiować')) {
+    if (st.sol_no_add) f.push('nie dokupuj');
+    if (st.sol_min_lead) f.push('zakupy tradera ≥ ' + st.sol_min_lead + ' SOL');
+    if (st.sol_min_hold) f.push('bez flipperów < ' + fSec(st.sol_min_hold));
+    return f.join(' · ') || 'bez filtrów – kopiuje wszystko';
+  }
+  if (title.includes('Bezpieczniki')) return `maks. ${st.sol_max ? st.sol_max + ' SOL' : 'bez limitu'} na zakup · limit dnia ${st.sol_day_limit ? st.sol_day_limit + ' SOL' : 'wył.'}${st.sol_safe ? ' · 🛡 ryzykowne pomijane' : ''}`;
+  if (title.includes('Automatyczna')) {
+    if (st.sol_x2) f.push('zwrot wkładu ×2');
+    if (st.sol_tp) f.push('zysk +' + st.sol_tp + '%');
+    if (st.sol_sl) f.push('strata −' + st.sol_sl + '%');
+    return f.join(' · ') || 'wyłączona – sprzedaje tylko za traderem';
+  }
+  if (title.includes('Tolerancja')) return st.sol_slippage_bps / 100 + '%';
+  if (title.includes('Powiadomienia')) return {all: 'wszystkie', sells: 'tylko wyniki sprzedaży', none: 'wyłączone'}[st.sol_notify || 'all'];
+  if (title.includes('Opłata')) return 'maks. ' + fSol(st.sol_priority / 1e9) + ' na transakcję';
+  if (title.includes('Pieniądze')) return S.live ? '💰 prawdziwe SOL' : `🧪 ćwiczenia · start ${S.demo_start} SOL`;
+  return '';
+}
+function foldSettings() {
+  document.querySelectorAll('#view h2').forEach(h => {
+    const card = h.nextElementSibling;
+    if (!card || !card.classList.contains('card')) return;
+    const title = h.textContent.trim(), key = title.replace(/^[^\p{L}]+/u, '');
+    const d = document.createElement('details');
+    d.className = 'sec';
+    if ([...OPEN].some(k => key.startsWith(k))) d.open = true;
+    d.innerHTML = `<summary><div><div class="t">${esc(title)}</div><div class="s">${esc(secSummary(title))}</div></div></summary>`;
+    h.replaceWith(d);
+    d.appendChild(card);
+    d.addEventListener('toggle', () => { d.open ? OPEN.add(key) : OPEN.delete(key); if (d.open) haptic(); });
+  });
 }
 function showHtml(title, h) { sheet(hdr(title) + `<div class="card html">${h}</div>`); }
 async function switchMode() {

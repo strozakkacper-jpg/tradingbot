@@ -819,11 +819,15 @@ def register(app: Application):
 
 
 async def make_notify(app: Application):
-    async def notify(tg_id: int, text: str):
+    async def notify(tg_id: int, text: str, html: bool = False, buttons: list | None = None):
+        """buttons: wiersze [(etykieta, callback_data albo https://…)] pod wiadomością."""
+        kb = KB([[B(lbl, url=d) if d.startswith("http") else B(lbl, callback_data=d) for lbl, d in row]
+                 for row in buttons]) if buttons else None
         # ponawiamy przy chwilowych problemach z siecią i przy limicie Telegrama (RetryAfter)
         for attempt in range(4):
             try:
-                await app.bot.send_message(tg_id, text)
+                await app.bot.send_message(tg_id, text, parse_mode=ParseMode.HTML if html else None,
+                                           reply_markup=kb, disable_web_page_preview=True)
                 return
             except Forbidden:  # użytkownik zablokował bota – przestajemy kopiować
                 app.bot_data["svc"].db.update_user(tg_id, active=0)

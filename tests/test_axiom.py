@@ -118,7 +118,7 @@ def test_auto_take_profit(tmp_path):
     assert TOKEN in s.sol.paper(OWNER)  # bez zysku – trzymamy
     s.sol.jup.token_usd = 0.16  # +60%
     asyncio.run(AX.tpsl_job(jctx))
-    assert TOKEN not in s.sol.paper(OWNER) and any("Take-profit" in t for _, t in sent)
+    assert TOKEN not in s.sol.paper(OWNER) and any("TAKE-PROFIT" in t and "Zysk +" in t for _, t in sent)
 
 
 def test_trending_and_settings(tmp_path):

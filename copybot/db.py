@@ -114,6 +114,7 @@ MIGRATIONS = {
     # maks. opłata za szybkość (priority fee) na transakcję – przy małych kwotach to realny koszt
     "sol_priority": "INTEGER NOT NULL DEFAULT 500000",
     "sol_paper_start": "REAL NOT NULL DEFAULT 0",  # kwota startowa ćwiczeń (0 = domyślna z konfiguracji)
+    "sol_notify": "TEXT NOT NULL DEFAULT 'all'",  # powiadomienia: all | sells (tylko sprzedaże z wynikiem) | none
     # sesja = od włączenia do wyłączenia kopiowania – po niej bot wysyła szczegółowy raport
     "session_start": "INTEGER",
     "session_end": "INTEGER",
@@ -132,9 +133,10 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
-               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "session_start", "session_end", "session_sol0", "session_cex0"}
+               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}
+TRADE_MIGRATIONS = {"pnl": "REAL"}  # zysk/strata sprzedaży (SOL) – do powiadomień i historii
 SAVED_MIGRATIONS = {"stats": "TEXT", "score": "REAL", "analyzed_at": "INTEGER"}  # wyniki badania tradera  # bot = utworzony przez bota, import = np. z Axiom
 # osobne ustawienie dla konkretnego kopiowanego portfela: stała kwota (SOL) albo % kwoty tradera
 FOLLOW_MIGRATIONS = {"sol_buy": "REAL", "sol_pct": "REAL", "priority": "INTEGER NOT NULL DEFAULT 0"}
@@ -163,6 +165,10 @@ class DB:
             for name, ddl in FOLLOW_MIGRATIONS.items():
                 if name not in fcols:
                     self.conn.execute(f"ALTER TABLE follows ADD COLUMN {name} {ddl}")
+            tcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(sol_trades)")}
+            for name, ddl in TRADE_MIGRATIONS.items():
+                if name not in tcols:
+                    self.conn.execute(f"ALTER TABLE sol_trades ADD COLUMN {name} {ddl}")
             scols = {r["name"] for r in self.conn.execute("PRAGMA table_info(sol_saved)")}
             for name, ddl in SAVED_MIGRATIONS.items():
                 if name not in scols:

@@ -1,7 +1,9 @@
 """Kopiowanie portfeli Solany (traderzy z Axiom, Pump.fun, Raydium…) – demo i LIVE przez Jupitera."""
 import asyncio
+import html
 import json
 import logging
+import re
 import time
 from collections import Counter
 from dataclasses import dataclass
@@ -42,6 +44,8 @@ class Fill:
     latency_ms: int
     confirm_s: float | None = None
     note: str | None = None  # np. „po cenie tradera” (ćwiczenia, gdy Jupiter nie ma trasy)
+    pnl: float | None = None  # przy sprzedaży: zysk/strata w SOL względem kosztu zakupu
+    pnl_pct: float | None = None
 
 
 def short(addr: str) -> str:
@@ -120,10 +124,39 @@ class SolEngine:
             refund = ATA_RENT - BASE_FEE if amount_raw >= held else 0
             self.paper_apply(uid, {mint: -amount_raw, SOL_MINT: out_raw - fee + refund})
 
-    def record(self, tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, paper, sig=None, lat=None):
+    def record(self, tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, paper, sig=None, lat=None,
+               pnl=None):
         self.db._q("""INSERT INTO sol_trades (tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, paper,
-                      sig, latency_ms, ts) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                   (tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, int(paper), sig, lat, now_ms()))
+                      sig, latency_ms, ts, pnl) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, int(paper), sig, lat, now_ms(),
+                    pnl))
+
+    @staticmethod
+    def sell_pnl(basis, fill: "Fill"):
+        """Zysk/strata ze sprzedaży: przychód minus średni koszt sprzedanej części (basis = przed sprzedażą)."""
+        if basis and basis[1] > 0 and fill.tokens:
+            cost = basis[0] * min(fill.tokens / basis[1], 1.0)
+            if cost > 0:
+                fill.pnl, fill.pnl_pct = fill.sol - cost, (fill.sol / cost - 1) * 100
+        return fill
+
+    async def say(self, u, kind: str, text: str, buttons: list | None = None):
+        """Powiadomienie w czacie wg ustawienia: all = wszystko, sells = tylko sprzedaże z wynikiem, none = nic."""
+        pref = u["sol_notify"] if "sol_notify" in u.keys() and u["sol_notify"] else "all"
+        if pref == "none" or (pref == "sells" and kind not in ("sell", "auto")):
+            return
+        try:
+            await self.notify(u["tg_id"], text, html=True, buttons=buttons)
+        except TypeError:  # prosty notify (np. w testach) – sam tekst
+            await self.notify(u["tg_id"], re.sub(r"<[^>]+>", "", text))
+
+    @staticmethod
+    def pnl_line(fill: "Fill") -> str:
+        if fill.pnl is None:
+            return ""
+        if fill.pnl >= 0:
+            return f"\n💰 <b>Zysk +{fill.pnl:.4f} SOL ({fill.pnl_pct:+.0f}%)</b>"
+        return f"\n📉 <b>Strata {fill.pnl:.4f} SOL ({fill.pnl_pct:+.0f}%)</b>"
 
     def history(self, tg_id: int, limit: int = 12) -> list:
         return self.db._q("""SELECT t.*, k.symbol FROM sol_trades t LEFT JOIN sol_tokens k ON k.mint = t.mint
@@ -265,9 +298,11 @@ class SolEngine:
 
         res = Counter(await asyncio.gather(*(run(u) for u in followers)))
         symbol, decimals = await info_task
-        line = self._leader_line(lead["name"], sw, symbol, decimals)
+        alert = (f"👁 <b>{html.escape(lead['name'])}</b> {'kupił' if sw.side == 'buy' else 'sprzedał'} "
+                 f"<b>{html.escape(symbol)}</b> za {sw.quote_amount:.3g} {sw.quote_symbol}"
+                 + (f" ({sw.fraction * 100:.0f}% swoich)" if sw.side == "sell" else ""))
         for u in self.db.watchers(lead["id"]):
-            await self.notify(u["tg_id"], f"👁 {line}")
+            await self.say(u, "alert", alert, [[("📊 Token", f"tkn:{sw.mint}")]])
             res["alert"] += 1
         asyncio.create_task(self._reference(lead, sw))
         log.info("Solana %s: %s %s → %s", lead["name"], sw.side, symbol, dict(res))
@@ -297,35 +332,51 @@ class SolEngine:
                 if held <= 0:
                     return "none"
                 amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
+            basis = self.cost_basis(u["tg_id"], sw.mint, not live) if sw.side == "sell" else None
             fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw)
             if sw.side == "sell":
+                self.sell_pnl(basis, fill)
                 self.after_sell(u, sw.mint, await self.token_raw(u, sw.mint) <= 0 if live else False)
         except Exception as e:  # noqa: BLE001
             err = e
         symbol, decimals = await info_task
-        head = "🟣 " + self._leader_line(lead["name"], sw, symbol, decimals)
+        sym = html.escape(symbol)
+        name = html.escape(lead["name"])
+        mode = "💰 prawdziwe SOL" if live else "🧪 ćwiczenia"
+        trader = (f"👤 {name} {'kupił' if sw.side == 'buy' else 'sprzedał'} "
+                  + (f"za {sw.quote_amount:.3g} {sw.quote_symbol}" if sw.side == "buy"
+                     else f"{sw.fraction * 100:.0f}% swoich (za {sw.quote_amount:.3g} {sw.quote_symbol})"))
+        token_btn = [("📊 Token", f"tkn:{sw.mint}")]
         try:
             if err is not None:
                 raise err
         except Skip as e:
             log.info("Solana %s → %s: pominięto – %s", lead["name"], u["tg_id"], str(e)[:160])
             self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "skipped", str(e), not live)
-            await self.notify(u["tg_id"], f"{head}\n⚠️ Nie skopiowano: {e}")
+            await self.say(u, "skip", f"⚠️ <b>POMINIĘTO · {sym}</b>\n{trader}\nPowód: {html.escape(str(e))}",
+                           [token_btn])
             return "skipped"
         except Exception as e:  # noqa: BLE001
             log.exception("Solana: kopiowanie dla %s", u["tg_id"])
             self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "error", str(e)[:300], not live)
-            await self.notify(u["tg_id"], f"{head}\n❌ Nie udało się skopiować: {str(e)[:200]}")
+            await self.say(u, "error", f"❌ <b>BŁĄD · {sym}</b>\n{trader}\n{html.escape(str(e)[:200])}", [token_btn])
             return "error"
         self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, fill.sol, fill.tokens, "filled",
-                    lead["name"] + (f" · {fill.note}" if fill.note else ""), not live, fill.sig, fill.latency_ms)
-        verb = "Kupiono" if sw.side == "buy" else "Sprzedano"
-        speed = (f"⚡ skopiowano w {fill.latency_ms / 1000:.2f} s ({fill.latency_ms} ms od wykrycia)"
-                 + (f" · sieć potwierdziła po {fill.confirm_s:.1f} s" if fill.confirm_s is not None else ""))
-        await self.notify(u["tg_id"], f"{head}\n✅ {verb} {fmt_tokens(fill.tokens)} {symbol} za {fill.sol:.4f} SOL"
-                                      f"{await self.usd_txt(fill.sol)} · "
-                                      f"{'💰 prawdziwe SOL' if live else '🧪 ćwiczenia (wirtualne SOL)'}\n{speed}"
-                                      + (f"\nhttps://solscan.io/tx/{fill.sig}" if fill.sig else ""))
+                    lead["name"] + (f" · {fill.note}" if fill.note else ""), not live, fill.sig, fill.latency_ms,
+                    fill.pnl)
+        usd = await self.usd_txt(fill.sol)
+        speed = f"⚡ {fill.latency_ms / 1000:.2f} s" + (f" (+{fill.confirm_s:.1f} s sieć)" if fill.confirm_s else "")
+        extra = f" · {fill.note}" if fill.note else ""
+        links = [("🔍 Solscan", f"https://solscan.io/tx/{fill.sig}")] if fill.sig else []
+        if sw.side == "buy":
+            text = (f"🟢 <b>KUPNO · {sym}</b>\n{trader}\n"
+                    f"💵 Ty: <b>{fill.sol:.4f} SOL</b>{usd} → {fmt_tokens(fill.tokens)} {sym}\n{speed} · {mode}{extra}")
+            buttons = [token_btn + [("🔴 Sprzedaj", f"tsn:100:{sw.mint}")]] + ([links] if links else [])
+        else:
+            text = (f"🔴 <b>SPRZEDAŻ · {sym}</b>\n{trader}\n"
+                    f"💵 Ty: dostałeś <b>{fill.sol:.4f} SOL</b>{usd}{self.pnl_line(fill)}\n{speed} · {mode}{extra}")
+            buttons = [token_btn + links]
+        await self.say(u, sw.side, text, buttons)
         return "filled"
 
     def _fresh(self, t_recv: float | None):
@@ -641,10 +692,11 @@ class SolEngine:
         held = await self.token_raw(u, mint)
         if held <= 0:
             raise Skip("nie masz tego tokena")
-        fill = await self.execute(u, "sell", mint, held if pct >= 100 else int(held * pct / 100))
+        basis = self.cost_basis(u["tg_id"], mint, not self.is_live(u))
+        fill = self.sell_pnl(basis, await self.execute(u, "sell", mint, held if pct >= 100 else int(held * pct / 100)))
         self.after_sell(u, mint, pct >= 100)
         self.record(u["tg_id"], None, None, "sell", mint, fill.sol, fill.tokens, "filled", "ręcznie",
-                    not self.is_live(u), fill.sig, fill.latency_ms)
+                    not self.is_live(u), fill.sig, fill.latency_ms, fill.pnl)
         return fill
 
     # ---------- portfel wzorcowy i wyniki tradera (w SOL) ----------

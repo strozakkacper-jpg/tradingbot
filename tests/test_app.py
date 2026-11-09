@@ -148,7 +148,7 @@ def test_x2_sells_half_once(tmp_path):
     s.sol.jup.token_usd = 0.25  # ×2,5
     jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
     asyncio.run(AX.tpsl_job(jctx))
-    assert s.sol.paper(OWNER)[TOKEN] == 250_000_000 and any("Zwrot wkładu" in t for _, t in sent)
+    assert s.sol.paper(OWNER)[TOKEN] == 250_000_000 and any("ZWROT WKŁADU" in t for _, t in sent)
     asyncio.run(AX.tpsl_job(jctx))
     assert s.sol.paper(OWNER)[TOKEN] == 250_000_000  # drugi raz nie sprzedaje
 
@@ -510,3 +510,45 @@ def test_research_scoring_and_list_tools(tmp_path):
     assert api.enable_best(s, OWNER) == ["Dobry"] and s.sol.watched_wallets() == {WALLET}
     assert api.remove_inactive(s, OWNER) == 1  # śpioch usunięty, flipper (aktywny) zostaje
     assert [i["name"] for i in api.saved_list(s, OWNER)] == ["Dobry", "Flip"]
+
+
+def test_clear_notifications_with_pnl_buttons_and_preference(tmp_path):
+    s, ctx, _ = ready(tmp_path)
+    got = []
+
+    async def rich_notify(uid, text, html=False, buttons=None):
+        got.append((uid, text, html, buttons))
+    s.sol.notify = rich_notify
+    lid = s.db.create_leader("Kowal", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, active=1)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic()))
+    uid, text, is_html, buttons = got[-1]
+    assert is_html and "🟢 <b>KUPNO · MEME</b>" in text and "👤 Kowal kupił za 1 SOL" in text
+    assert buttons[0][0] == ("📊 Token", f"tkn:{TOKEN}") and buttons[0][1][1] == f"tsn:100:{TOKEN}"
+    s.sol.jup.token_usd = 0.2  # cena ×2
+    asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "s2"), time.monotonic()))
+    text = got[-1][1]
+    assert "🔴 <b>SPRZEDAŻ · MEME</b>" in text and "💰 <b>Zysk +" in text
+    assert s.sol.history(OWNER)[0]["pnl"] > 0  # wynik zapisany w historii
+    # tylko wyniki: kupna nie przychodzą, sprzedaże tak
+    s.db.update_user(OWNER, sol_notify="sells")
+    n = len(got)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "b3"), time.monotonic()))
+    assert len(got) == n
+    asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "s4"), time.monotonic()))
+    assert len(got) == n + 1 and "SPRZEDAŻ" in got[-1][1]
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/state")
+        assert j["today"]["buys"] == 2 and j["today"]["sells"] == 2 and j["today"]["wins"] >= 1
+        assert any(f["pnl"] is not None for f in j["feed"])
+        st, j = await call(OWNER, "/api/sol/action", {"action": "settings", "field": "sol_notify", "value": "zle"})
+        assert st == 400
+    run(s, steps)
+    # przycisk 📊 Token pod powiadomieniem wysyła NOWĄ wiadomość (powiadomienie zostaje)
+    u = upd(OWNER, data=f"tkn:{TOKEN}")
+    asyncio.run(AX.on_button(u, ctx))
+    assert "MEME" in u.effective_chat.send_message.call_args.args[0]
+    u.callback_query.edit_message_text.assert_not_called()

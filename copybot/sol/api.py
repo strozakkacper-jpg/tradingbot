@@ -28,7 +28,7 @@ SETTINGS = {
     "sol_tp": (float, 0, 10000), "sol_sl": (float, 0, 100), "sol_day_limit": (float, 0, 1000),
     "sol_safe": (bool, None, None), "sol_x2": (bool, None, None), "sol_no_add": (bool, None, None),
     "sol_min_lead": (float, 0, 100), "sol_min_hold": (float, 0, 3600), "sol_priority": (int, 10_000, 10_000_000),
-    "sol_paper_start": (float, 0.01, 1000),
+    "sol_paper_start": (float, 0.01, 1000), "sol_notify": ("notify", None, None),
 }
 
 
@@ -39,7 +39,7 @@ class ApiError(Exception):
 def _trade(s, r) -> dict:
     return {"ts": r["ts"], "side": r["side"], "mint": r["mint"], "symbol": r["symbol"] or short(r["mint"]),
             "sol": r["sol"], "tokens": r["tokens"], "status": r["status"], "info": r["info"],
-            "latency_ms": r["latency_ms"], "sig": r["sig"]}
+            "latency_ms": r["latency_ms"], "sig": r["sig"], "pnl": r["pnl"] if "pnl" in r.keys() else None}
 
 
 def recommended(balance: float) -> dict:
@@ -54,6 +54,18 @@ def recommended(balance: float) -> dict:
             "sol_min_lead": 0.5 if balance < 2 else 1.0, "sol_min_hold": 30, "sol_safe": 1, "sol_x2": 1,
             "sol_tp": 0, "sol_sl": 40, "sol_slippage_bps": 1500,
             "sol_priority": 50_000 if buy < 0.05 else 100_000 if buy < 0.2 else 300_000}
+
+
+def today_stats(s, uid: int, paper: bool) -> dict:
+    """Podsumowanie dnia (od północy): kupna, sprzedaże, ile z zyskiem, pominięte."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    since = int(datetime.now(ZoneInfo(s.cfg.timezone)).replace(hour=0, minute=0, second=0, microsecond=0)
+                .timestamp() * 1000)
+    r = s.db._q("""SELECT SUM(side = 'buy' AND status = 'filled') buys, SUM(side = 'sell' AND status = 'filled') sells,
+                   SUM(side = 'sell' AND status = 'filled' AND pnl > 0) wins, SUM(status != 'filled') skipped
+                   FROM sol_trades WHERE tg_id = ? AND paper = ? AND ts >= ?""", (uid, int(paper), since))[0]
+    return {k: r[k] or 0 for k in ("buys", "sells", "wins", "skipped")}
 
 
 def last_leader_move(s, uid: int) -> int | None:
@@ -286,6 +298,7 @@ async def state(s, u) -> dict:
         "demo_start": start, "result": (pf["total"] / start - 1) * 100 if not live else None,
         "session_start": u["session_start"] if not u["session_end"] else None, "session_sol0": u["session_sol0"],
         "today_pnl": se.day_pnl(uid, not live),
+        "today": today_stats(s, uid, not live),
         "positions": [{k: p[k] for k in ("mint", "symbol", "tokens", "value", "pnl", "cost")} for p in pf["positions"]],
         "wallets": wallets, "feed": [_trade(s, r) for r in se.history(uid, 30)],
         "series": [[t, v] for t, v in series], "last_latency_ms": last[0]["latency_ms"] if last else None,
@@ -488,6 +501,10 @@ async def action(s, u, body: dict) -> dict:
             val = body.get("value")
             if val not in ("fixed", "pct", "ratio"):
                 raise ApiError("Nieznany tryb")
+        elif typ == "notify":
+            val = body.get("value")
+            if val not in ("all", "sells", "none"):
+                raise ApiError("Nieznana opcja")
         elif typ is bool:
             val = int(bool(body.get("value")))
         else:

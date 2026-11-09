@@ -269,7 +269,10 @@ def _feed_line(s, r) -> str:
     if r["status"] == "filled":
         lat = f" ⚡{r['latency_ms'] / 1000:.2f} s" if r["latency_ms"] is not None else ""
         verb = "kupiono" if r["side"] == "buy" else "sprzedano"
-        return f"{'🟢' if r['side'] == 'buy' else '🔴'} {t} {verb} <b>{sym}</b> za {r['sol']:.4f} SOL · {src}{lat}"
+        pnl = r["pnl"] if "pnl" in r.keys() else None
+        res = (f" · <b>{'zysk +' if pnl >= 0 else 'strata '}{pnl:.4f}</b>" if r["side"] == "sell" and pnl is not None
+               else "")
+        return f"{'🟢' if r['side'] == 'buy' else '🔴'} {t} {verb} <b>{sym}</b> za {r['sol']:.4f} SOL{res} · {src}{lat}"
     return f"⚠️ {t} {sym} – nie skopiowano: <i>{html.escape((r['info'] or r['status'])[:60])}</i>"
 
 
@@ -525,6 +528,23 @@ async def on_button(update: Update, ctx):
             msg = "✅ Kopiujesz ten portfel" + ("" if u["active"] else " – włącz kopiowanie na pulpicie ▶️")
             await _ack(update, msg[:190], True)
             return await show(update, *await wallet_card(s, s.db.get_user(uid), lid, msg if mode == "copy" else None))
+        if p[0] in ("tkn", "tsn"):  # przyciski pod powiadomieniem – odpowiedź w NOWEJ wiadomości
+            mint = p[-1]
+            notice = None
+            if p[0] == "tsn":
+                await _ack(update, "Sprzedaję…")
+                try:
+                    fill = await s.sol.sell_manual(u, mint, int(p[1]))
+                    notice = (f"✅ Sprzedano za {fill.sol:.4f} SOL{await s.sol.usd_txt(fill.sol)}"
+                              + (f" · {'zysk' if fill.pnl >= 0 else 'strata'} {fill.pnl:+.4f} SOL ({fill.pnl_pct:+.0f}%)"
+                                 if fill.pnl is not None else ""))
+                except Skip as e:
+                    notice = f"⚠️ {e}"
+            else:
+                await _ack(update, "⏳")
+            text, kb = await asyncio.wait_for(token_card(s, s.db.get_user(uid), mint, notice), UI_TIMEOUT)
+            return await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML, reply_markup=kb,
+                                                            disable_web_page_preview=True)
         if p[0] == "tk":
             await _ack(update, "⏳")
             return await show(update, *await asyncio.wait_for(token_card(s, u, p[1]), UI_TIMEOUT))
@@ -851,13 +871,15 @@ async def tpsl_job(ctx):
             pnl = pos["pnl"]
             if pnl is None:
                 continue
-            hit = ("🎯 Take-profit – zysk osiągnięty!" if u["sol_tp"] and pnl >= u["sol_tp"] else
-                   "🛑 Stop-loss – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else None)
+            hit = ("🎯 <b>TAKE-PROFIT</b> – zysk osiągnięty" if u["sol_tp"] and pnl >= u["sol_tp"] else
+                   "🛑 <b>STOP-LOSS</b> – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else None)
+            sym = html.escape(pos["symbol"])
             try:
                 if hit:
                     fill = await s.sol.sell_manual(u, pos["mint"], 100)
-                    await s.sol.notify(u["tg_id"], f"{hit}\n{pos['symbol']}: {pnl:+.1f}% → bot sprzedał wszystko za "
-                                                   f"{fill.sol:.4f} SOL{await s.sol.usd_txt(fill.sol)}")
+                    await s.sol.say(u, "auto", f"{hit} · {sym}\nBot sprzedał wszystko za <b>{fill.sol:.4f} SOL</b>"
+                                               f"{await s.sol.usd_txt(fill.sol)}{s.sol.pnl_line(fill)}",
+                                    [[("📊 Token", f"tkn:{pos['mint']}")]])
                 elif u["sol_x2"] and pnl >= 100:
                     key = f"x2:{u['tg_id']}:{pos['mint']}"
                     prev = s.db.get_state(key)
@@ -865,10 +887,11 @@ async def tpsl_job(ctx):
                         continue  # połowę tej pozycji już sprzedaliśmy
                     fill = await s.sol.sell_manual(u, pos["mint"], 50)
                     s.db.set_state(key, str(pos["tokens"] - fill.tokens))
-                    await s.sol.notify(u["tg_id"], f"💸 Zwrot wkładu – {pos['symbol']} urósł ×2 ({pnl:+.0f}%)\n"
-                                                   f"Bot sprzedał połowę za {fill.sol:.4f} SOL"
-                                                   f"{await s.sol.usd_txt(fill.sol)} – odzyskałeś włożone pieniądze, "
-                                                   "reszta gra dalej za darmo.")
+                    await s.sol.say(u, "auto", f"💸 <b>ZWROT WKŁADU</b> · {sym} urósł ×2 ({pnl:+.0f}%)\n"
+                                               f"Bot sprzedał połowę za <b>{fill.sol:.4f} SOL</b>"
+                                               f"{await s.sol.usd_txt(fill.sol)}{s.sol.pnl_line(fill)}\n"
+                                               "Odzyskałeś wkład – reszta gra dalej za darmo.",
+                                    [[("📊 Token", f"tkn:{pos['mint']}")]])
             except Exception as e:  # noqa: BLE001
                 log.warning("Auto-sprzedaż %s %s: %s", u["tg_id"], pos["symbol"], e)
 
@@ -907,7 +930,7 @@ def register(app: Application):
                                         states={BUY_X: [MessageHandler(text, buyx_amount)]},
                                         fallbacks=cancel, allow_reentry=True, conversation_timeout=120))
     app.add_handler(CallbackQueryHandler(on_saved_button, pattern=r"^sv:(p:\d+|[arbx]:0|[ts]:\w+)$"))
-    app.add_handler(CallbackQueryHandler(on_button, pattern=r"^(home|ax:.*|aw:\d+|a[ap]:\d+:.*|aq:.*|tk:.*|tb:.*|ts:.*)$"))
+    app.add_handler(CallbackQueryHandler(on_button, pattern=r"^(home|ax:.*|aw:\d+|a[ap]:\d+:.*|aq:.*|tk:.*|tb:.*|ts:.*|tkn:.*|tsn:.*)$"))
 
 
 def register_paste(app: Application):
