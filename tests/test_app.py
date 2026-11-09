@@ -285,3 +285,36 @@ def test_admin_pause_stops_solana_copies(tmp_path):
         st, j = await call(OWNER, "/api/sol/state")
         assert "watcher" in j and j["last_leader_move"]
     run(s, steps)
+
+
+def test_reference_uses_trader_price_without_jupiter(tmp_path):
+    """Portfel wzorcowy liczy po cenie tradera – nie zużywa limitu Jupitera."""
+    s, _, _ = ready(tmp_path)
+    lid = s.db.create_leader("K", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, False)
+    before = s.sol.jup.calls
+    asyncio.run(s.sol._reference(s.db.get_leader(lid), swap("buy", 0.1)))  # trader: 1 SOL → 1000 jednostek
+    from copybot.db import ref_id
+    bal = s.sol.paper(ref_id(lid))
+    assert s.sol.jup.calls == before and bal[TOKEN] == 500  # 10% z 5 SOL = 0,5 SOL → 500 jednostek
+    asyncio.run(s.sol._reference(s.db.get_leader(lid), swap("sell", 1.0, "s2")))
+    assert TOKEN not in s.sol.paper(ref_id(lid)) and s.sol.jup.calls == before
+
+
+def test_notify_retries_network_errors():
+    from telegram.error import NetworkError
+    from copybot.bot import make_notify
+    bot = AsyncMock()
+    bot.send_message.side_effect = [NetworkError("x"), None]
+    app = SimpleNamespace(bot=bot, bot_data={})
+
+    async def go():
+        import copybot.bot as BM
+        real = BM.asyncio.sleep
+        BM.asyncio.sleep = AsyncMock()
+        try:
+            await (await make_notify(app))(1, "hej")
+        finally:
+            BM.asyncio.sleep = real
+    asyncio.run(go())
+    assert bot.send_message.call_count == 2

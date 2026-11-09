@@ -257,6 +257,7 @@ class SolEngine:
             if err is not None:
                 raise err
         except Skip as e:
+            log.info("Solana %s → %s: pominięto – %s", lead["name"], u["tg_id"], str(e)[:160])
             self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "skipped", str(e), not live)
             await self.notify(u["tg_id"], f"{head}\n⚠️ Nie skopiowano: {e}")
             return "skipped"
@@ -434,9 +435,23 @@ class SolEngine:
                 amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
             if amount <= 0:
                 return
-            ref = {"tg_id": rid, "sol_live": 0, "sol_slippage_bps": 1000}
-            fill = await self.execute(ref, sw.side, sw.mint, amount)
-            self.record(rid, lead["id"], sw.signature, sw.side, sw.mint, fill.sol, fill.tokens, "filled", None, True)
+            if sw.quote_symbol == "SOL" and sw.token_raw > 0 and sw.quote_amount > 0:
+                # po cenie z transakcji samego tradera – bez zapytania do Jupitera (darmowy limit: 10 / 10 s
+                # zostaje na prawdziwe kopie; wcześniej portfele wzorcowe zjadały połowę limitu)
+                per_token = sw.quote_amount * LAMPORTS / sw.token_raw  # lamporty za 1 jednostkę tokena
+                if sw.side == "buy":
+                    got = int(amount / per_token)
+                    self.paper_apply(rid, {SOL_MINT: -(amount + PAPER_TX_FEE), sw.mint: got})
+                    sol, tok = amount / LAMPORTS, got / 10 ** sw.decimals
+                else:
+                    out = int(amount * per_token)
+                    self.paper_apply(rid, {sw.mint: -amount, SOL_MINT: out - PAPER_TX_FEE})
+                    sol, tok = out / LAMPORTS, amount / 10 ** sw.decimals
+            else:
+                ref = {"tg_id": rid, "sol_live": 0, "sol_slippage_bps": 1000}
+                fill = await self.execute(ref, sw.side, sw.mint, amount)
+                sol, tok = fill.sol, fill.tokens
+            self.record(rid, lead["id"], sw.signature, sw.side, sw.mint, sol, tok, "filled", None, True)
         except Exception:  # noqa: BLE001
             log.debug("Portfel wzorcowy Solany %s", lead["id"], exc_info=True)
 

@@ -11,7 +11,7 @@ from telegram import InlineKeyboardButton as B
 from telegram import InlineKeyboardMarkup as KB
 from telegram import Update, WebAppInfo
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Conflict, Forbidden, NetworkError
+from telegram.error import BadRequest, Conflict, Forbidden, NetworkError, RetryAfter, TimedOut
 from telegram.ext import (Application, CallbackQueryHandler, CommandHandler, ContextTypes, ConversationHandler,
                           MessageHandler, filters)
 
@@ -820,12 +820,22 @@ def register(app: Application):
 
 async def make_notify(app: Application):
     async def notify(tg_id: int, text: str):
-        try:
-            await app.bot.send_message(tg_id, text)
-        except Forbidden:  # użytkownik zablokował bota – przestajemy kopiować
-            app.bot_data["svc"].db.update_user(tg_id, active=0)
-        except Exception:  # noqa: BLE001
-            log.exception("Nie wysłano powiadomienia do %s", tg_id)
+        # ponawiamy przy chwilowych problemach z siecią i przy limicie Telegrama (RetryAfter)
+        for attempt in range(4):
+            try:
+                await app.bot.send_message(tg_id, text)
+                return
+            except Forbidden:  # użytkownik zablokował bota – przestajemy kopiować
+                app.bot_data["svc"].db.update_user(tg_id, active=0)
+                return
+            except RetryAfter as e:
+                await asyncio.sleep(min(float(e.retry_after), 30) + 0.5)
+            except (TimedOut, NetworkError):
+                await asyncio.sleep(1.5 * (attempt + 1))
+            except Exception:  # noqa: BLE001
+                log.exception("Nie wysłano powiadomienia do %s", tg_id)
+                return
+        log.warning("Nie wysłano powiadomienia do %s po 4 próbach (sieć/limit Telegrama)", tg_id)
     return notify
 
 
