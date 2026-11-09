@@ -55,6 +55,10 @@ CREATE TABLE IF NOT EXISTS sol_trades (
     side TEXT NOT NULL, mint TEXT NOT NULL, sol REAL, tokens REAL, status TEXT NOT NULL, info TEXT,
     paper INTEGER NOT NULL, sig TEXT, latency_ms INTEGER, ts INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sol_equity (  -- wartość portfela Solany co 15 min (wykres w aplikacji)
+    tg_id INTEGER NOT NULL, ts INTEGER NOT NULL, value REAL NOT NULL, paper INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sol_equity_idx ON sol_equity (tg_id, paper, ts);
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, charge_id TEXT NOT NULL UNIQUE,
     amount INTEGER NOT NULL, recurring INTEGER NOT NULL DEFAULT 0, refunded INTEGER NOT NULL DEFAULT 0,
@@ -89,6 +93,10 @@ MIGRATIONS = {
     "sol_presets": "TEXT NOT NULL DEFAULT '0.05,0.1,0.5,1'",  # szybkie kwoty zakupu na karcie tokena
     "sol_tp": "REAL NOT NULL DEFAULT 0",  # auto take-profit w % (0 = wył.)
     "sol_sl": "REAL NOT NULL DEFAULT 0",  # auto stop-loss w % (0 = wył.)
+    "role": "TEXT NOT NULL DEFAULT 'user'",  # user | admin (właściciel 👑 zawsze jest adminem)
+    "sol_safe": "INTEGER NOT NULL DEFAULT 0",  # 🛡 nie kopiuj zakupów tokenów z ryzykiem 🔴
+    "sol_day_limit": "REAL NOT NULL DEFAULT 0",  # dzienny limit straty w SOL – po nim bot przestaje kupować (0 = wył.)
+    "sol_x2": "INTEGER NOT NULL DEFAULT 0",  # zwrot wkładu: przy +100% sprzedaj połowę
     # sesja = od włączenia do wyłączenia kopiowania – po niej bot wysyła szczegółowy raport
     "session_start": "INTEGER",
     "session_end": "INTEGER",
@@ -107,7 +115,7 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
-               "sol_presets", "sol_tp", "sol_sl", "session_start", "session_end", "session_sol0", "session_cex0"}
+               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 # osobne ustawienie dla konkretnego kopiowanego portfela: stała kwota (SOL) albo % kwoty tradera
 FOLLOW_MIGRATIONS = {"sol_buy": "REAL", "sol_pct": "REAL"}
@@ -311,6 +319,14 @@ class DB:
     # --- historia wartości portfela ---
     def add_equity(self, tg_id: int, value: float, paper: bool, ts: int | None = None):
         self._q("INSERT INTO equity VALUES (?, ?, ?, ?)", (tg_id, ts or now_ms(), value, int(paper)))
+
+    def add_sol_equity(self, tg_id: int, value: float, paper: bool):
+        self._q("INSERT INTO sol_equity VALUES (?, ?, ?, ?)", (tg_id, now_ms(), value, int(paper)))
+
+    def sol_equity_series(self, tg_id: int, paper: bool, since: int = 0) -> list[tuple[int, float]]:
+        return [(r["ts"], r["value"]) for r in self._q(
+            "SELECT ts, value FROM sol_equity WHERE tg_id = ? AND paper = ? AND ts >= ? ORDER BY ts",
+            (tg_id, int(paper), since))]
 
     def equity_series(self, tg_id: int, paper: bool, since: int = 0) -> list[tuple[int, float]]:
         return [(r["ts"], r["value"]) for r in self._q(

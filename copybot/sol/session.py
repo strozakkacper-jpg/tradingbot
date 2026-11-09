@@ -51,7 +51,8 @@ def closed_trades(fills: list) -> list[dict]:
             basis = cost * sold / qty
             proceeds = sol * sold / tokens
             out.append({"mint": f["mint"], "symbol": f["symbol"] or short(f["mint"]), "pnl": proceeds - basis,
-                        "pct": (proceeds / basis - 1) * 100 if basis > 0 else None, "leader_id": f["leader_id"]})
+                        "pct": (proceeds / basis - 1) * 100 if basis > 0 else None, "leader_id": f["leader_id"],
+                        "ts": f["ts"]})
             pos[f["mint"]] = [qty - sold, cost - basis]
     return out
 

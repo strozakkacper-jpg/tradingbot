@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import InlineKeyboardButton as B
 from telegram import InlineKeyboardMarkup as KB
-from telegram import Update
+from telegram import Update, WebAppInfo
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, filters
@@ -22,6 +22,7 @@ from ..bot import S, UI_TIMEOUT, admin_ids, header, require_accepted, show
 from ..db import now_ms
 from .engine import Skip, fmt_tokens, short
 from .parser import LAMPORTS, SOL_MINT
+from .risk import risk, usd  # noqa: F401 – usd używane też przez session/api
 from .ui import valid_address
 
 log = logging.getLogger(__name__)
@@ -39,21 +40,6 @@ async def _ack(update: Update, text=None, alert=False):
             await update.callback_query.answer(text, show_alert=alert)
         except BadRequest:
             pass
-
-
-def usd(x: float | None) -> str:
-    if x is None:
-        return "—"
-    if x >= 1_000_000_000:
-        return f"${x / 1e9:.2f}B"
-    if x >= 1_000_000:
-        return f"${x / 1e6:.2f}M"
-    if x >= 1_000:
-        return f"${x / 1e3:.1f}K"
-    if x >= 1:
-        return f"${x:.2f}"
-    from ..engine import fmt_price
-    return f"${fmt_price(x)}"
 
 
 def pct(x: float | None) -> str:
@@ -140,49 +126,6 @@ def follow_amount_txt(fr) -> str | None:
     return None
 
 
-def risk(info: dict) -> tuple[str, list[str]]:
-    """Prosta ocena ryzyka tokena (🟢/🟡/🔴) + wyjaśnienia dla laika. To podpowiedź, nie gwarancja."""
-    a = info.get("audit") or {}
-    score, notes = 0, []
-    if a.get("mintAuthorityDisabled") is not None:
-        if a["mintAuthorityDisabled"]:
-            notes.append("✅ mint wył. – nikt nie dodrukuje nowych tokenów")
-        else:
-            score += 2
-            notes.append("⚠️ twórca może dodrukować tokeny (Twoje stracą wartość)")
-    if a.get("freezeAuthorityDisabled") is not None:
-        if a["freezeAuthorityDisabled"]:
-            notes.append("✅ nikt nie może zamrozić Twoich tokenów")
-        else:
-            score += 2
-            notes.append("⚠️ twórca może zamrozić Twoje tokeny (nie sprzedasz ich)")
-    liq = info.get("liquidity")
-    if liq is not None:
-        if liq < 10_000:
-            score += 2
-            notes.append(f"⚠️ bardzo mało pieniędzy w puli ({usd(liq)}) – sprzedaż może mocno zbić cenę")
-        elif liq < 50_000:
-            score += 1
-            notes.append(f"🟡 niewiele pieniędzy w puli ({usd(liq)})")
-    holders = info.get("holderCount")
-    if holders is not None:
-        if holders < 100:
-            score += 2
-            notes.append("⚠️ bardzo mało posiadaczy – token jest świeży albo nikt go nie chce")
-        elif holders < 1000:
-            score += 1
-    top = a.get("topHoldersPercentage")
-    if top is not None:
-        if top > 50:
-            score += 2
-            notes.append(f"⚠️ 10 największych portfeli ma {top:.0f}% tokenów – mogą nagle sprzedać i zbić cenę")
-        elif top > 30:
-            score += 1
-            notes.append(f"🟡 10 największych portfeli ma {top:.0f}% tokenów")
-    level = "🟢 niskie" if score <= 1 else "🟡 średnie" if score <= 3 else "🔴 wysokie"
-    return level, notes
-
-
 # ---------------- widoki ----------------
 
 async def home_view(s, u, notice: str | None = None) -> tuple[str, KB]:
@@ -255,7 +198,9 @@ async def home_view(s, u, notice: str | None = None) -> tuple[str, KB]:
     lines += ["", "<i>💡 Wklej adres portfela – zaczniesz go kopiować. Wklej adres tokena – zobaczysz, czy jest "
                   "bezpieczny, i kupisz go ręcznie.</i>"]
 
-    kb = [[B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="ax:tog")],
+    kb = ([[B("📱 Otwórz aplikację (czytelniej)", web_app=WebAppInfo(f"{s.cfg.webapp_url}/app"))]]
+          if s.cfg.webapp_url.startswith("https://") else []) + [
+          [B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="ax:tog")],
           [B("➕ Dodaj portfel", callback_data="ax:add")]] + rows + [
           [B("💼 Moje tokeny", callback_data="ax:pos"), B("📡 Historia", callback_data="ax:feed")],
           [B("📊 Raport sesji", callback_data="ax:rep"), B("🔥 Popularne", callback_data="ax:trend")],
@@ -737,11 +682,12 @@ async def conv_cancel(update: Update, ctx):
 # ---------------- auto take-profit / stop-loss ----------------
 
 async def tpsl_job(ctx):
+    """Co minutę: auto-sprzedaż przy zysku/stracie oraz „zwrot wkładu” (połowa pozycji przy x2)."""
     s = ctx.application.bot_data["svc"]
     if not getattr(s, "sol", None):
         return
     users = s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id "
-                    "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0)")
+                    "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0 OR u.sol_x2 > 0)")
     for u in users:
         try:
             pf = await portfolio(s, u)
@@ -753,14 +699,37 @@ async def tpsl_job(ctx):
                 continue
             hit = ("🎯 Take-profit – zysk osiągnięty!" if u["sol_tp"] and pnl >= u["sol_tp"] else
                    "🛑 Stop-loss – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else None)
-            if not hit:
-                continue
             try:
-                fill = await s.sol.sell_manual(u, pos["mint"], 100)
-                await s.sol.notify(u["tg_id"], f"{hit}\n{pos['symbol']}: {pnl:+.1f}% → bot sprzedał wszystko za "
-                                               f"{fill.sol:.4f} SOL{await s.sol.usd_txt(fill.sol)}")
+                if hit:
+                    fill = await s.sol.sell_manual(u, pos["mint"], 100)
+                    await s.sol.notify(u["tg_id"], f"{hit}\n{pos['symbol']}: {pnl:+.1f}% → bot sprzedał wszystko za "
+                                                   f"{fill.sol:.4f} SOL{await s.sol.usd_txt(fill.sol)}")
+                elif u["sol_x2"] and pnl >= 100:
+                    key = f"x2:{u['tg_id']}:{pos['mint']}"
+                    prev = s.db.get_state(key)
+                    if prev is not None and pos["tokens"] <= float(prev) * 1.05:
+                        continue  # połowę tej pozycji już sprzedaliśmy
+                    fill = await s.sol.sell_manual(u, pos["mint"], 50)
+                    s.db.set_state(key, str(pos["tokens"] - fill.tokens))
+                    await s.sol.notify(u["tg_id"], f"💸 Zwrot wkładu – {pos['symbol']} urósł ×2 ({pnl:+.0f}%)\n"
+                                                   f"Bot sprzedał połowę za {fill.sol:.4f} SOL"
+                                                   f"{await s.sol.usd_txt(fill.sol)} – odzyskałeś włożone pieniądze, "
+                                                   "reszta gra dalej za darmo.")
             except Exception as e:  # noqa: BLE001
-                log.warning("TP/SL %s %s: %s", u["tg_id"], pos["symbol"], e)
+                log.warning("Auto-sprzedaż %s %s: %s", u["tg_id"], pos["symbol"], e)
+
+
+async def sol_equity_job(ctx):
+    """Co 15 min zapisuje wartość portfela Solany – do wykresu w aplikacji."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None):
+        return
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        try:
+            pf = await asyncio.wait_for(portfolio(s, u), 20)
+            s.db.add_sol_equity(u["tg_id"], pf["total"], not s.sol.is_live(u))
+        except Exception:  # noqa: BLE001
+            log.debug("Wykres portfela %s", u["tg_id"], exc_info=True)
 
 
 async def cmd_report(update: Update, ctx):

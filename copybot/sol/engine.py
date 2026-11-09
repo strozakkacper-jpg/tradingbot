@@ -238,6 +238,7 @@ class SolEngine:
         try:
             self._fresh(t_recv)
             if sw.side == "buy":
+                await self.guard_buy(u, sw)
                 amount = await self.buy_amount(u, sw)
             else:
                 held = await self.token_raw(u, sw.mint)
@@ -280,6 +281,39 @@ class SolEngine:
         if late > self.cfg.sol_max_delay_s:
             raise Skip(f"za późno – {late:.0f} s od ruchu tradera (limit {self.cfg.sol_max_delay_s:g} s), "
                        "cena mogła uciec")
+
+    def day_pnl(self, tg_id: int, paper: bool) -> float:
+        """Zarobek/strata (SOL) na tokenach sprzedanych dzisiaj (od północy czasu użytkownika)."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        from .session import closed_trades
+        midnight = datetime.now(ZoneInfo(self.cfg.timezone)).replace(hour=0, minute=0, second=0, microsecond=0)
+        since = int(midnight.timestamp() * 1000)
+        rows = self.db._q("""SELECT t.*, NULL symbol FROM sol_trades t WHERE tg_id = ? AND status = 'filled'
+                             AND paper = ? ORDER BY id""", (tg_id, int(paper)))
+        return sum(c["pnl"] for c in closed_trades(rows) if c["ts"] >= since)
+
+    async def guard_buy(self, u, sw: Swap):
+        """Bezpieczniki przed skopiowaniem zakupu: dzienny limit straty i 🛡 filtr ryzykownych tokenów."""
+        keys = u.keys()
+        limit = u["sol_day_limit"] if "sol_day_limit" in keys else 0
+        if limit and limit > 0:
+            pnl = self.day_pnl(u["tg_id"], not self.is_live(u))
+            if pnl <= -limit:
+                raise Skip(f"🛑 dzienny limit straty – dziś już −{-pnl:.3f} SOL (limit {limit:g} SOL), "
+                           "bot wraca do kupowania jutro")
+        if "sol_safe" in keys and u["sol_safe"]:
+            from .risk import risk
+            try:
+                info = await asyncio.wait_for(self.jup.token_full(sw.mint), 3)
+            except Exception:  # noqa: BLE001
+                info = None
+            if info:
+                level, notes = risk(info)
+                if level.startswith("🔴"):
+                    why = next((n for n in notes if n.startswith("⚠️")), "")
+                    raise Skip(f"🛡 ryzykowny token (🔴) – {why.removeprefix('⚠️ ')}".rstrip(" –"))
 
     async def usd_txt(self, sol: float) -> str:
         """„ (≈ $12.30)” – kurs SOL z pamięci podręcznej (10 s), bez czekania dłużej niż 2 s."""

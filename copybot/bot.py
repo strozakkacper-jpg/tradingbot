@@ -54,16 +54,23 @@ class Services:
     engine: CopyEngine
     watchers: object | None  # watchers.Watchers
     sol: object | None = None  # sol.engine.SolEngine – kopiowanie portfeli Solany
+    bot: object | None = None  # telegram.Bot – do wiadomości HTML z poziomu aplikacji
 
 
 def S(ctx: ContextTypes.DEFAULT_TYPE) -> Services:
     return ctx.application.bot_data["svc"]
 
 
-def admin_ids(s: "Services") -> set[int]:
-    """Admini z .env albo właściciel – pierwsza osoba, która napisała /start."""
+def owner_ids(s: "Services") -> set[int]:
+    """Właściciel 👑: admini z .env albo pierwsza osoba, która napisała /start. Tylko on nadaje rangi."""
     owner = s.db.get_state("owner")
     return set(s.cfg.admin_ids) | ({int(owner)} if owner else set())
+
+
+def admin_ids(s: "Services") -> set[int]:
+    """Właściciel + osoby z rangą administratora ⭐."""
+    return owner_ids(s) | {r["tg_id"] for r in s.db._q(
+        "SELECT tg_id FROM users WHERE role = 'admin' AND approved = 1")}
 
 
 def is_admin(ctx, update: Update) -> bool:
@@ -281,7 +288,8 @@ def exchange_view(s: Services, u) -> tuple[str, KB]:
 def admin_view(s: Services) -> tuple[str, KB]:
     st = s.db.stats()
     paused = s.db.get_state("paused") == "1"
-    owners = admin_ids(s)
+    owners = owner_ids(s)
+    admins = admin_ids(s)
     lines = ["🛠 <b>Admin</b>", "",
              f"Kopiowanie: {'⏸ wstrzymane dla wszystkich' if paused else '🟢 działa'}",
              f"Traderzy: {len(s.db.leaders('active'))} · kopiuje teraz: {st['active']} os. (LIVE: {st['live']})",
@@ -289,7 +297,7 @@ def admin_view(s: Services) -> tuple[str, KB]:
     rows = []
     for u in s.db.approved_users():
         name = f"@{u['username']}" if u["username"] else str(u["tg_id"])
-        role = " 👑" if u["tg_id"] in owners else ""
+        role = " 👑 właściciel" if u["tg_id"] in owners else " ⭐ admin" if u["tg_id"] in admins else ""
         lines.append(f"• {html.escape(name)}{role} – {'▶️ kopiuje' if u['active'] else '⏸'} "
                      f"{'🧪' if u['paper'] else '💰'}")
         if u["tg_id"] not in owners:
@@ -298,6 +306,8 @@ def admin_view(s: Services) -> tuple[str, KB]:
               "<i>Ogłoszenie do wszystkich: /ogloszenie treść</i>"]
     rows.insert(0, [B("▶️ Wznów kopiowanie" if paused else "⏸ Wstrzymaj kopiowanie wszystkim",
                       callback_data="resume" if paused else "pause")])
+    if getattr(s, "sol", None):
+        rows.insert(0, [B("👥 Kto handluje – podgląd wszystkich", callback_data="adm:users")])
     rows.append(HOME)
     return "\n".join(lines), KB(rows)
 

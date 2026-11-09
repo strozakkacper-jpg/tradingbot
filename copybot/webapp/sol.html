@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Copy Trading</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:#0b0d13;--card:#151925;--card2:#1c2131;--line:#262c3e;--text:#eef1f8;--mut:#8b93a9;--mut2:#5d6479;
+  --acc:#8b5cf6;--acc2:#a78bfa;--g:#22c55e;--gbg:rgba(34,197,94,.12);--r:#ef4444;--rbg:rgba(239,68,68,.12);
+  --y:#eab308;--ybg:rgba(234,179,8,.12);--rad:16px;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+body{padding:12px 14px calc(84px + env(safe-area-inset-bottom))}
+h2{font-size:13px;font-weight:600;color:var(--mut);text-transform:uppercase;letter-spacing:.06em;margin:22px 4px 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:14px;margin-bottom:10px}
+.row{display:flex;align-items:center;gap:10px}.sp{flex:1;min-width:0}.mut{color:var(--mut)}.small{font-size:13px}.tiny{font-size:12px}
+.g{color:var(--g)}.r{color:var(--r)}.y{color:var(--y)}.b{font-weight:700}.c{text-align:center}
+.big{font-size:34px;font-weight:800;letter-spacing:-.02em;line-height:1.1}
+.pill{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;font-size:12px;font-weight:600;background:var(--card2);color:var(--mut)}
+.pill.g{background:var(--gbg);color:var(--g)}.pill.r{background:var(--rbg);color:var(--r)}.pill.y{background:var(--ybg);color:var(--y)}.pill.a{background:rgba(139,92,246,.15);color:var(--acc2)}
+.btn{display:block;width:100%;border:0;border-radius:14px;padding:15px;font-size:16px;font-weight:700;color:#fff;background:var(--acc);cursor:pointer}
+.btn.g{background:var(--g);color:#04210f}.btn.r{background:var(--r)}.btn.ghost{background:var(--card2);color:var(--text)}
+.btn:active,.chip:active,.item:active{transform:scale(.98);opacity:.85}
+.btn[disabled]{opacity:.5}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line);background:var(--card2);color:var(--text);border-radius:99px;padding:8px 14px;font-size:14px;font-weight:600;cursor:pointer}
+.chip.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.chip.red{color:var(--r)}
+.seg{display:flex;background:var(--card2);border-radius:12px;padding:3px;gap:3px}
+.seg button{flex:1;border:0;background:none;color:var(--mut);padding:9px 4px;border-radius:10px;font-weight:600;font-size:13px}
+.seg button.on{background:var(--acc);color:#fff}
+.item{display:flex;align-items:center;gap:12px;padding:12px 2px;border-bottom:1px solid var(--line);cursor:pointer}
+.item:last-child{border-bottom:0}
+.av{width:40px;height:40px;border-radius:12px;background:var(--card2);display:flex;align-items:center;justify-content:center;font-weight:800;flex:none;overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--card2);border-radius:12px;padding:10px 12px}.stat .v{font-size:17px;font-weight:700;margin-top:2px}
+input,textarea{width:100%;background:var(--card2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px;font:inherit;outline:none}
+input:focus,textarea:focus{border-color:var(--acc)}
+textarea{min-height:76px;resize:vertical}
+.tabs{position:fixed;left:0;right:0;bottom:0;display:flex;background:rgba(15,18,27,.96);backdrop-filter:blur(10px);border-top:1px solid var(--line);padding:6px 4px calc(6px + env(safe-area-inset-bottom));z-index:5}
+.tabs button{flex:1;border:0;background:none;color:var(--mut2);font-size:11px;font-weight:600;display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 0}
+.tabs button .i{font-size:21px;filter:grayscale(1);opacity:.7}
+.tabs button.on{color:var(--text)}.tabs button.on .i{filter:none;opacity:1}
+.sheet{position:fixed;inset:0;background:var(--bg);z-index:10;overflow-y:auto;padding:12px 14px 40px;display:none}
+.sheet.open{display:block;animation:up .18s ease-out}
+@keyframes up{from{transform:translateY(24px);opacity:0}to{transform:none;opacity:1}}
+.top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.x{border:0;background:var(--card2);color:var(--text);width:36px;height:36px;border-radius:12px;font-size:18px}
+.toast{position:fixed;left:14px;right:14px;top:12px;background:#222842;border:1px solid var(--line);color:var(--text);padding:12px 14px;border-radius:14px;z-index:20;box-shadow:0 10px 30px rgba(0,0,0,.4);transform:translateY(-140%);transition:transform .25s}
+.toast.show{transform:none}
+.status{border-radius:var(--rad);padding:14px;margin-bottom:10px;border:1px solid var(--line)}
+.status.on{background:linear-gradient(135deg,rgba(34,197,94,.16),rgba(34,197,94,.04));border-color:rgba(34,197,94,.35)}
+.status.off{background:var(--card)}
+.html{white-space:pre-wrap;word-wrap:break-word}.html a{color:var(--acc2)}.html code{font-size:12px;word-break:break-all}
+.empty{color:var(--mut);text-align:center;padding:18px 6px}
+.note{padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}.note:last-child{border:0}
+.toggle{position:relative;width:50px;height:30px;flex:none}
+.toggle input{display:none}.toggle span{position:absolute;inset:0;background:var(--card2);border:1px solid var(--line);border-radius:99px;transition:.2s}
+.toggle span:after{content:"";position:absolute;width:24px;height:24px;left:2px;top:2px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked+span{background:var(--g);border-color:var(--g)}.toggle input:checked+span:after{left:22px}
+.addr{font-family:ui-monospace,monospace;font-size:13px;word-break:break-all;background:var(--card2);border-radius:10px;padding:10px}
+.loader{display:flex;justify-content:center;padding:60px}.loader:after{content:"";width:30px;height:30px;border:3px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+svg{display:block}
+</style>
+</head>
+<body>
+<div id="view"><div class="loader"></div></div>
+<div class="sheet" id="sheet"></div>
+<div class="toast" id="toast"></div>
+<nav class="tabs" id="tabs"></nav>
+<script>
+const tg = window.Telegram && Telegram.WebApp;
+try { tg.ready(); tg.expand(); tg.setHeaderColor('#0b0d13'); tg.setBackgroundColor('#0b0d13'); } catch (e) {}
+// initData od Telegrama (albo z adresu – gdy skrypt Telegrama nie zdążył się wczytać)
+const INIT = (tg && tg.initData) || new URLSearchParams(location.hash.slice(1)).get('tgWebAppData') || '';
+let S = null, TAB = 'home', SHEET = null, ADMIN = null, TREND = null, LAST_FEED = null;
+
+// ---------- pomocnicze ----------
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = (x, d = 4) => x == null ? '—' : Number(x).toFixed(d);
+function usd(x) {
+  if (x == null) return '—';
+  const a = Math.abs(x);
+  if (a >= 1e9) return '$' + (x / 1e9).toFixed(2) + 'B';
+  if (a >= 1e6) return '$' + (x / 1e6).toFixed(2) + 'M';
+  if (a >= 1e4) return '$' + (x / 1e3).toFixed(1) + 'K';
+  if (a >= 1) return '$' + x.toLocaleString('pl-PL', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  if (a === 0) return '$0';
+  return '$' + x.toPrecision(3);
+}
+const inUsd = sol => (S && S.sol_usd && sol != null) ? usd(sol * S.sol_usd) : '';
+function pct(x, plain) {
+  if (x == null) return '<span class="mut">—</span>';
+  const t = (Math.abs(x) < 0.05 ? '0.0' : (x > 0 ? '+' : '') + x.toFixed(1)) + '%';
+  return plain ? t : `<span class="${x > 0.05 ? 'g' : x < -0.05 ? 'r' : 'mut'}">${t}</span>`;
+}
+const pctPill = x => x == null ? '' : `<span class="pill ${x > 0.05 ? 'g' : x < -0.05 ? 'r' : ''}">${pct(x, true)}</span>`;
+const solTxt = (x, d = 4) => (x > 0 ? '+' : '') + num(x, d) + ' SOL';
+const hhmm = ts => new Date(ts).toLocaleTimeString('pl-PL', {hour: '2-digit', minute: '2-digit'});
+function ago(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return 'przed chwilą'; if (m < 60) return m + ' min temu';
+  const h = Math.round(m / 60); if (h < 24) return h + ' h temu';
+  return new Date(ts).toLocaleDateString('pl-PL', {day: '2-digit', month: '2-digit'});
+}
+const short = a => a ? a.slice(0, 4) + '…' + a.slice(-4) : '';
+const avatar = (name, icon) => `<div class="av">${icon ? `<img src="${esc(icon)}" onerror="this.remove()">` : ''}${icon ? '' : esc((name || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?')}</div>`;
+function haptic(t = 'light') { try { tg.HapticFeedback.impactOccurred(t); } catch (e) {} }
+function toast(msg, ms = 2600) {
+  const el = $('#toast'); el.textContent = msg; el.classList.add('show');
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), ms);
+}
+function openLink(u) { try { tg.openLink(u); } catch (e) { window.open(u, '_blank'); } }
+function confirmBox(text) {
+  return new Promise(res => { try { tg.showConfirm(text, ok => res(ok)); } catch (e) { res(window.confirm(text)); } });
+}
+function copyText(t) {
+  (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject()).then(() => toast('Skopiowano ✅'), () => {
+    const i = document.createElement('textarea'); i.value = t; document.body.appendChild(i); i.select();
+    document.execCommand('copy'); i.remove(); toast('Skopiowano ✅');
+  });
+}
+
+// wykres liniowy (SVG) – zielony gdy rośnie, czerwony gdy spada
+function chart(pts, h = 120, mini = false) {
+  const v = (pts || []).map(p => Array.isArray(p) ? p[1] : p).filter(x => x != null);
+  if (v.length < 2) return mini ? '' : '<div class="empty small">Wykres pojawi się, gdy zbierze się więcej danych.</div>';
+  const w = 300, lo = Math.min(...v), hi = Math.max(...v), span = (hi - lo) || 1, pad = mini ? 2 : 8;
+  const xy = v.map((y, i) => [i / (v.length - 1) * w, pad + (1 - (y - lo) / span) * (h - 2 * pad)]);
+  const d = xy.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  const col = v[v.length - 1] >= v[0] ? 'var(--g)' : 'var(--r)', id = 'g' + Math.random().toString(36).slice(2, 7);
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
+    ${mini ? '' : `<path d="${d} L${w} ${h} L0 ${h} Z" fill="url(#${id})"/>`}
+    <path d="${d}" fill="none" stroke="${col}" stroke-width="${mini ? 1.6 : 2.2}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+
+// ---------- API ----------
+async function api(path, body) {
+  const opt = {headers: {'X-Init-Data': INIT}};
+  if (body) { opt.method = 'POST'; opt.headers['Content-Type'] = 'application/json'; opt.body = JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok) throw new Error(j.error || ('Błąd ' + r.status));
+  return j;
+}
+async function act(action, body = {}, {reload = true, quiet = false} = {}) {
+  haptic('medium');
+  try {
+    const r = await api('/api/sol/action', {action, ...body});
+    if (!quiet && r.msg) toast(r.msg);
+    if (reload) await load();
+    return r;
+  } catch (e) { toast('⚠️ ' + e.message, 4000); throw e; }
+}
+async function load() {
+  try {
+    const s = await api('/api/sol/state');
+    if (S && s.feed.length && LAST_FEED && s.feed[0].ts > LAST_FEED) {
+      const f = s.feed[0];
+      if (f.status === 'filled') toast(`${f.side === 'buy' ? '🟢 Kupiono' : '🔴 Sprzedano'} ${f.symbol} za ${num(f.sol)} SOL`);
+    }
+    LAST_FEED = s.feed.length ? s.feed[0].ts : 0;
+    S = s; render();
+  } catch (e) {
+    $('#view').innerHTML = `<div class="card c" style="margin-top:40px"><div style="font-size:40px">🔒</div><p>${esc(e.message)}</p>
+      <p class="mut small">Otwórz aplikację przyciskiem <b>📱 Aplikacja</b> w czacie z botem.</p>
+      <button class="btn ghost" onclick="load()">Spróbuj ponownie</button></div>`;
+  }
+}
+
+// ---------- zakładki ----------
+const TABS = [['home', '🏠', 'Pulpit'], ['traders', '👥', 'Traderzy'], ['tokens', '🪙', 'Tokeny'],
+              ['history', '📜', 'Historia'], ['settings', '⚙️', 'Ustawienia']];
+function renderTabs() {
+  const tabs = TABS.concat(S && S.user.admin ? [['admin', '🛠', 'Admin']] : []);
+  $('#tabs').innerHTML = tabs.map(([k, i, l]) => `<button class="${TAB === k ? 'on' : ''}" onclick="go('${k}')"><span class="i">${i}</span>${l}</button>`).join('');
+}
+function go(t) { TAB = t; haptic(); window.scrollTo(0, 0); render(); if (t === 'tokens' && !TREND) loadTrend(); if (t === 'admin') loadAdmin(); }
+function render() {
+  if (!S) return;
+  renderTabs();
+  $('#view').innerHTML = ({home, traders, tokens, history, settings, admin: adminTab})[TAB]();
+}
+
+function modePill() { return S.live ? '<span class="pill y">💰 Prawdziwe pieniądze</span>' : '<span class="pill a">🧪 Ćwiczenia</span>'; }
+function statusBox() {
+  const n = S.wallets.filter(w => w.copy).length;
+  let t, cls = 'off';
+  if (!S.wallets.length) t = '👉 <b>Zacznij tutaj:</b> dodaj portfel tradera w zakładce <b>👥 Traderzy</b>. Bot będzie powtarzał jego zakupy i sprzedaże.';
+  else if (!S.active) t = '⏸ <b>Bot stoi.</b> Włącz kopiowanie, a zacznie powtarzać ruchy traderów.';
+  else if (!n) t = '👁 <b>Tylko obserwujesz.</b> Wejdź w tradera i kliknij ✅ Kopiuj.';
+  else { cls = 'on'; t = `✅ <b>Bot działa.</b> Kopiuje ${n} ${n === 1 ? 'portfel' : n < 5 ? 'portfele' : 'portfeli'}. Gdy trader kupi albo sprzeda, zrobisz to samo – ${esc(S.default_amount)}.`; }
+  if (S.paused) t += '<br><span class="y small">⏸ Administrator wstrzymał kopiowanie wszystkim.</span>';
+  return `<div class="status ${cls}"><div style="margin-bottom:12px">${t}</div>
+    <button class="btn ${S.active ? 'r' : 'g'}" onclick="toggle()">${S.active ? '⏸ Wyłącz kopiowanie' : '▶️ Włącz kopiowanie'}</button></div>`;
+}
+async function toggle() {
+  if (!S.active && !S.wallets.some(w => w.copy)) { toast('Najpierw dodaj tradera i kliknij ✅ Kopiuj'); return go('traders'); }
+  await act('toggle');
+}
+
+function home() {
+  const tokensVal = S.total - S.sol;
+  const start = S.live ? S.session_sol0 : S.demo_start;
+  const res = start ? (S.total / start - 1) * 100 : null;
+  return `
+  <div class="row" style="margin:4px 2px 12px"><div class="sp b" style="font-size:18px">Copy Trading</div>${modePill()}</div>
+  <div class="card">
+    <div class="mut small">Wszystko razem</div>
+    <div class="big">${S.sol_usd ? usd(S.total * S.sol_usd) : num(S.total) + ' SOL'}</div>
+    <div class="row small" style="margin-top:4px;flex-wrap:wrap;gap:6px"><span class="mut">${num(S.total)} SOL</span>
+      ${res != null ? pctPill(res) + `<span class="mut">${S.live ? 'od startu sesji' : 'od startu ćwiczeń'}</span>` : ''}</div>
+    <div style="margin:12px -4px 0">${chart(S.series, 110)}</div>
+    <div class="grid" style="margin-top:12px">
+      <div class="stat"><div class="mut tiny">💵 Wolne SOL</div><div class="v">${num(S.sol, 3)}</div><div class="mut tiny">${inUsd(S.sol)}</div></div>
+      <div class="stat"><div class="mut tiny">🪙 W tokenach</div><div class="v">${num(tokensVal, 3)}</div><div class="mut tiny">${S.positions.length} poz. · ${inUsd(tokensVal)}</div></div>
+      <div class="stat"><div class="mut tiny">📅 Dziś (sprzedane)</div><div class="v ${S.today_pnl > 0 ? 'g' : S.today_pnl < 0 ? 'r' : ''}">${solTxt(S.today_pnl, 3)}</div><div class="mut tiny">${inUsd(S.today_pnl)}</div></div>
+      <div class="stat"><div class="mut tiny">⚡ Ostatnia kopia</div><div class="v">${S.last_latency_ms != null ? (S.last_latency_ms / 1000).toFixed(2) + ' s' : '—'}</div><div class="mut tiny">od ruchu tradera</div></div>
+    </div>
+  </div>
+  ${statusBox()}
+  <h2>Kopiowani traderzy</h2>
+  <div class="card">${S.wallets.length ? S.wallets.slice(0, 4).map(walletItem).join('') : '<div class="empty">Brak – dodaj kogoś w zakładce 👥 Traderzy</div>'}
+    ${S.wallets.length > 4 ? `<div class="c small" style="padding-top:10px"><a class="g" onclick="go('traders')">Wszyscy (${S.wallets.length}) →</a></div>` : ''}</div>
+  <h2>Ostatnie ruchy</h2>
+  <div class="card">${S.feed.length ? S.feed.slice(0, 5).map(feedItem).join('') : '<div class="empty">Jeszcze nic – ruchy pojawią się, gdy trader coś kupi.</div>'}</div>
+  <div class="c mut small" style="margin:14px 0">SOL ${usd(S.sol_usd)} ${S.sol_change != null ? '· ' + pct(S.sol_change) + ' w 24 h' : ''}</div>`;
+}
+
+function ownTxt(o) { return o.sol ? o.sol + ' SOL' : o.pct ? o.pct + '% jego kwoty' : ''; }
+function walletItem(w) {
+  return `<div class="item" onclick="openWallet(${w.id})">${avatar(w.name)}
+    <div class="sp"><div class="b">${esc(w.name)}</div>
+      <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}</div></div>
+    <div style="width:64px">${chart(w.spark, 28, true)}</div><div style="min-width:58px;text-align:right">${pct(w.result)}</div></div>`;
+}
+function feedItem(f) {
+  const click = f.mint ? `onclick="openToken('${esc(f.mint)}')"` : 'style="cursor:default"';
+  if (f.status !== 'filled') return `<div class="item" ${click}><div class="av">⚠️</div><div class="sp">
+    <div class="b">${esc(f.symbol)} <span class="mut tiny">${hhmm(f.ts)}</span></div><div class="mut tiny">nie skopiowano: ${esc((f.info || f.status).slice(0, 90))}</div></div></div>`;
+  const buy = f.side === 'buy';
+  return `<div class="item" ${click}><div class="av" style="background:${buy ? 'var(--gbg)' : 'var(--rbg)'}">${buy ? '🟢' : '🔴'}</div>
+    <div class="sp"><div class="b">${buy ? 'Kupiono' : 'Sprzedano'} ${esc(f.symbol)}</div>
+      <div class="mut tiny">${hhmm(f.ts)} · ${esc(f.info || '')}${f.latency_ms != null ? ' · ⚡' + (f.latency_ms / 1000).toFixed(2) + ' s' : ''}</div></div>
+    <div style="text-align:right"><div class="b">${num(f.sol)} SOL</div><div class="mut tiny">${inUsd(f.sol)}</div></div></div>`;
+}
+
+// ---------- traderzy ----------
+function traders() {
+  return `
+  <h2 style="margin-top:4px">Dodaj tradera</h2>
+  <div class="card">
+    <textarea id="addw" placeholder="Wklej adres portfela, np. 7xKX…AsU Kowal&#10;Kilku naraz? Każdy w nowej linii."></textarea>
+    <button class="btn" style="margin-top:10px" onclick="addWallets()">➕ Dodaj i kopiuj</button>
+    <div class="mut tiny" style="margin-top:8px">Dobrych traderów znajdziesz na gmgn.ai, kolscan.io albo w Axiom. Po adresie możesz dopisać nazwę.</div>
+  </div>
+  <h2>Twoi traderzy (${S.wallets.length})</h2>
+  <div class="card">${S.wallets.length ? S.wallets.map(walletItem).join('') : '<div class="empty">Nikogo jeszcze nie kopiujesz.</div>'}</div>
+  <div class="mut tiny c">✅ = bot kopiuje jego ruchy · 👁 = dostajesz tylko powiadomienia</div>`;
+}
+async function addWallets() {
+  const t = $('#addw').value.trim();
+  if (!t) return toast('Wklej adres portfela');
+  const r = await act('add_wallets', {text: t});
+  if (r && r.ids && r.ids.length === 1) openWallet(r.ids[0]);
+}
+
+function sheet(html) {
+  const el = $('#sheet'); el.innerHTML = html; el.classList.add('open'); el.scrollTop = 0; SHEET = true;
+  try { tg.BackButton.show(); } catch (e) {}
+}
+function closeSheet() {
+  $('#sheet').classList.remove('open'); SHEET = null;
+  try { tg.BackButton.hide(); } catch (e) {}
+}
+try { tg.BackButton.onClick(closeSheet); } catch (e) {}
+const hdr = title => `<div class="top"><button class="x" onclick="closeSheet()">‹</button><div class="sp b" style="font-size:18px">${title}</div></div>`;
+const loading = title => sheet(hdr(title) + '<div class="loader"></div>');
+
+let WAL = null;
+async function openWallet(id) {
+  loading('Trader');
+  try { WAL = await api('/api/sol/wallet/' + id); renderWallet(); }
+  catch (e) { sheet(hdr('Trader') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+function renderWallet() {
+  const w = WAL, st = w.stats, own = w.own;
+  const chipsSol = [0.05, 0.1, 0.25, 0.5, 1].map(v => `<button class="chip ${own.sol == v ? 'on' : ''}" onclick="setAmount({sol:${v}})">${v} SOL</button>`).join('');
+  const chipsPct = [5, 10, 25, 50, 100].map(v => `<button class="chip ${own.pct == v ? 'on' : ''}" onclick="setAmount({pct:${v}})">${v}%</button>`).join('');
+  const b = w.mine.buy || {n: 0, sol: 0}, s = w.mine.sell || {n: 0, sol: 0};
+  sheet(hdr(esc(w.name)) + `
+    <div class="card">
+      <div class="row"><div class="sp"><div class="mut small">Jak mu idzie</div><div class="big">${st ? pct(st.total * 100) : '—'}</div>
+        <div class="mut tiny">tyle zarobiłby ktoś, kto kopiuje każdy jego ruch${st ? ' od ' + new Date(st.since).toLocaleDateString('pl-PL') : ''}</div></div>
+        ${w.status === 'copy' ? '<span class="pill g">✅ Kopiujesz</span>' : w.status === 'watch' ? '<span class="pill">👁 Obserwujesz</span>' : ''}</div>
+      <div style="margin:12px -4px 0">${st ? chart(st.series, 110) : ''}</div>
+      ${st ? `<div class="grid" style="margin-top:10px">
+        <div class="stat"><div class="mut tiny">Ostatnie 7 dni</div><div class="v">${pct(st.d7 != null ? st.d7 * 100 : null)}</div></div>
+        <div class="stat"><div class="mut tiny">Udane transakcje</div><div class="v">${st.win_rate != null ? Math.round(st.win_rate * 100) + '%' : '—'}</div><div class="mut tiny">${st.wins} z ${st.closed}</div></div>
+        <div class="stat"><div class="mut tiny">Największy spadek</div><div class="v">${pct(-st.max_dd * 100)}</div><div class="mut tiny">po drodze</div></div>
+        <div class="stat"><div class="mut tiny">Twoje kopie</div><div class="v">${b.n} / ${s.n}</div><div class="mut tiny">kupna / sprzedaże</div></div></div>` : ''}
+    </div>
+    <div class="card"><div class="row" style="gap:8px">
+      ${w.status === 'copy' ? `<button class="btn ghost" onclick="follow('watch')">👁 Tylko powiadomienia</button>` : `<button class="btn g" onclick="follow('copy')">✅ Kopiuj</button>`}
+      ${w.status ? `<button class="btn ghost" style="width:auto;color:var(--r)" onclick="follow('remove')">Usuń</button>` : `<button class="btn ghost" onclick="follow('watch')">👁 Obserwuj</button>`}</div></div>
+    <h2>Gdy on kupi, Ty kupujesz za…</h2>
+    <div class="card">
+      <button class="chip ${!own.sol && !own.pct ? 'on' : ''}" onclick="setAmount({})">jak w ustawieniach</button>
+      <div class="mut tiny" style="margin:6px 0 12px">${esc(S.default_amount)}</div>
+      <div class="mut small" style="margin-bottom:8px">Stała kwota</div><div class="chips">${chipsSol}</div>
+      <div class="mut small" style="margin:14px 0 8px">…albo % tego, za ile kupił on</div><div class="chips">${chipsPct}</div>
+      <div class="mut tiny" style="margin-top:8px">Np. 10%: on kupi za 5 SOL → Ty za 0,5 SOL.</div>
+    </div>
+    ${st && st.recent && st.recent.length ? `<h2>Jego ostatnie ruchy</h2><div class="card">${st.recent.map(r => `<div class="item" style="cursor:default">
+      <div class="av" style="background:${r.side === 'buy' ? 'var(--gbg)' : 'var(--rbg)'}">${r.side === 'buy' ? '🟢' : '🔴'}</div>
+      <div class="sp"><div class="b">${r.side === 'buy' ? 'Kupił' : 'Sprzedał'} ${esc(r.symbol)}</div><div class="mut tiny">${ago(r.ts)}</div></div>
+      <div class="b">${num(r.cost, 3)} SOL</div></div>`).join('')}</div>` : ''}
+    <div class="card small">
+      <div class="addr" onclick="copyText('${esc(w.wallet)}')">${esc(w.wallet)}</div>
+      <div class="row" style="margin-top:10px;gap:8px">
+        <button class="btn ghost" onclick="openLink('https://gmgn.ai/sol/address/${esc(w.wallet)}')">GMGN</button>
+        <button class="btn ghost" onclick="openLink('https://solscan.io/account/${esc(w.wallet)}')">Solscan</button>
+        ${w.can_rename ? `<button class="btn ghost" onclick="rename()">✏️ Nazwa</button>` : ''}</div>
+    </div>`);
+}
+async function follow(mode) {
+  if (mode === 'remove' && !await confirmBox('Usunąć tego tradera z listy? Tokeny, które masz, zostają.')) return;
+  await act('follow', {lid: WAL.id, mode});
+  if (mode === 'remove') return closeSheet();
+  openWallet(WAL.id);
+}
+async function setAmount(o) { await act('amount', {lid: WAL.id, ...o}); openWallet(WAL.id); }
+async function rename() {
+  const n = prompt('Nowa nazwa tradera:', WAL.name);
+  if (n && n.trim()) { await act('rename', {lid: WAL.id, name: n.trim()}); openWallet(WAL.id); }
+}
+
+// ---------- tokeny ----------
+function tokens() {
+  const pos = S.positions;
+  return `
+  <h2 style="margin-top:4px">Sprawdź token</h2>
+  <div class="card"><div class="row"><input id="mint" placeholder="Wklej adres tokena (CA)" class="sp">
+    <button class="chip" onclick="searchToken()">🔍</button></div>
+    <div class="mut tiny" style="margin-top:8px">Zobaczysz cenę, ocenę ryzyka 🟢🟡🔴 i kupisz jednym kliknięciem.</div></div>
+  <h2>Moje tokeny (${pos.length})</h2>
+  <div class="card">${pos.length ? pos.map(p => `<div class="item" onclick="openToken('${esc(p.mint)}')">${avatar(p.symbol)}
+      <div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
+      <div style="text-align:right"><div class="b">${p.value != null ? num(p.value, 3) + ' SOL' : 'brak ceny'}</div><div class="tiny">${pct(p.pnl)} <span class="mut">${inUsd(p.value)}</span></div></div></div>`).join('')
+    : '<div class="empty">Nie masz jeszcze tokenów – pojawią się, gdy bot skopiuje czyjś zakup.</div>'}</div>
+  <h2>🔥 Popularne teraz</h2>
+  <div class="card" id="trend">${TREND ? trendHtml() : '<div class="loader"></div>'}</div>
+  <div class="mut tiny c">Popularny ≠ bezpieczny. Zawsze sprawdź ocenę ryzyka.</div>`;
+}
+const fmtTok = x => x >= 1000 ? Math.round(x).toLocaleString('pl-PL') : Number(x).toPrecision(4);
+function trendHtml() {
+  return TREND.length ? TREND.map((t, i) => `<div class="item" onclick="openToken('${esc(t.mint)}')">${avatar(t.symbol, t.icon)}
+    <div class="sp"><div class="b">${i + 1}. ${esc(t.symbol)}</div><div class="mut tiny">${esc((t.name || '').slice(0, 30))} · wartość ${usd(t.mcap)}</div></div>
+    <div>${pct(t.change)}</div></div>`).join('') : '<div class="empty">Brak danych</div>';
+}
+async function loadTrend() {
+  try { TREND = (await api('/api/sol/trending')).items; } catch (e) { TREND = []; }
+  const el = $('#trend'); if (el) el.innerHTML = trendHtml();
+}
+function searchToken() {
+  const m = ($('#mint').value || '').trim();
+  if (m.length < 32) return toast('Wklej pełny adres tokena');
+  openToken(m);
+}
+
+let TOK = null;
+async function openToken(mint) {
+  loading('Token');
+  try { TOK = await api('/api/sol/token/' + encodeURIComponent(mint)); renderToken(); }
+  catch (e) { sheet(hdr('Token') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+function renderToken() {
+  const t = TOK, rk = t.risk, lvl = rk.level.startsWith('🟢') ? 'g' : rk.level.startsWith('🟡') ? 'y' : 'r';
+  const presets = S.settings.presets.slice(0, 4);
+  sheet(hdr(esc(t.symbol || 'Token')) + `
+    <div class="card"><div class="row">${avatar(t.symbol, t.icon)}<div class="sp"><div class="b">${esc(t.name || '')}</div>
+      <div class="mut tiny">${short(t.mint)}</div></div><div style="text-align:right"><div class="b" style="font-size:18px">${usd(t.price)}</div><div class="tiny">${pct(t.change['24h'])} 24 h</div></div></div>
+      <div class="grid" style="margin-top:12px">
+        <div class="stat"><div class="mut tiny">Wartość całego tokena</div><div class="v">${usd(t.mcap)}</div></div>
+        <div class="stat"><div class="mut tiny">Pieniądze w puli</div><div class="v">${usd(t.liquidity)}</div></div>
+        <div class="stat"><div class="mut tiny">Posiadacze</div><div class="v">${t.holders != null ? t.holders.toLocaleString('pl-PL') : '—'}</div></div>
+        <div class="stat"><div class="mut tiny">Zmiana 5 min / 1 h</div><div class="v small">${pct(t.change['5m'])} / ${pct(t.change['1h'])}</div></div></div></div>
+    <div class="card" style="border-color:var(--${lvl})"><div class="row"><div class="sp b">🛡 Ryzyko</div><span class="pill ${lvl}">${esc(rk.level)}</span></div>
+      <div style="margin-top:6px">${rk.notes.map(n => `<div class="note">${esc(n)}</div>`).join('') || '<div class="note mut">Brak danych audytu</div>'}</div>
+      <div class="mut tiny" style="margin-top:6px">To tylko podpowiedź – nawet „🟢” token może spaść do zera.</div></div>
+    ${t.mine ? `<div class="card"><div class="row"><div class="sp"><div class="mut small">Masz</div><div class="b">${fmtTok(t.mine.tokens)} szt.</div></div>
+      <div style="text-align:right"><div class="b">${t.mine.value != null ? num(t.mine.value) + ' SOL' : '—'}</div><div class="tiny">${pct(t.mine.pnl)} ${inUsd(t.mine.value)}</div></div></div>
+      <div class="chips" style="margin-top:12px">${[25, 50, 100].map(p => `<button class="chip red" onclick="sellTok(${p})">🔴 Sprzedaj ${p === 100 ? 'wszystko' : p + '%'}</button>`).join('')}</div></div>` : ''}
+    <h2>Kup za</h2>
+    <div class="card"><div class="chips">${presets.map(p => `<button class="chip" onclick="buyTok(${p})">🟢 ${p} SOL</button>`).join('')}</div>
+      <div class="row" style="margin-top:10px"><input id="buyx" inputmode="decimal" placeholder="inna kwota, np. 0.3" class="sp"><button class="chip" onclick="buyTok(parseFloat(($('#buyx').value||'').replace(',','.')))">Kup</button></div>
+      <div class="mut tiny" style="margin-top:8px">${S.live ? '💰 Kupujesz prawdziwymi SOL' : '🧪 Ćwiczenia – wirtualne SOL'} · tolerancja ceny ${S.settings.sol_slippage_bps / 100}%</div></div>
+    <button class="btn ghost" onclick="openLink('https://dexscreener.com/solana/${esc(t.mint)}')">📈 Wykres ceny</button>`);
+}
+async function buyTok(sol) {
+  if (!(sol > 0)) return toast('Podaj kwotę');
+  if (S.live && !await confirmBox(`Kupić ${TOK.symbol} za ${sol} SOL (prawdziwe pieniądze)?`)) return;
+  await act('buy', {mint: TOK.mint, sol}); openToken(TOK.mint);
+}
+async function sellTok(p) {
+  if (!await confirmBox(`Sprzedać ${p === 100 ? 'wszystkie' : p + '%'} ${TOK.symbol}?`)) return;
+  await act('sell', {mint: TOK.mint, pct: p}); openToken(TOK.mint);
+}
+
+// ---------- historia ----------
+function history() {
+  return `
+  <button class="btn" style="margin:4px 0 6px" onclick="openReport()">📊 Raport sesji – ile zarobiłem</button>
+  <div class="mut tiny c">Sesja = od włączenia ▶️ do wyłączenia ⏸ kopiowania</div>
+  <h2>Wszystkie ruchy</h2>
+  <div class="card">${S.feed.length ? S.feed.map(feedItem).join('') : '<div class="empty">Jeszcze nic.</div>'}</div>`;
+}
+async function openReport() {
+  loading('Raport sesji');
+  try { const r = await api('/api/sol/report'); sheet(hdr('Raport sesji') + `<div class="card html">${r.html}</div>`); }
+  catch (e) { sheet(hdr('Raport sesji') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+
+// ---------- ustawienia ----------
+function chips(field, values, label, cur) {
+  return `<div class="chips">${values.map(v => `<button class="chip ${Math.abs((cur ?? 0) - v) < 1e-9 ? 'on' : ''}" onclick="setS('${field}', ${v})">${label(v)}</button>`).join('')}</div>`;
+}
+function tgl(field, on) { return `<label class="toggle"><input type="checkbox" ${on ? 'checked' : ''} onchange="setS('${field}', this.checked)"><span></span></label>`; }
+async function setS(field, value) { await act('settings', {field, value}, {quiet: true}); toast('Zapisano ✅', 1200); }
+function settings() {
+  const st = S.settings, m = st.sol_buy_mode;
+  const modeChips = m === 'fixed' ? chips('sol_buy', [0.01, 0.05, 0.1, 0.25, 0.5, 1], v => v + ' SOL', st.sol_buy)
+    : m === 'pct' ? chips('sol_pct', [1, 5, 10, 25, 50, 100], v => v + '%', st.sol_pct)
+    : chips('sol_mult', [0.5, 1, 2], v => v + '×', st.sol_mult);
+  const modeHelp = {fixed: 'Zawsze tyle samo SOL – najprościej, polecane na start.',
+    pct: 'Np. 10%: on kupi za 5 SOL, Ty za 0,5 SOL. Grasz jak on, tylko mniejszymi pieniędzmi.',
+    ratio: 'Wydajesz taką część swojego salda, jaką on wydał ze swojego (× mnożnik).'}[m];
+  return `
+  <h2 style="margin-top:4px">Ile wydać, gdy trader kupi</h2>
+  <div class="card">
+    <div class="seg">${[['fixed', 'Stała kwota'], ['pct', '% jego kwoty'], ['ratio', '% portfela']].map(([k, l]) => `<button class="${m === k ? 'on' : ''}" onclick="setS('sol_buy_mode','${k}')">${l}</button>`).join('')}</div>
+    <div class="mut small" style="margin:10px 0">${modeHelp}</div>${modeChips}
+    <div class="mut tiny" style="margin-top:10px">Gdy trader sprzedaje, sprzedajesz tę samą część swoich tokenów. Każdemu traderowi możesz ustawić osobną kwotę na jego karcie.</div>
+  </div>
+  <h2>🛡 Bezpieczniki</h2>
+  <div class="card">
+    <div class="row"><div class="sp"><div class="b">Pomijaj ryzykowne tokeny</div><div class="mut tiny">Bot nie skopiuje zakupu tokena z oceną 🔴 (np. twórca może zamrozić tokeny, mało pieniędzy w puli). Dodaje ok. 0,1–0,3 s.</div></div>${tgl('sol_safe', st.sol_safe)}</div>
+    <div class="b" style="margin-top:16px">Maks. na jeden zakup</div><div class="mut tiny" style="margin-bottom:8px">Nigdy nie wydasz więcej naraz.</div>
+    ${chips('sol_max', [0.1, 0.5, 1, 2, 0], v => v ? v + ' SOL' : 'bez limitu', st.sol_max)}
+    <div class="b" style="margin-top:16px">Dzienny limit straty</div><div class="mut tiny" style="margin-bottom:8px">Gdy dziś stracisz tyle na sprzedanych tokenach, bot przestaje kupować do jutra.</div>
+    ${chips('sol_day_limit', [0, 0.25, 0.5, 1, 2], v => v ? v + ' SOL' : 'wył.', st.sol_day_limit)}
+  </div>
+  <h2>🎯 Automatyczna sprzedaż</h2>
+  <div class="card">
+    <div class="row"><div class="sp"><div class="b">💸 Zwrot wkładu przy ×2</div><div class="mut tiny">Gdy token podwoi wartość, bot sprzeda połowę – odzyskujesz włożone pieniądze, reszta gra dalej za darmo.</div></div>${tgl('sol_x2', st.sol_x2)}</div>
+    <div class="b" style="margin-top:16px">Sprzedaj wszystko przy zysku</div><div class="mut tiny" style="margin-bottom:8px">Take-profit, np. +100% = gdy token podwoi wartość.</div>
+    ${chips('sol_tp', [0, 50, 100, 200, 500], v => v ? '+' + v + '%' : 'wył.', st.sol_tp)}
+    <div class="b" style="margin-top:16px">Sprzedaj wszystko przy stracie</div><div class="mut tiny" style="margin-bottom:8px">Stop-loss, np. −30% = ucina stratę, zanim urośnie.</div>
+    ${chips('sol_sl', [0, 20, 30, 50], v => v ? '−' + v + '%' : 'wył.', st.sol_sl)}
+  </div>
+  <h2>Tolerancja ceny</h2>
+  <div class="card"><div class="mut tiny" style="margin-bottom:8px">O ile cena może się zmienić, zanim zakup dojdzie do skutku. Memecoiny skaczą – 10–30% to norma; za mało = zakupy często nie wejdą.</div>
+    ${chips('sol_slippage_bps', [300, 500, 1000, 2000, 3000], v => v / 100 + '%', st.sol_slippage_bps)}</div>
+  <h2>💰 Pieniądze</h2>
+  <div class="card">
+    <div class="row"><div class="sp"><div class="b">${S.live ? '💰 Grasz prawdziwymi SOL' : '🧪 Ćwiczenia (wirtualne SOL)'}</div>
+      <div class="mut tiny">${S.live ? 'Bot kupuje i sprzedaje z Twojego portfela.' : `Startujesz z ${S.demo_start} wirtualnymi SOL – bez ryzyka.`}</div></div></div>
+    <button class="btn ${S.live ? 'ghost' : 'g'}" style="margin-top:12px" onclick="switchMode()">${S.live ? '🧪 Wróć do ćwiczeń' : '💰 Przejdź na prawdziwe pieniądze'}</button>
+    <button class="btn ghost" style="margin-top:8px" onclick="openDeposit()">👛 Wpłata / wypłata</button>
+    ${S.live ? '' : `<button class="btn ghost" style="margin-top:8px" onclick="resetDemo()">🔄 Zacznij ćwiczenia od nowa</button>`}
+  </div>
+  <h2>Pomoc</h2>
+  <div class="card"><div class="row" style="gap:8px"><button class="btn ghost" onclick="showHtml('Jak to działa', S.help)">❓ Jak to działa</button>
+    <button class="btn ghost" onclick="showHtml('Słowniczek', S.glossary)">📖 Słowniczek</button></div></div>`;
+}
+function showHtml(title, h) { sheet(hdr(title) + `<div class="card html">${h}</div>`); }
+async function switchMode() {
+  if (!S.live) {
+    if (!await confirmBox('Przejść na prawdziwe pieniądze? Bot będzie naprawdę kupował i sprzedawał tokeny z Twojego portfela Solany. Memecoiny potrafią stracić 90% w kilka minut – wpłać tylko tyle, ile możesz stracić.')) return;
+    await act('mode', {live: true, confirm: true});
+  } else await act('mode', {live: false});
+}
+async function resetDemo() {
+  if (await confirmBox('Zacząć ćwiczenia od nowa? Wirtualne tokeny znikną, dostaniesz świeże wirtualne SOL.')) await act('reset_demo');
+}
+async function openDeposit() {
+  loading('Wpłata / wypłata');
+  try {
+    const d = await api('/api/sol/deposit');
+    sheet(hdr('Wpłata / wypłata') + `
+      <div class="card"><div class="b">👛 Twój adres Solana</div>
+        <div class="mut tiny" style="margin:4px 0 10px">Wpłać SOL na ten adres (sieć <b>Solana</b>), żeby grać prawdziwymi pieniędzmi.</div>
+        <div class="addr" onclick="copyText('${esc(d.address)}')">${esc(d.address)}</div>
+        <button class="btn" style="margin-top:10px" onclick="copyText('${esc(d.address)}')">📋 Kopiuj adres</button>
+        <div class="row" style="margin-top:12px"><div class="sp mut small">Prawdziwe saldo</div><div class="b">${d.balance != null ? num(d.balance) + ' SOL' : '—'}</div></div></div>
+      <h2>💸 Wypłata</h2>
+      <div class="card"><input id="wda" placeholder="Adres, na który wysłać SOL"><input id="wdn" inputmode="decimal" placeholder="Ile SOL (albo: wszystko)" style="margin-top:8px">
+        <button class="btn r" style="margin-top:10px" onclick="withdraw()">Wypłać</button>
+        <div class="mut tiny" style="margin-top:8px">Przelewu w sieci Solana nie da się cofnąć – sprawdź adres dwa razy.</div></div>
+      <div class="mut tiny c">Klucz prywatny (do Phantoma/Axiom) wyeksportujesz w czacie z botem – ze względów bezpieczeństwa nie pokazujemy go w aplikacji.</div>`);
+  } catch (e) { sheet(hdr('Wpłata / wypłata') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+async function withdraw() {
+  const a = $('#wda').value.trim(), n = $('#wdn').value.trim();
+  if (!a || !n) return toast('Podaj adres i kwotę');
+  if (!await confirmBox(`Wypłacić ${n} SOL na ${short(a)}? Tego nie da się cofnąć.`)) return;
+  const r = await act('withdraw', {address: a, amount: n, confirm: true}, {reload: false});
+  if (r && r.sig) openDeposit();
+}
+
+// ---------- admin ----------
+function adminTab() {
+  if (!ADMIN) return '<div class="loader"></div>';
+  const u = ADMIN.users;
+  const live = u.filter(x => x.live).length, on = u.filter(x => x.active).length;
+  return `
+  <div class="row" style="margin:4px 2px 12px"><div class="sp b" style="font-size:18px">🛠 Kto handluje</div><span class="pill">${u.length} os.</span></div>
+  <div class="grid" style="margin-bottom:10px"><div class="stat"><div class="mut tiny">Kopiuje teraz</div><div class="v">${on}</div></div>
+    <div class="stat"><div class="mut tiny">Na prawdziwych SOL</div><div class="v">${live}</div></div></div>
+  <div class="card">${u.map(x => `<div class="item" onclick="openUser(${x.id})">${avatar(x.name.replace('@', ''))}
+    <div class="sp"><div class="b">${esc(x.name)} ${x.role === 'owner' ? '👑' : x.role === 'admin' ? '⭐' : ''}</div>
+      <div class="mut tiny">${x.active ? '▶️ kopiuje' : '⏸ stoi'} · ${x.live ? '💰' : '🧪'} · traderzy: ${x.wallets.filter(w => w.copy).length} · ruchy 24h: ${x.trades24 ?? 0}</div></div>
+    <div style="text-align:right"><div class="b">${x.total != null ? num(x.total, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(x.result)}</div></div></div>`).join('') || '<div class="empty">Nikogo</div>'}</div>
+  <button class="btn ghost" onclick="loadAdmin()">🔄 Odśwież</button>`;
+}
+async function loadAdmin() {
+  try { ADMIN = await api('/api/sol/admin/users'); } catch (e) { toast('⚠️ ' + e.message); }
+  if (TAB === 'admin') render();
+}
+async function openUser(id) {
+  loading('Podgląd');
+  try {
+    const d = await api('/api/sol/admin/user/' + id);
+    const own = ADMIN && ADMIN.owner;
+    sheet(hdr(esc(d.name)) + `
+      <div class="card"><div class="row" style="flex-wrap:wrap;gap:6px">${d.live ? '<span class="pill y">💰 prawdziwe</span>' : '<span class="pill a">🧪 ćwiczenia</span>'}
+        <span class="pill ${d.active ? 'g' : ''}">${d.active ? '▶️ kopiuje' : '⏸ stoi'}</span><span class="pill">${{owner: '👑 właściciel', admin: '⭐ admin', user: '👤 użytkownik'}[d.role]}</span></div>
+        <div class="big" style="margin-top:10px">${d.total != null ? num(d.total) + ' SOL' : '—'}</div>
+        <div class="small">${pct(d.result)} <span class="mut">· dziś ${solTxt(d.today_pnl || 0, 3)} · ruchy 24h: ${d.trades24 ?? 0}</span></div>
+        <div class="mut tiny" style="margin-top:6px">⚙️ ${esc(d.settings)}</div></div>
+      <h2>Kopiuje</h2><div class="card">${d.wallets.length ? d.wallets.map(w => `<div class="note">${w.copy ? '✅' : '👁'} ${esc(w.name)}</div>`).join('') : '<div class="empty">nikogo</div>'}</div>
+      <h2>Tokeny</h2><div class="card">${d.positions_list.length ? d.positions_list.map(p => `<div class="item" style="cursor:default">${avatar(p.symbol)}<div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
+        <div style="text-align:right"><div class="b">${p.value != null ? num(p.value, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(p.pnl)}</div></div></div>`).join('') : '<div class="empty">brak</div>'}</div>
+      <h2>Ostatnie ruchy</h2><div class="card">${d.history.length ? d.history.map(h => feedItem(Object.assign({mint: '', latency_ms: null}, h))).join('') : '<div class="empty">brak</div>'}</div>
+      ${d.active ? `<button class="btn r" onclick="adminStop(${d.id})">⏸ Zatrzymaj mu kopiowanie</button>` : ''}
+      ${own && d.role !== 'owner' ? `<button class="btn ghost" style="margin-top:8px" onclick="adminRole(${d.id})">${d.role === 'admin' ? 'Zabierz rangę admina' : '⭐ Daj rangę admina'}</button>` : ''}`);
+  } catch (e) { sheet(hdr('Podgląd') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+async function adminStop(id) {
+  if (!await confirmBox('Zatrzymać tej osobie kopiowanie? Dostanie powiadomienie i raport sesji.')) return;
+  await act('admin_stop', {uid: id}, {reload: false}); await loadAdmin(); openUser(id);
+}
+async function adminRole(id) { await act('admin_role', {uid: id}, {reload: false}); await loadAdmin(); openUser(id); }
+
+// ---------- start ----------
+load();
+setInterval(() => { if (!SHEET && document.visibilityState === 'visible' && ['home', 'history'].includes(TAB)) load(); }, 15000);
+</script>
+</body>
+</html>

@@ -11,7 +11,7 @@ from telegram.warnings import PTBUserWarning
 import aiohttp
 
 from . import demo, mirror, traders
-from .sol import axiom, ui as sol_ui
+from .sol import admin as sol_admin, axiom, ui as sol_ui
 from .sol.chain import Jupiter, Rpc
 from .sol.engine import SolEngine
 from .sol.watcher import SolWatcher
@@ -63,6 +63,7 @@ async def post_init(app: Application):
 
     watchers = Watchers(cfg, db, vault, markets, on_orders)
     svc = app.bot_data["svc"] = Services(cfg, db, vault, markets, engine, watchers)
+    svc.bot = app.bot
 
     # --- Solana: kopiowanie portfeli (Axiom, Pump.fun…) – wspólna sesja HTTP = stałe połączenia, mniej ms ---
     if cfg.sol_enabled:
@@ -101,9 +102,10 @@ async def post_init(app: Application):
     app.job_queue.run_repeating(live_job, interval=cfg.live_seconds, first=20)
     if cfg.sol_enabled:
         app.job_queue.run_repeating(axiom.tpsl_job, interval=60, first=45)
+        app.job_queue.run_repeating(axiom.sol_equity_job, interval=15 * 60, first=120)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:
-        await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("Panel", WebAppInfo(f"{cfg.webapp_url}/app")))
+        await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("📱 Aplikacja", WebAppInfo(f"{cfg.webapp_url}/app")))
     log.info("Giełdy: %s · traderzy aktywni: %d", ", ".join(cfg.exchanges), len(db.leaders("active")))
     await app.bot.set_my_commands([
         BotCommand("menu", "Pulpit"), BotCommand("portfel", "Dodaj portfel do kopiowania"),
@@ -155,6 +157,7 @@ def main():
     demo.register(app)
     sol_ui.register(app)
     axiom.register(app)
+    sol_admin.register(app)
     register(app)
     axiom.register_paste(app)  # wklejony adres portfela/tokena – po wszystkich rozmowach
     app.run_polling(drop_pending_updates=False, bootstrap_retries=-1)

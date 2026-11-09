@@ -40,6 +40,10 @@ def verify_init_data(init_data: str, bot_token: str, max_age: int = 24 * 3600) -
 
 def build_app(s) -> web.Application:
     async def index(_):
+        page = "sol.html" if getattr(s, "sol", None) else "index.html"
+        return web.FileResponse(WEBAPP_DIR / page, headers={"Cache-Control": "no-cache"})
+
+    async def index_cex(_):
         return web.FileResponse(WEBAPP_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
     def auth(request: web.Request):
@@ -108,6 +112,10 @@ def build_app(s) -> web.Application:
     app = web.Application()
     app.router.add_get("/", root)
     app.router.add_get("/app", index)
+    app.router.add_get("/app/cex", index_cex)
+    if getattr(s, "sol", None):
+        from .sol import api as sol_api
+        sol_api.routes(s, app, auth)
     app.router.add_get("/api/data", api_data)
     app.router.add_post("/api/follow", api_follow)
     app.router.add_get("/health", health)
