@@ -150,10 +150,43 @@ class SolEngine:
         except Exception:  # noqa: BLE001
             return None
 
+    async def values_sol(self, holdings: dict[str, int]) -> dict[str, float]:
+        """Wartość pozycji w SOL – jedno zapytanie o ceny (Jupiter price v3) zamiast wyceny każdego tokena osobno."""
+        mints = [m for m in holdings if m != SOL_MINT]
+        if not mints:
+            return {}
+        try:
+            px = await self.jup.prices(mints + [SOL_MINT])
+        except Exception:  # noqa: BLE001
+            px = {}
+        sol_usd = px.get(SOL_MINT)
+        out = {}
+        for m in mints:
+            if sol_usd and m in px:
+                _, dec = self.cached_token(m) or await self.token_info(m)
+                out[m] = holdings[m] / 10 ** dec * px[m] / sol_usd
+            else:  # brak ceny w API – awaryjnie wycena przez trasę wymiany
+                v = await self.value_in_sol(m, holdings[m])
+                if v is not None:
+                    out[m] = v
+        return out
+
     async def equity_sol(self, tg_id: int, balances: dict[str, int] | None = None) -> float:
         bal = balances if balances is not None else self.paper(tg_id)
-        vals = await asyncio.gather(*(self.value_in_sol(m, r) for m, r in bal.items() if m != SOL_MINT))
-        return bal.get(SOL_MINT, 0) / LAMPORTS + sum(v or 0 for v in vals)
+        vals = await self.values_sol(bal)
+        return bal.get(SOL_MINT, 0) / LAMPORTS + sum(vals.values())
+
+    def cost_basis(self, tg_id: int, mint: str, paper: bool) -> tuple[float, float] | None:
+        """(koszt pozostałych tokenów w SOL, liczba tokenów) metodą średniej ceny – do PnL pozycji."""
+        rows = self.db._q("""SELECT side, SUM(sol) sol, SUM(tokens) tok FROM sol_trades WHERE tg_id = ? AND mint = ?
+                             AND status = 'filled' AND paper = ? GROUP BY side""", (tg_id, mint, int(paper)))
+        d = {r["side"]: (r["sol"] or 0, r["tok"] or 0) for r in rows}
+        spent, bought = d.get("buy", (0, 0))
+        sold = d.get("sell", (0, 0))[1]
+        left = bought - sold
+        if bought <= 0 or left <= 0:
+            return None
+        return spent * left / bought, left
 
     # ---------- reakcja na wymianę tradera ----------
     async def on_swap(self, wallet: str, sw: Swap, t_recv: float) -> Counter:
@@ -170,7 +203,11 @@ class SolEngine:
         # nazwa tokena tylko do powiadomień – pobieramy ją RÓWNOLEGLE, kopiowanie rusza od razu
         # (miejsca po przecinku znamy z samej transakcji tradera)
         info_task = asyncio.create_task(self.token_info(sw.mint, sw.decimals))
-        followers = [u for u in self.db.active_followers(lead["id"]) if self.has_wallet(u["tg_id"])]
+        followers = []
+        for u in self.db.active_followers(lead["id"]):
+            if self.has_wallet(u["tg_id"]):
+                fr = self.db.follow_row(u["tg_id"], lead["id"])
+                followers.append(dict(u, follow_sol_buy=fr["sol_buy"] if fr else None))
 
         async def run(u):
             async with self.sem:
@@ -245,7 +282,10 @@ class SolEngine:
         bal = await self.sol_lamports(u)
         reserve = int(self.cfg.sol_reserve * LAMPORTS) if self.is_live(u) else 0
         ratio = u["sol_buy_mode"] == "ratio"
-        want = int(bal * sw.fraction * u["sol_mult"]) if ratio else int(u["sol_buy"] * LAMPORTS)
+        override = u["follow_sol_buy"] if "follow_sol_buy" in u.keys() else None  # kwota ustawiona dla tego portfela
+        if override:
+            ratio = False
+        want = int(bal * sw.fraction * u["sol_mult"]) if ratio else int((override or u["sol_buy"]) * LAMPORTS)
         if u["sol_max"] > 0:
             want = min(want, int(u["sol_max"] * LAMPORTS))
         if ratio and want < MIN_BUY:
@@ -260,6 +300,8 @@ class SolEngine:
                       decimals: int | None = None) -> Fill:
         """Kupno: amount_raw = lamporty SOL. Sprzedaż: jednostki tokena."""
         t0 = t_recv or time.monotonic()
+        if u["tg_id"] > 0:  # portfel (i saldo demo) musi istnieć PRZED transakcją – inaczej utworzenie go
+            self.wallet(u["tg_id"])  # później wyzerowałoby kupione tokeny
         in_mint, out_mint = (SOL_MINT, mint) if side == "buy" else (mint, SOL_MINT)
         if decimals is None:  # bez zapytania do sieci, jeśli znamy token
             cached = self.cached_token(mint)

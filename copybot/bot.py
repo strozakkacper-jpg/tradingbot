@@ -41,7 +41,7 @@ TOLERANCES = (1, 2, 5)
 UI_TIMEOUT = 20  # s – dłużej nie czekamy na giełdę w odpowiedzi na kliknięcie
 SIDES = {"buy": "buy", "kup": "buy", "kupno": "buy", "sell": "sell", "sprzedaj": "sell", "sprzedaz": "sell"}
 
-HOME = [B("« Pulpit", callback_data="menu")]
+HOME = [B("« Giełdy", callback_data="menu")]
 BACK = HOME  # zgodność wsteczna
 
 
@@ -97,7 +97,7 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
     follows = s.db.follows_of(u["tg_id"])
     watching = sum(1 for c in follows.values() if not c)
 
-    lines = ["🏠 <b>Pulpit</b>"]
+    lines = ["🏦 <b>Pulpit giełd (CEX)</b>"]
     from .live import cached_prices_line
     prices = cached_prices_line(s, s.engine.m(u))
     if prices:
@@ -132,10 +132,10 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
     if s.db.get_state("paused") == "1":
         lines += ["", "⏸ <i>Kopiowanie wstrzymane przez admina.</i>"]
 
-    rows = [[B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="toggle")],
+    rows = ([[B("« 🟣 Pulpit Solana (kopiowanie portfeli)", callback_data="home")]] if getattr(s, "sol", None) else [])
+    rows += [[B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="toggle")],
             [B("💼 Portfel", callback_data="status"), B("👥 Traderzy", callback_data="traders")],
-            [B("🎮 Handel demo", callback_data="dt")] + ([B("🟣 Solana", callback_data="sx")]
-                                                        if getattr(s, "sol", None) else []),
+            [B("🎮 Handel demo", callback_data="dt")],
             [B("📜 Historia", callback_data="history"), B("⚙️ Ustawienia", callback_data="settings")],
             [B(f"🏦 Giełda: {ex}" if u["api_key"] else "🏦 Podłącz giełdę", callback_data="exchange"),
              B("Przejdź na 💰 LIVE" if u["paper"] else "Przejdź na 🧪 demo", callback_data="mode")]]
@@ -367,7 +367,15 @@ async def cmd_start(update: Update, ctx):
             "👑 Jesteś właścicielem tego bota. Tylko osoby, które wpuścisz, będą mogły z niego korzystać.",
             parse_mode=ParseMode.HTML)
     if u := await require_accepted(update, ctx):
-        await show(update, *menu_view(s, u))
+        if getattr(s, "sol", None):  # pulpit główny: kopiowanie portfeli Solany (styl Axiom)
+            from .sol.axiom import home_view
+            try:
+                await show(update, *await asyncio.wait_for(home_view(s, u), UI_TIMEOUT))
+            except Exception:  # noqa: BLE001
+                log.exception("Pulpit Solany")
+                await show(update, *menu_view(s, u))
+        else:
+            await show(update, *menu_view(s, u))
         if u["live_pin"] and not u["pin_msg_id"]:
             from . import live
             asyncio.create_task(live.refresh(ctx.bot, s, u))
@@ -454,8 +462,10 @@ async def on_button(update: Update, ctx):
 
     if data == "toggle":
         if u["active"]:
+            from .sol import session
             s.db.update_user(uid, active=0)
-            alert = "Kopiowanie wyłączone"
+            alert = "Kopiowanie wyłączone – raport sesji w czacie 📊"
+            await session.end(s, s.db.get_user(uid), ctx.bot, "kopiowanie wyłączone")
         elif not s.db.copied_leaders(uid):
             await ack("Najpierw wybierz tradera do kopiowania.", show_alert=True)
             from .traders import show_traders
@@ -472,6 +482,8 @@ async def on_button(update: Update, ctx):
                                           "\nSpróbuj ponownie za chwilę.", KB([HOME]))
             s.db.update_user(uid, active=1, start_equity=start)
             s.db.add_equity(uid, start, bool(u["paper"]))
+            from .sol import session
+            await session.start(s, s.db.get_user(uid), cex0=start)
             alert = "Kopiowanie włączone ▶️"
             if u["copy_mode"] == "mirror":
                 from . import mirror

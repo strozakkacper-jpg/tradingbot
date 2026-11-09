@@ -25,9 +25,24 @@ TOKEN = "Tok3n11111111111111111111111111111111111111"
 
 
 class FakeJup:
-    """1 SOL = 1 000 000 tokenów (6 miejsc po przecinku)."""
+    """1 SOL = 1000 tokenów (6 miejsc po przecinku); SOL = 100 USD, token = 0,1 USD."""
     def __init__(self):
         self.calls = 0
+        self.token_usd = 0.1  # zgodnie z wyceną: 1 SOL (100 USD) = 1000 tokenów
+
+    async def prices(self, mints):
+        return {m: (100.0 if m == SOL_MINT else self.token_usd) for m in mints}
+
+    async def token_full(self, mint):
+        if mint != TOKEN:
+            return None
+        return {"id": TOKEN, "symbol": "MEME", "name": "Meme Coin", "decimals": 6, "usdPrice": self.token_usd,
+                "mcap": 1_200_000, "liquidity": 85_000, "holderCount": 4321,
+                "stats5m": {"priceChange": 3.2}, "stats1h": {"priceChange": -1.0}, "stats24h": {"priceChange": 12.0},
+                "audit": {"mintAuthorityDisabled": True, "freezeAuthorityDisabled": True, "topHoldersPercentage": 18.0}}
+
+    async def trending(self, interval="1h", limit=10):
+        return [await self.token_full(TOKEN)]
 
     async def quote(self, i, o, amount, slip):
         self.calls += 1
@@ -155,7 +170,7 @@ def test_solana_screen_settings_and_sell(tmp_path):
     u = upd(OWNER, data="sx")
     asyncio.run(SU.on_sol_button(u, ctx))
     text = last_text(u)
-    assert "Solana" in text and "5.0000 SOL" in text and "MEME" in text
+    assert "Copy Trading · Solana" in text and "5.0000 SOL" in text
     asyncio.run(SU.on_sol_button(upd(OWNER, data="sx:amt:0.25"), ctx))
     asyncio.run(SU.on_sol_button(upd(OWNER, data="sx:slip:2000"), ctx))
     usr = s.db.get_user(OWNER)

@@ -16,7 +16,7 @@ from .engine import Skip, fmt_tokens, short
 from .parser import LAMPORTS
 
 log = logging.getLogger(__name__)
-SX = [B("« Solana", callback_data="sx")]
+SX = [B("« Pulpit", callback_data="home")]
 AMOUNTS = (0.01, 0.05, 0.1, 0.25, 0.5)
 MULTS = (0.5, 1.0, 2.0)
 MAXES = (0.1, 0.5, 1.0, 2.0, 0)
@@ -135,20 +135,23 @@ async def on_sol_button(update: Update, ctx):
     uid = u["tg_id"]
     parts = data.split(":")
     try:
-        if data == "sx":
+        if data == "sx":  # dawny ekran Solany – teraz pulpit główny
+            from .axiom import home_view
             await _ack(update, "⏳")
-            return await show(update, *await asyncio.wait_for(main_view(s, u), UI_TIMEOUT))
+            return await show(update, *await asyncio.wait_for(home_view(s, u), UI_TIMEOUT))
         act = parts[1]
         if act == "set":
+            from .axiom import settings_view as ax_settings
             await _ack(update)
-            return await show(update, *settings_view(u))
+            return await show(update, *ax_settings(s, u))
         if act in ("bm", "amt", "mult", "max", "slip"):
             field = {"bm": "sol_buy_mode", "amt": "sol_buy", "mult": "sol_mult", "max": "sol_max",
                      "slip": "sol_slippage_bps"}[act]
             val = parts[2] if act == "bm" else int(parts[2]) if act == "slip" else float(parts[2])
             s.db.update_user(uid, **{field: val})
             await _ack(update, "Zapisano")
-            return await show(update, *settings_view(s.db.get_user(uid)))
+            from .axiom import settings_view as ax_settings
+            return await show(update, *ax_settings(s, s.db.get_user(uid)))
         if act == "reset":
             s.sol.paper_reset(uid)
             await _ack(update, f"Demo Solany: {s.cfg.sol_paper_start:g} SOL", True)
@@ -156,8 +159,9 @@ async def on_sol_button(update: Update, ctx):
         if act == "mode":
             await _ack(update)
             if s.sol.is_live(u):
+                from .axiom import home_view
                 s.db.update_user(uid, sol_live=0)
-                return await show(update, *await main_view(s, s.db.get_user(uid)))
+                return await show(update, *await home_view(s, s.db.get_user(uid)))
             return await show(update, "💰 <b>Prawdziwe SOL?</b>\n\nBot będzie kupował i sprzedawał tokeny z Twojego "
                                       f"portfela Solany. Zakupy: {buy_txt(u)}.\n\nNajpierw wpłać SOL na adres z "
                                       "„👛 Adres / wpłata”. Zacznij od małej kwoty.",
@@ -165,7 +169,8 @@ async def on_sol_button(update: Update, ctx):
         if act == "modeok":
             s.db.update_user(uid, sol_live=1)
             await _ack(update, "Solana LIVE 💰")
-            return await show(update, *await main_view(s, s.db.get_user(uid)))
+            from .axiom import home_view
+            return await show(update, *await home_view(s, s.db.get_user(uid)))
         if act == "hist":
             await _ack(update)
             return await show(update, history_text(s, u), KB([SX]))

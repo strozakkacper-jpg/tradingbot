@@ -180,6 +180,42 @@ class Jupiter:
         raw = VersionedTransaction.from_bytes(base64.b64decode(data["swapTransaction"]))
         return bytes(VersionedTransaction(raw.message, [kp]))
 
+    async def _cached(self, key, ttl: float, coro_fn):
+        cache = self.__dict__.setdefault("_cache", {})
+        hit = cache.get(key)
+        if hit and time.monotonic() - hit[0] < ttl:
+            return hit[1]
+        val = await coro_fn()
+        cache[key] = (time.monotonic(), val)
+        if len(cache) > 1000:
+            for k in [k for k, (t, _) in cache.items() if time.monotonic() - t > 300]:
+                cache.pop(k, None)
+        return val
+
+    async def token_full(self, mint: str) -> dict | None:
+        """Pełne dane tokena: cena, MC, płynność, holderzy, zmiany 5m/1h/24h, audyt (cache 15 s)."""
+        async def fetch():
+            _, data = await self._request("GET", "/tokens/v2/search", params={"query": mint})
+            return next((t for t in data if isinstance(data, list) and t.get("id") == mint), None)
+        return await self._cached(("tok", mint), 15, fetch)
+
+    async def prices(self, mints: list[str]) -> dict[str, float]:
+        """Ceny w USD wielu tokenów jednym zapytaniem (cache 10 s)."""
+        mints = sorted(set(mints))[:50]
+        if not mints:
+            return {}
+
+        async def fetch():
+            _, data = await self._request("GET", "/price/v3", params={"ids": ",".join(mints)})
+            return {m: float(v["usdPrice"]) for m, v in (data or {}).items() if isinstance(v, dict) and v.get("usdPrice")}
+        return await self._cached(("px", tuple(mints)), 10, fetch)
+
+    async def trending(self, interval: str = "1h", limit: int = 10) -> list[dict]:
+        async def fetch():
+            _, data = await self._request("GET", f"/tokens/v2/toptrending/{interval}", params={"limit": str(limit)})
+            return data if isinstance(data, list) else []
+        return await self._cached(("trend", interval, limit), 60, fetch)
+
     async def token(self, mint: str) -> dict | None:
         _, data = await self._request("GET", "/tokens/v2/search", params={"query": mint})
         for t in data if isinstance(data, list) else []:

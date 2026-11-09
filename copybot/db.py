@@ -84,7 +84,15 @@ MIGRATIONS = {
     "sol_buy": "REAL NOT NULL DEFAULT 0.05",
     "sol_mult": "REAL NOT NULL DEFAULT 1.0",
     "sol_max": "REAL NOT NULL DEFAULT 0.5",
-    "sol_slippage_bps": "INTEGER NOT NULL DEFAULT 1000",  # w lustrze kopiuj też każdą transakcję od razu (1) czy tylko wyrównuj (0)
+    "sol_slippage_bps": "INTEGER NOT NULL DEFAULT 1000",
+    "sol_presets": "TEXT NOT NULL DEFAULT '0.05,0.1,0.5,1'",  # szybkie kwoty zakupu na karcie tokena
+    "sol_tp": "REAL NOT NULL DEFAULT 0",  # auto take-profit w % (0 = wył.)
+    "sol_sl": "REAL NOT NULL DEFAULT 0",  # auto stop-loss w % (0 = wył.)
+    # sesja = od włączenia do wyłączenia kopiowania – po niej bot wysyła szczegółowy raport
+    "session_start": "INTEGER",
+    "session_end": "INTEGER",
+    "session_sol0": "REAL",  # wartość portfela Solany na starcie sesji (SOL)
+    "session_cex0": "REAL",  # wartość portfela giełdowego na starcie sesji  # w lustrze kopiuj też każdą transakcję od razu (1) czy tylko wyrównuj (0)
 }
 
 
@@ -97,8 +105,10 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "api_key", "api_secret", "api_password", "stop_loss", "start_equity", "paid_until",
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
-               "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_max", "sol_slippage_bps"}
-LEADER_MIGRATIONS = {"wallet": "TEXT"}  # adres portfela Solany (traderzy typu „sol”)
+               "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_max", "sol_slippage_bps",
+               "sol_presets", "sol_tp", "sol_sl", "session_start", "session_end", "session_sol0", "session_cex0"}
+LEADER_MIGRATIONS = {"wallet": "TEXT"}
+FOLLOW_MIGRATIONS = {"sol_buy": "REAL"}  # osobna kwota zakupu (SOL) dla konkretnego kopiowanego portfela  # adres portfela Solany (traderzy typu „sol”)
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
                  "exchange", "wallet"}
 
@@ -120,6 +130,10 @@ class DB:
                     self.conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
                     if name == "approved":  # użytkownicy sprzed wersji prywatnej zachowują dostęp
                         self.conn.execute("UPDATE users SET approved = 1 WHERE accepted = 1")
+            fcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(follows)")}
+            for name, ddl in FOLLOW_MIGRATIONS.items():
+                if name not in fcols:
+                    self.conn.execute(f"ALTER TABLE follows ADD COLUMN {name} {ddl}")
             lcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(leaders)")}
             for name, ddl in LEADER_MIGRATIONS.items():
                 if name not in lcols:
@@ -185,9 +199,16 @@ class DB:
 
     # --- śledzeni traderzy ---
     def follow(self, tg_id: int, leader_id: int, copy: bool):
-        self._q("""INSERT INTO follows VALUES (?, ?, ?, ?)
+        self._q("""INSERT INTO follows (tg_id, leader_id, copy, created_at) VALUES (?, ?, ?, ?)
                    ON CONFLICT(tg_id, leader_id) DO UPDATE SET copy = excluded.copy""",
                 (tg_id, leader_id, int(copy), now_ms()))
+
+    def follow_row(self, tg_id: int, leader_id: int):
+        rows = self._q("SELECT * FROM follows WHERE tg_id = ? AND leader_id = ?", (tg_id, leader_id))
+        return rows[0] if rows else None
+
+    def set_follow_amount(self, tg_id: int, leader_id: int, sol: float | None):
+        self._q("UPDATE follows SET sol_buy = ? WHERE tg_id = ? AND leader_id = ?", (sol, tg_id, leader_id))
 
     def unfollow(self, tg_id: int, leader_id: int):
         self._q("DELETE FROM follows WHERE tg_id = ? AND leader_id = ?", (tg_id, leader_id))

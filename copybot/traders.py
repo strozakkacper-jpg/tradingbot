@@ -21,6 +21,7 @@ from .sizing import LeaderOrder
 log = logging.getLogger(__name__)
 A_NAME, A_SOURCE, A_EXCH, A_KEY, A_SECRET, A_PASS, R_NAME, A_WALLET = range(10, 18)
 TRADERS = [B("« Traderzy", callback_data="traders")]
+MAIN = [B("« Pulpit", callback_data="home")]
 
 
 def src_txt(s, lead) -> str:
@@ -58,7 +59,7 @@ async def show_traders(update: Update, ctx):
     if rows:
         lines += ["", "✅ kopiujesz · 👁 tylko powiadomienia · ▫️ nie śledzisz"]
     kb.append([B("➕ Dodaj tradera", callback_data="add")])
-    kb.append(HOME)
+    kb.append(MAIN if getattr(s, "sol", None) else HOME)
     await show(update, "\n".join(lines), KB(kb))
 
 
@@ -67,6 +68,9 @@ async def show_profile(update: Update, ctx, leader_id: int | None, notice: str |
     lead = s.db.get_leader(leader_id)
     if not lead or lead["status"] != "active":
         return await show_traders(update, ctx)
+    if lead["source"] == "sol" and getattr(s, "sol", None):  # portfel Solany – karta w stylu Axiom
+        from .sol.axiom import wallet_card
+        return await show(update, *await wallet_card(s, s.db.get_user(update.effective_user.id), leader_id, notice))
     uid = update.effective_user.id
     status = s.db.follows_of(uid).get(lead["id"])
     rep = await leader_report(s, lead["id"])

@@ -69,6 +69,8 @@ async def trigger_stop_loss(s, u, equity: float):
         pass
     await s.engine.notify(uid, f"Gotowe. Sprzedane pozycje: {res.get('filled', 0)}, błędy: {res.get('error', 0)}.\n"
                                "Możesz włączyć kopiowanie ponownie w /menu.")
+    from .sol import session
+    await session.end(s, s.db.get_user(uid), None, "stop-loss")
 
 
 async def expire_subscription(ctx, s, u):

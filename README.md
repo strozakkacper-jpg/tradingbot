@@ -40,6 +40,16 @@ a kogo tylko obserwujesz. Bot w około sekundę powtarza ich transakcje na Twoim
   - wspólna wycena Jupitera, gdy kilka osób kupuje za tę samą kwotę (oszczędza limit: darmowy klucz to 10 zapytań / 10 s);
   - wykonanie: wycena i budowa transakcji w Jupiterze (`JUPITER_API_KEY` = wyższe limity), wysyłka bez sprawdzania
     wstępnego, ponawianie co 400 ms aż do potwierdzenia, równolegle dla wszystkich kopiujących.
+- **🟣 Pulpit główny w stylu Axiom (copytrading Solany).** `/start` i `/menu` otwierają: cena SOL, saldo, pozycje,
+  wynik, **kopiowane portfele** (karta z wynikami, kopiuj / tylko powiadomienia, **osobna kwota zakupu dla każdego
+  portfela**), ostatnie ruchy z czasem reakcji, pozycje z PnL, trendy, automatyczne take-profit / stop-loss.
+  Wklej adres portfela, żeby go kopiować, albo adres tokena (CA), żeby dostać kartę tokena (MC, płynność, holderzy,
+  zmiany 5m/1h/24h, audyt) z kupnem 0.05/0.1/0.5/1/X SOL i sprzedażą 25/50/100%.
+  Giełdy (CEX) są na drugim pulpicie: **🏦 Giełdy (CEX) →**.
+- **📊 Raport sesji**: sesja trwa od włączenia ▶️ do wyłączenia ⏸ kopiowania (albo stop-lossa). Po jej końcu bot sam
+  wysyła raport: wynik portfela, transakcje, obrót, trafność, zrealizowany i niezrealizowany PnL, najlepsza i najgorsza
+  transakcja, szybkość kopii (ms), wyniki według portfeli, powody pominięć i podsumowanie giełd.
+  Podgląd w trakcie: przycisk na pulpicie albo `/raport`.
 - **🎮 Handel demo**: ręczne kupno i sprzedaż za wirtualne USDT po prawdziwych cenach. Przyciski: kup za 10/50/100 USDT
   lub 25/50/100% gotówki, sprzedaj 25/50/100%. Komendy: `/kup PEPE 20`, `/sprzedaj BTC 50%`.
 - **📌 Na żywo u góry czatu**: przypięta wiadomość odświeżana co `LIVE_SECONDS` s, z cenami (`LIVE_COINS`) i zmianą 24 h,
