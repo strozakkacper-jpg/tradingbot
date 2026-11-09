@@ -83,6 +83,7 @@ MIGRATIONS = {
     "sol_buy_mode": "TEXT NOT NULL DEFAULT 'fixed'",  # fixed = stała kwota SOL, ratio = ten sam % SOL co trader
     "sol_buy": "REAL NOT NULL DEFAULT 0.05",
     "sol_mult": "REAL NOT NULL DEFAULT 1.0",
+    "sol_pct": "REAL NOT NULL DEFAULT 10",  # tryb „pct”: kupuj za X% kwoty, za którą kupił trader
     "sol_max": "REAL NOT NULL DEFAULT 0.5",
     "sol_slippage_bps": "INTEGER NOT NULL DEFAULT 1000",
     "sol_presets": "TEXT NOT NULL DEFAULT '0.05,0.1,0.5,1'",  # szybkie kwoty zakupu na karcie tokena
@@ -105,10 +106,11 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "api_key", "api_secret", "api_password", "stop_loss", "start_equity", "paid_until",
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
-               "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_max", "sol_slippage_bps",
+               "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
                "sol_presets", "sol_tp", "sol_sl", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
-FOLLOW_MIGRATIONS = {"sol_buy": "REAL"}  # osobna kwota zakupu (SOL) dla konkretnego kopiowanego portfela  # adres portfela Solany (traderzy typu „sol”)
+# osobne ustawienie dla konkretnego kopiowanego portfela: stała kwota (SOL) albo % kwoty tradera
+FOLLOW_MIGRATIONS = {"sol_buy": "REAL", "sol_pct": "REAL"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
                  "exchange", "wallet"}
 
@@ -207,8 +209,10 @@ class DB:
         rows = self._q("SELECT * FROM follows WHERE tg_id = ? AND leader_id = ?", (tg_id, leader_id))
         return rows[0] if rows else None
 
-    def set_follow_amount(self, tg_id: int, leader_id: int, sol: float | None):
-        self._q("UPDATE follows SET sol_buy = ? WHERE tg_id = ? AND leader_id = ?", (sol, tg_id, leader_id))
+    def set_follow_amount(self, tg_id: int, leader_id: int, sol: float | None = None, pct: float | None = None):
+        """Kwota dla tego portfela: stała (SOL) ALBO % kwoty tradera; obie None = jak w ustawieniach."""
+        self._q("UPDATE follows SET sol_buy = ?, sol_pct = ? WHERE tg_id = ? AND leader_id = ?",
+                (sol, None if sol else pct, tg_id, leader_id))
 
     def unfollow(self, tg_id: int, leader_id: int):
         self._q("DELETE FROM follows WHERE tg_id = ? AND leader_id = ?", (tg_id, leader_id))

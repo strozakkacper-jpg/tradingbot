@@ -207,7 +207,8 @@ class SolEngine:
         for u in self.db.active_followers(lead["id"]):
             if self.has_wallet(u["tg_id"]):
                 fr = self.db.follow_row(u["tg_id"], lead["id"])
-                followers.append(dict(u, follow_sol_buy=fr["sol_buy"] if fr else None))
+                followers.append(dict(u, follow_sol_buy=fr["sol_buy"] if fr else None,
+                                      follow_sol_pct=fr["sol_pct"] if fr else None))
 
         async def run(u):
             async with self.sem:
@@ -226,7 +227,8 @@ class SolEngine:
     @staticmethod
     def _leader_line(name: str, sw: Swap, symbol: str, decimals: int) -> str:
         verb = "kupił" if sw.side == "buy" else "sprzedał"
-        pct = f" ({sw.fraction * 100:.0f}% {sw.quote_symbol if sw.side == 'buy' else 'pozycji'})" if sw.fraction else ""
+        pct = (f" ({sw.fraction * 100:.0f}% {'swoich ' + sw.quote_symbol if sw.side == 'buy' else 'swoich tokenów'})"
+               if sw.fraction else "")
         return (f"{name} {verb} {fmt_tokens(sw.token_raw / 10 ** decimals)} {symbol} "
                 f"za {sw.quote_amount:.4g} {sw.quote_symbol}{pct}")
 
@@ -252,20 +254,21 @@ class SolEngine:
                 raise err
         except Skip as e:
             self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "skipped", str(e), not live)
-            await self.notify(u["tg_id"], f"{head}\n⚠️ Pominięto: {e}")
+            await self.notify(u["tg_id"], f"{head}\n⚠️ Nie skopiowano: {e}")
             return "skipped"
         except Exception as e:  # noqa: BLE001
             log.exception("Solana: kopiowanie dla %s", u["tg_id"])
             self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "error", str(e)[:300], not live)
-            await self.notify(u["tg_id"], f"{head}\n❌ Nie udało się: {str(e)[:200]}")
+            await self.notify(u["tg_id"], f"{head}\n❌ Nie udało się skopiować: {str(e)[:200]}")
             return "error"
         self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, fill.sol, fill.tokens, "filled",
                     lead["name"], not live, fill.sig, fill.latency_ms)
         verb = "Kupiono" if sw.side == "buy" else "Sprzedano"
-        speed = f"⚡ {fill.latency_ms} ms od wykrycia" + (f" · potwierdzone po {fill.confirm_s:.1f} s"
-                                                         if fill.confirm_s is not None else "")
-        await self.notify(u["tg_id"], f"{head}\n✅ {verb} {fmt_tokens(fill.tokens)} {symbol} za {fill.sol:.4f} SOL · "
-                                      f"{'💰 LIVE' if live else '🧪 demo'}\n{speed}"
+        speed = (f"⚡ skopiowano w {fill.latency_ms / 1000:.2f} s ({fill.latency_ms} ms od wykrycia)"
+                 + (f" · sieć potwierdziła po {fill.confirm_s:.1f} s" if fill.confirm_s is not None else ""))
+        await self.notify(u["tg_id"], f"{head}\n✅ {verb} {fmt_tokens(fill.tokens)} {symbol} za {fill.sol:.4f} SOL"
+                                      f"{await self.usd_txt(fill.sol)} · "
+                                      f"{'💰 prawdziwe SOL' if live else '🧪 ćwiczenia (wirtualne SOL)'}\n{speed}"
                                       + (f"\nhttps://solscan.io/tx/{fill.sig}" if fill.sig else ""))
         return "filled"
 
@@ -278,22 +281,55 @@ class SolEngine:
             raise Skip(f"za późno – {late:.0f} s od ruchu tradera (limit {self.cfg.sol_max_delay_s:g} s), "
                        "cena mogła uciec")
 
+    async def usd_txt(self, sol: float) -> str:
+        """„ (≈ $12.30)” – kurs SOL z pamięci podręcznej (10 s), bez czekania dłużej niż 2 s."""
+        try:
+            px = (await asyncio.wait_for(self.jup.prices([SOL_MINT]), 2)).get(SOL_MINT)
+        except Exception:  # noqa: BLE001
+            return ""
+        return f" (≈ ${sol * px:,.2f})".replace(",", " ") if px else ""
+
+    async def trader_sol(self, sw: Swap) -> float | None:
+        """Za ile SOL kupił trader (przy zakupie za USDC/USDT – przeliczone po kursie SOL)."""
+        if sw.quote_symbol == "SOL":
+            return sw.quote_amount
+        try:
+            sol_usd = (await self.jup.prices([SOL_MINT])).get(SOL_MINT)
+        except Exception:  # noqa: BLE001
+            sol_usd = None
+        return sw.quote_amount / sol_usd if sol_usd else None
+
     async def buy_amount(self, u, sw: Swap) -> int:
+        """Ile lamportów wydać na kopię zakupu. Tryby:
+        fixed – stała kwota SOL; pct – X% kwoty tradera (on 10 SOL, Ty przy 5% → 0,5 SOL);
+        ratio – ten sam % portfela co trader (× mnożnik). Ustawienie portfela (follows) ma pierwszeństwo."""
         bal = await self.sol_lamports(u)
         reserve = int(self.cfg.sol_reserve * LAMPORTS) if self.is_live(u) else 0
-        ratio = u["sol_buy_mode"] == "ratio"
-        override = u["follow_sol_buy"] if "follow_sol_buy" in u.keys() else None  # kwota ustawiona dla tego portfela
-        if override:
-            ratio = False
-        want = int(bal * sw.fraction * u["sol_mult"]) if ratio else int((override or u["sol_buy"]) * LAMPORTS)
+        keys = u.keys()
+        f_buy = u["follow_sol_buy"] if "follow_sol_buy" in keys else None
+        f_pct = u["follow_sol_pct"] if "follow_sol_pct" in keys else None
+        mode = "fixed" if f_buy else "pct" if f_pct else u["sol_buy_mode"]
+        if mode == "pct":
+            share = f_pct or u["sol_pct"]
+            his = await self.trader_sol(sw)
+            if his is None:
+                raise Skip("nie znam kursu SOL – nie da się policzyć % kwoty tradera")
+            want = int(his * share / 100 * LAMPORTS)
+            why = (f"trader kupił za {his:.4g} SOL – {share:g}% z tego to {want / LAMPORTS:.5f} SOL, "
+                   "poniżej minimum 0,001 SOL (zwiększ % albo ustaw stałą kwotę)")
+        elif mode == "ratio":
+            want = int(bal * sw.fraction * u["sol_mult"])
+            why = (f"trader użył {sw.fraction * 100:.2g}% swoich SOL – u Ciebie to {want / LAMPORTS:.5f} SOL, "
+                   "poniżej minimum 0,001 SOL (ustaw stałą kwotę w ⚙️ Ustawieniach Solany)")
+        else:
+            want, why = int((f_buy or u["sol_buy"]) * LAMPORTS), None
         if u["sol_max"] > 0:
             want = min(want, int(u["sol_max"] * LAMPORTS))
-        if ratio and want < MIN_BUY:
-            raise Skip(f"trader użył {sw.fraction * 100:.2g}% swoich SOL – u Ciebie to {want / LAMPORTS:.5f} SOL, "
-                       "poniżej minimum 0,001 SOL (ustaw stałą kwotę w ⚙️ Ustawieniach Solany)")
+        if why and want < MIN_BUY:
+            raise Skip(why)
         want = min(want, bal - reserve)
         if want < MIN_BUY:
-            raise Skip(f"za mało SOL (saldo {bal / LAMPORTS:.4f})")
+            raise Skip(f"za mało SOL na koncie (masz {bal / LAMPORTS:.4f} SOL)")
         return want
 
     async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,

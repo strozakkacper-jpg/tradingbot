@@ -19,6 +19,7 @@ log = logging.getLogger(__name__)
 SX = [B("« Pulpit", callback_data="home")]
 AMOUNTS = (0.01, 0.05, 0.1, 0.25, 0.5)
 MULTS = (0.5, 1.0, 2.0)
+PCTS = (1, 5, 10, 25, 50, 100)
 MAXES = (0.1, 0.5, 1.0, 2.0, 0)
 SLIPS = (300, 500, 1000, 2000, 3000)
 WD = 40
@@ -31,11 +32,19 @@ def valid_address(text: str) -> str | None:
         return None
 
 
+def mode_txt(mode: str, sol_buy: float, pct: float, mult: float) -> str:
+    """Ile bot wyda na kopię zakupu – zwykłymi słowami."""
+    if mode == "pct":
+        return f"{pct:g}% kwoty tradera (on kupi za 10 SOL → Ty za {10 * pct / 100:g} SOL)"
+    if mode == "ratio":
+        return f"ta sama część portfela co trader{f' × {mult:g}' if mult != 1 else ''}"
+    return f"stała kwota {sol_buy:g} SOL na każdy zakup"
+
+
 def buy_txt(u) -> str:
-    amount = (f"{u['sol_buy']:g} SOL na zakup" if u["sol_buy_mode"] == "fixed"
-              else f"ten sam % SOL co trader × {u['sol_mult']:g}")
-    cap = f"max {u['sol_max']:g} SOL" if u["sol_max"] > 0 else "bez limitu"
-    return f"{amount} · {cap} · poślizg {u['sol_slippage_bps'] / 100:g}%"
+    cap = f"maks. {u['sol_max']:g} SOL na jeden zakup" if u["sol_max"] > 0 else "bez limitu na zakup"
+    return (f"{mode_txt(u['sol_buy_mode'], u['sol_buy'], u['sol_pct'], u['sol_mult'])} · {cap} · "
+            f"tolerancja ceny {u['sol_slippage_bps'] / 100:g}%")
 
 
 async def _ack(update: Update, text=None, alert=False):
@@ -85,24 +94,34 @@ async def main_view(s, u) -> tuple[str, KB]:
 def settings_view(u) -> tuple[str, KB]:
     def mark(cur, v, label):
         return f"✓ {label}" if abs((cur or 0) - v) < 1e-9 else label
-    fixed = u["sol_buy_mode"] == "fixed"
-    text = ("⚙️ <b>Ustawienia Solany</b>\n\n"
-            "<b>Kwota zakupu</b>: <i>stała</i> – za każdym razem tyle samo SOL; <i>proporcjonalna</i> – ten sam % SOL "
-            "co trader (× mnożnik). Sprzedaż zawsze proporcjonalna.\n"
-            "<b>Poślizg</b>: przy memecoinach 10–30%, inaczej zlecenie często nie wejdzie.\n\n"
-            f"Teraz: {buy_txt(u)}")
-    rows = [header("Kwota zakupu"),
-            [B(("✓ " if fixed else "") + "Stała", callback_data="sx:bm:fixed"),
-             B(("✓ " if not fixed else "") + "Proporcjonalna", callback_data="sx:bm:ratio")]]
-    if fixed:
-        rows.append([B(mark(u["sol_buy"], a, f"{a:g}"), callback_data=f"sx:amt:{a}") for a in AMOUNTS])
+    mode = u["sol_buy_mode"]
+    text = ("⚙️ <b>Ustawienia kopiowania</b>\n\n"
+            "<b>Ile wydać, gdy trader coś kupi?</b>\n"
+            "• <i>Stała kwota</i> – zawsze tyle samo SOL (najprościej, polecane na start).\n"
+            "• <i>% kwoty tradera</i> – np. 10%: on kupi za 5 SOL, Ty za 0,5 SOL. Grasz jak on, tylko mniejszymi "
+            "pieniędzmi.\n"
+            "• <i>% portfela jak trader</i> – wydajesz taką część swojego salda, jaką on wydał ze swojego.\n"
+            "Gdy trader sprzedaje, sprzedajesz tę samą część swoich tokenów.\n\n"
+            "<b>Maks. na jeden zakup</b> – bezpiecznik: nigdy nie wydasz więcej naraz.\n"
+            "<b>Tolerancja ceny</b> – o ile cena może się zmienić, zanim zakup dojdzie do skutku. Memecoiny skaczą, "
+            "więc 10–30% to norma; za mało = zakupy często nie wejdą.\n\n"
+            f"Teraz: {buy_txt(u)}\n"
+            "<i>Każdemu portfelowi możesz też ustawić osobną kwotę – na jego karcie.</i>")
+    rows = [header("Ile wydać na zakup"),
+            [B(("✓ " if mode == "fixed" else "") + "Stała kwota", callback_data="sx:bm:fixed"),
+             B(("✓ " if mode == "pct" else "") + "% kwoty tradera", callback_data="sx:bm:pct")],
+            [B(("✓ " if mode == "ratio" else "") + "% portfela jak trader", callback_data="sx:bm:ratio")]]
+    if mode == "fixed":
+        rows.append([B(mark(u["sol_buy"], a, f"{a:g} SOL"), callback_data=f"sx:amt:{a}") for a in AMOUNTS])
+    elif mode == "pct":
+        rows.append([B(mark(u["sol_pct"], v, f"{v:g}%"), callback_data=f"sx:pct:{v}") for v in PCTS])
     else:
         rows.append([B(mark(u["sol_mult"], m, f"{m:g}x"), callback_data=f"sx:mult:{m}") for m in MULTS])
-    rows += [header("Maks. na zakup (SOL)"),
-             [B(mark(u["sol_max"], m, f"{m:g}" if m else "∞"), callback_data=f"sx:max:{m}") for m in MAXES],
-             header("Poślizg"),
+    rows += [header("Maks. na jeden zakup (SOL)"),
+             [B(mark(u["sol_max"], m, f"{m:g}" if m else "bez limitu"), callback_data=f"sx:max:{m}") for m in MAXES],
+             header("Tolerancja ceny"),
              [B(mark(u["sol_slippage_bps"], b, f"{b / 100:g}%"), callback_data=f"sx:slip:{b}") for b in SLIPS],
-             [B("🔄 Reset demo Solany", callback_data="sx:reset")], SX]
+             [B("🔄 Zacznij ćwiczenia od nowa", callback_data="sx:reset")], SX]
     return text, KB(rows)
 
 
@@ -144,27 +163,32 @@ async def on_sol_button(update: Update, ctx):
             from .axiom import settings_view as ax_settings
             await _ack(update)
             return await show(update, *ax_settings(s, u))
-        if act in ("bm", "amt", "mult", "max", "slip"):
-            field = {"bm": "sol_buy_mode", "amt": "sol_buy", "mult": "sol_mult", "max": "sol_max",
+        if act in ("bm", "amt", "mult", "pct", "max", "slip"):
+            field = {"bm": "sol_buy_mode", "amt": "sol_buy", "mult": "sol_mult", "pct": "sol_pct", "max": "sol_max",
                      "slip": "sol_slippage_bps"}[act]
             val = parts[2] if act == "bm" else int(parts[2]) if act == "slip" else float(parts[2])
+            if act == "bm" and val not in ("fixed", "pct", "ratio"):
+                return await _ack(update)
             s.db.update_user(uid, **{field: val})
             await _ack(update, "Zapisano")
             from .axiom import settings_view as ax_settings
             return await show(update, *ax_settings(s, s.db.get_user(uid)))
         if act == "reset":
             s.sol.paper_reset(uid)
-            await _ack(update, f"Demo Solany: {s.cfg.sol_paper_start:g} SOL", True)
-            return await show(update, *settings_view(u))
+            await _ack(update, f"Ćwiczenia od nowa: masz {s.cfg.sol_paper_start:g} wirtualnych SOL", True)
+            from .axiom import settings_view as ax_settings
+            return await show(update, *ax_settings(s, s.db.get_user(uid)))
         if act == "mode":
             await _ack(update)
             if s.sol.is_live(u):
                 from .axiom import home_view
                 s.db.update_user(uid, sol_live=0)
                 return await show(update, *await home_view(s, s.db.get_user(uid)))
-            return await show(update, "💰 <b>Prawdziwe SOL?</b>\n\nBot będzie kupował i sprzedawał tokeny z Twojego "
-                                      f"portfela Solany. Zakupy: {buy_txt(u)}.\n\nNajpierw wpłać SOL na adres z "
-                                      "„👛 Adres / wpłata”. Zacznij od małej kwoty.",
+            return await show(update, "💰 <b>Grać prawdziwymi pieniędzmi?</b>\n\nDo tej pory bot ćwiczył na wirtualnych "
+                                      "SOL. Teraz będzie naprawdę kupował i sprzedawał tokeny z Twojego portfela "
+                                      f"Solany.\nZakupy: {buy_txt(u)}.\n\n⚠️ Memecoiny potrafią stracić 90% wartości "
+                                      "w kilka minut. Wpłać tylko tyle, ile możesz stracić.\n\nNajpierw wpłać SOL na "
+                                      "adres z „👛 Portfel / wpłata”.",
                               KB([[B("✅ Tak, przejdź na LIVE", callback_data="sx:modeok")], SX]))
         if act == "modeok":
             s.db.update_user(uid, sol_live=1)

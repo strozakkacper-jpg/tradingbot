@@ -92,42 +92,49 @@ async def build(s, u) -> str:
         fills = [r for r in rows if r["status"] == "filled"]
         buys = [r for r in fills if r["side"] == "buy"]
         sells = [r for r in fills if r["side"] == "sell"]
-        lines += ["", f"🟣 <b>Solana</b> · {'💰 LIVE' if s.sol.is_live(u) else '🧪 demo'}"]
-        from .axiom import portfolio
+        from .axiom import in_usd, mode_label, portfolio
         try:
             pf = await asyncio.wait_for(portfolio(s, u), 20)
         except Exception:  # noqa: BLE001
             pf = None
+        px = pf["sol_usd"] if pf else None
+        lines += ["", f"🟣 <b>Solana</b> · {mode_label(s.sol.is_live(u))}"]
         if pf and u["session_sol0"]:
+            diff = pf["total"] - u["session_sol0"]
             ch = (pf["total"] / u["session_sol0"] - 1) * 100
-            lines.append(f"Portfel: {u['session_sol0']:.4f} → <b>{pf['total']:.4f} SOL</b> ({_pct(ch)}, "
-                         f"{_sol(pf['total'] - u['session_sol0'])})")
+            verdict = (f"🟢 <b>Zarobiłeś {diff:.4f} SOL{in_usd(diff, px)}</b>" if diff >= 0.00005 else
+                       f"🔴 <b>Straciłeś {-diff:.4f} SOL{in_usd(-diff, px)}</b>" if diff <= -0.00005 else
+                       "⚪️ <b>Wyszedłeś na zero</b>")
+            lines.append(f"{verdict} ({_pct(ch)})")
+            lines.append(f"Na starcie miałeś {u['session_sol0']:.4f} SOL, teraz <b>{pf['total']:.4f} SOL</b> "
+                         "(wolne SOL + wartość tokenów)")
         elif pf:
-            lines.append(f"Portfel teraz: <b>{pf['total']:.4f} SOL</b>")
+            lines.append(f"Portfel teraz: <b>{pf['total']:.4f} SOL</b>{in_usd(pf['total'], px)}")
         skipped = [r for r in rows if r["status"] == "skipped"]
         errors = [r for r in rows if r["status"] == "error"]
         lines.append(f"Transakcje: <b>{len(fills)}</b> (🟢 kupna {len(buys)} · 🔴 sprzedaże {len(sells)}) · "
                      f"pominięte {len(skipped)} · błędy {len(errors)}")
-        lines.append(f"Obrót: kupiono za {sum(r['sol'] or 0 for r in buys):.4f} SOL · "
-                     f"sprzedano za {sum(r['sol'] or 0 for r in sells):.4f} SOL")
+        lines.append(f"Wydane na zakupy: {sum(r['sol'] or 0 for r in buys):.4f} SOL · "
+                     f"dostane ze sprzedaży: {sum(r['sol'] or 0 for r in sells):.4f} SOL")
         closed = closed_trades(fills)
         if closed:
             wins = [c for c in closed if c["pnl"] > 0]
             realized = sum(c["pnl"] for c in closed)
             best = max(closed, key=lambda c: c["pnl"])
             worst = min(closed, key=lambda c: c["pnl"])
-            lines.append(f"Zamknięte: {len(closed)} · trafione {len(wins)} ({len(wins) / len(closed) * 100:.0f}%) · "
-                         f"zrealizowany PnL <b>{_sol(realized)}</b>")
+            lines.append(f"Sprzedane tokeny: {len(closed)} · z zyskiem {len(wins)} "
+                         f"({len(wins) / len(closed) * 100:.0f}%) · zarobek na nich <b>{_sol(realized)}</b>")
             lines.append(f"Najlepsza: {html.escape(best['symbol'])} {_sol(best['pnl'])} ({_pct(best['pct'])}) · "
                          f"najgorsza: {html.escape(worst['symbol'])} {_sol(worst['pnl'])} ({_pct(worst['pct'])})")
         if pf and pf["positions"]:
             unreal = sum((p["value"] or 0) - p["cost"] for p in pf["positions"] if p["cost"] is not None)
-            lines.append(f"Otwarte pozycje: {len(pf['positions'])} · wartość "
-                         f"{sum(p['value'] or 0 for p in pf['positions']):.4f} SOL · niezrealizowany PnL {_sol(unreal)}")
+            lines.append(f"Tokeny, które wciąż masz: {len(pf['positions'])} · warte "
+                         f"{sum(p['value'] or 0 for p in pf['positions']):.4f} SOL · zysk/strata na nich {_sol(unreal)}"
+                         " (liczy się dopiero po sprzedaży)")
         lat = [r["latency_ms"] for r in fills if r["latency_ms"] is not None and r["leader_id"]]
         if lat:
-            lines.append(f"⚡ Szybkość kopii: śr. {statistics.mean(lat):.0f} ms · mediana {statistics.median(lat):.0f} ms"
-                         f" · najszybciej {min(lat)} ms · najwolniej {max(lat)} ms")
+            lines.append(f"⚡ Szybkość kopii: zwykle {statistics.median(lat) / 1000:.2f} s od ruchu tradera "
+                         f"(najszybciej {min(lat) / 1000:.2f} s, najwolniej {max(lat) / 1000:.2f} s)")
         per = defaultdict(lambda: {"n": 0, "pnl": 0.0})
         for r in fills:
             if r["leader_id"]:
@@ -136,17 +143,17 @@ async def build(s, u) -> str:
             if c["leader_id"]:
                 per[c["leader_id"]]["pnl"] += c["pnl"]
         if per:
-            lines.append("<b>Według portfeli:</b>")
+            lines.append("<b>Który trader ile Ci dał:</b>")
             for lid, d in sorted(per.items(), key=lambda kv: -kv[1]["pnl"]):
                 lead = s.db.get_leader(lid)
                 name = html.escape(lead["name"]) if lead else f"#{lid}"
-                lines.append(f"• {name}: {d['n']} kopii · zrealizowany PnL {_sol(d['pnl'])}")
+                lines.append(f"• {name}: kopie {d['n']} · zarobek {_sol(d['pnl'])}")
         manual = [r for r in fills if not r["leader_id"]]
         if manual:
             lines.append(f"Ręczne transakcje: {len(manual)}")
         if skipped or errors:
             reasons = Counter(re.split(r" \(| –|:", (r["info"] or r["status"]))[0][:40] for r in skipped + errors)
-            lines.append("Pominięcia: " + ", ".join(f"{html.escape(k)} ×{v}" for k, v in reasons.most_common(4)))
+            lines.append("Dlaczego coś nie zostało skopiowane: " + ", ".join(f"{html.escape(k)} ×{v}" for k, v in reasons.most_common(4)))
 
     # ---------- giełdy (CEX) ----------
     cex = s.db._q("SELECT status, side, cost FROM copies WHERE tg_id = ? AND ts BETWEEN ? AND ?", (uid, start_ms, end_ms))
