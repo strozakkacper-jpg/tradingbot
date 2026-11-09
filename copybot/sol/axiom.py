@@ -86,10 +86,17 @@ async def portfolio(s, u) -> dict:
     except Exception:  # noqa: BLE001
         sol_usd = None
     positions = []
+    lookups = 0
     for mint, raw in hold.items():
-        sym, dec = se.cached_token(mint) or await se.token_info(mint)
         val = values.get(mint)
         basis = se.cost_basis(u["tg_id"], mint, not se.is_live(u))
+        if not basis and (val is None or val < 0.0001):
+            continue  # pył i spam bez wartości (np. tokeny wrzucane na portfel z Axiom) – nie pokazujemy
+        known = se.cached_token(mint)
+        if not known and lookups < 5:
+            lookups += 1
+            known = await se.token_info(mint)
+        sym, dec = known or (short(mint), se._dec.get(mint, 0))
         pnl = (val / basis[0] - 1) * 100 if (val is not None and basis and basis[0] > 0) else None
         positions.append({"mint": mint, "symbol": sym, "tokens": raw / 10 ** dec, "value": val, "pnl": pnl,
                           "cost": basis[0] if basis else None})

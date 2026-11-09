@@ -1,5 +1,6 @@
 """Kopiowanie portfeli Solany (traderzy z Axiom, Pump.fun, Raydium…) – demo i LIVE przez Jupitera."""
 import asyncio
+import json
 import logging
 import time
 from collections import Counter
@@ -13,6 +14,15 @@ from .chain import ChainError, Jupiter, Rpc
 from .parser import LAMPORTS, SOL_MINT, Swap
 
 log = logging.getLogger(__name__)
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def b58decode(s: str) -> bytes:
+    n = 0
+    for ch in s:
+        n = n * 58 + B58.index(ch)
+    full = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
+    return b"\0" * (len(s) - len(s.lstrip("1"))) + full
 PAPER_TX_FEE = 200_000  # ~0,0002 SOL opłat sieci na transakcję w demo
 MIN_BUY = 1_000_000  # 0,001 SOL
 DAY_MS = 24 * 3600 * 1000
@@ -51,7 +61,9 @@ class SolEngine:
         self._bal: dict[str, tuple[float, int]] = {}  # pubkey -> (czas, lamporty) – szybsze zakupy LIVE
         self._report_cache: dict[int, tuple[float, dict]] = {}
         self._hold_cache: dict[int, tuple[float, dict]] = {}
+        self._dec: dict[str, int] = {}  # mint -> miejsca po przecinku (z kont tokenów portfela)
         self.watcher = None  # SolWatcher (ustawiany w main)
+        self.pump = None  # PumpPortal – zapasowa droga dla świeżych tokenów z Pump.fun (ustawiana w main)
 
     # ---------- baza ----------
     def wallet(self, tg_id: int, create: bool = True) -> tuple[str, Keypair] | None:
@@ -61,7 +73,7 @@ class SolEngine:
         if not create:
             return None
         kp = Keypair()
-        self.db._q("INSERT OR IGNORE INTO sol_wallets VALUES (?, ?, ?, ?)",
+        self.db._q("INSERT OR IGNORE INTO sol_wallets (tg_id, pubkey, secret, created_at) VALUES (?, ?, ?, ?)",
                    (tg_id, str(kp.pubkey()), self.vault.enc(str(kp)), now_ms()))
         self.paper_reset(tg_id)
         return self.wallet(tg_id, create=False)
@@ -145,7 +157,9 @@ class SolEngine:
         if not self.is_live(u):
             return {m: r for m, r in self.paper(u["tg_id"]).items() if m != SOL_MINT}
         pub, _ = self.wallet(u["tg_id"])
-        return {m: raw for m, (raw, _) in (await self.rpc.token_accounts(pub)).items() if m != SOL_MINT}
+        accs = await self.rpc.token_accounts(pub)
+        self._dec.update({m: dec for m, (_, dec) in accs.items()})  # miejsca po przecinku bez pytania Jupitera
+        return {m: raw for m, (raw, _) in accs.items() if m != SOL_MINT}
 
     async def value_in_sol(self, mint: str, raw: int) -> float | None:
         try:
@@ -154,22 +168,30 @@ class SolEngine:
         except Exception:  # noqa: BLE001
             return None
 
-    async def values_sol(self, holdings: dict[str, int]) -> dict[str, float]:
-        """Wartość pozycji w SOL – jedno zapytanie o ceny (Jupiter price v3) zamiast wyceny każdego tokena osobno."""
+    async def values_sol(self, holdings: dict[str, int], max_quotes: int = 3) -> dict[str, float]:
+        """Wartość pozycji w SOL – ceny paczkami (Jupiter price v3) zamiast wyceny każdego tokena osobno.
+        Tokeny bez ceny (np. spam wrzucany na portfele) wyceniamy trasą wymiany tylko w kilku sztukach –
+        inaczej portfel z setką śmieciowych tokenów zjadałby cały limit Jupitera."""
         mints = [m for m in holdings if m != SOL_MINT]
         if not mints:
             return {}
-        try:
-            px = await self.jup.prices(mints + [SOL_MINT])
-        except Exception:  # noqa: BLE001
-            px = {}
+        px: dict[str, float] = {}
+        for i in range(0, len(mints), 49):
+            try:
+                px.update(await self.jup.prices(mints[i:i + 49] + [SOL_MINT]))
+            except Exception:  # noqa: BLE001
+                pass
         sol_usd = px.get(SOL_MINT)
         out = {}
+        quotes = 0
         for m in mints:
             if sol_usd and m in px:
-                _, dec = self.cached_token(m) or await self.token_info(m)
+                dec = self._dec.get(m)
+                if dec is None:
+                    _, dec = self.cached_token(m) or await self.token_info(m)
                 out[m] = holdings[m] / 10 ** dec * px[m] / sol_usd
-            else:  # brak ceny w API – awaryjnie wycena przez trasę wymiany
+            elif quotes < max_quotes:  # brak ceny w API – awaryjnie wycena przez trasę wymiany
+                quotes += 1
                 v = await self.value_in_sol(m, holdings[m])
                 if v is not None:
                     out[m] = v
@@ -443,6 +465,8 @@ class SolEngine:
             if quote is None:
                 if not self.is_live(u) and fallback and fallback.quote_symbol == "SOL" and fallback.token_raw > 0:
                     return self._paper_at_trader_price(u, side, mint, amount_raw, fallback, t0, decimals)
+                if self.is_live(u) and self.pump is not None:  # świeży token z Pump.fun – zapasowa droga
+                    return await self._live_pumpportal(u, side, mint, amount_raw, t0, t_recv, decimals)
                 raise Skip(f"brak trasy wymiany – Jupiter jeszcze nie obsługuje tego tokena ({e})") from e
         out = int(quote["outAmount"])
         sol_raw, tok_raw = (amount_raw, out) if side == "buy" else (out, amount_raw)
@@ -455,11 +479,99 @@ class SolEngine:
             return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, lat)
         pub, kp = self.wallet(u["tg_id"])
         self._fresh(t_recv)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
-        tx = await self.jup.swap(quote, kp, self.cfg.sol_priority_max_lamports)
+        tx = await self.jup.swap(quote, kp, self.priority(u))
         lat = int((time.monotonic() - t0) * 1000)  # do momentu wysłania transakcji
         self._bal.pop(pub, None)
         sig, confirm_s = await self.rpc.send_and_confirm(tx)
         return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s)
+
+    def priority(self, u) -> int:
+        """Maks. opłata za szybkość (lamporty) – ustawienie użytkownika albo domyślna z konfiguracji."""
+        v = u["sol_priority"] if "sol_priority" in u.keys() and u["sol_priority"] else self.cfg.sol_priority_max_lamports
+        return int(min(max(v, 10_000), 10_000_000))
+
+    async def _live_pumpportal(self, u, side, mint, amount_raw, t0, t_recv, decimals) -> Fill:
+        pub, kp = self.wallet(u["tg_id"])
+        pre_tok = await self.token_raw(u, mint)
+        pre_sol = await self.rpc.balance(pub)
+        if side == "buy":
+            amount, in_sol = round(amount_raw / LAMPORTS, 9), True
+        else:
+            amount, in_sol = ("100%" if amount_raw >= pre_tok else amount_raw / 10 ** decimals), False
+        self._fresh(t_recv)
+        try:
+            tx = await self.pump.tx(kp, side, mint, amount, in_sol, u["sol_slippage_bps"] / 100,
+                                    self.priority(u) / LAMPORTS)
+        except ChainError as e:
+            raise Skip(f"brak trasy wymiany (Jupiter i Pump.fun): {e}") from e
+        lat = int((time.monotonic() - t0) * 1000)
+        self._bal.pop(pub, None)
+        sig, confirm_s = await self.rpc.send_and_confirm(tx)
+        try:  # rzeczywiste ilości z sald po transakcji
+            post_tok, post_sol = await self.token_raw(u, mint), await self.rpc.balance(pub)
+        except Exception:  # noqa: BLE001
+            post_tok, post_sol = pre_tok, pre_sol
+        if side == "buy":
+            sol, tokens = amount_raw / LAMPORTS, max(post_tok - pre_tok, 0) / 10 ** decimals
+        else:
+            sol, tokens = max(post_sol - pre_sol, 0) / LAMPORTS, amount_raw / 10 ** decimals
+        return Fill(sol, tokens, sig, lat, confirm_s, note="przez Pump.fun")
+
+    # ---------- podłączanie własnego portfela (np. z Axiom) ----------
+    @staticmethod
+    def parse_secret(text: str) -> Keypair:
+        """Klucz prywatny w formacie Axiom/Phantom (base58) albo solana-keygen (lista 64 liczb)."""
+        s = (text or "").strip().strip('"').strip("'")
+        try:
+            if s.startswith("["):
+                raw = bytes(json.loads(s))
+            else:
+                raw = b58decode(s)
+            if len(raw) == 64:
+                kp = Keypair.from_bytes(raw)
+            elif len(raw) == 32:
+                kp = Keypair.from_seed(raw)
+            else:
+                raise ValueError(len(raw))
+        except Exception:  # noqa: BLE001
+            raise Skip("to nie wygląda na klucz prywatny Solany – w Axiom: Settings → Wallets → Export private "
+                       "key, skopiuj cały ciąg znaków") from None
+        return kp
+
+    def wallet_source(self, tg_id: int) -> str | None:
+        r = self.db._q("SELECT source FROM sol_wallets WHERE tg_id = ?", (tg_id,))
+        return r[0]["source"] if r else None
+
+    def import_wallet(self, tg_id: int, kp: Keypair, source: str = "import") -> str:
+        """Podłącza własny portfel. Poprzedni (np. utworzony przez bota) trafia do kopii – nic nie ginie."""
+        self.wallet(tg_id)
+        old = self.db._q("SELECT * FROM sol_wallets WHERE tg_id = ?", (tg_id,))[0]
+        pub = str(kp.pubkey())
+        if old["pubkey"] == pub:
+            return pub
+        with self.db.lock, self.db.conn:
+            self.db.conn.execute("INSERT INTO sol_wallet_backup (tg_id, pubkey, secret, source, replaced_at) "
+                                 "VALUES (?, ?, ?, ?, ?)", (tg_id, old["pubkey"], old["secret"], old["source"], now_ms()))
+            self.db.conn.execute("UPDATE sol_wallets SET pubkey = ?, secret = ?, source = ? WHERE tg_id = ?",
+                                 (pub, self.vault.enc(str(kp)), source, tg_id))
+        self._bal.pop(old["pubkey"], None)
+        return pub
+
+    def restore_wallet(self, tg_id: int) -> str | None:
+        """Wraca do poprzedniego portfela (np. portfela bota) – obecny trafia do kopii."""
+        rows = self.db._q("SELECT * FROM sol_wallet_backup WHERE tg_id = ? ORDER BY id DESC LIMIT 1", (tg_id,))
+        if not rows:
+            return None
+        b = rows[0]
+        cur = self.db._q("SELECT * FROM sol_wallets WHERE tg_id = ?", (tg_id,))[0]
+        with self.db.lock, self.db.conn:
+            self.db.conn.execute("DELETE FROM sol_wallet_backup WHERE id = ?", (b["id"],))
+            self.db.conn.execute("INSERT INTO sol_wallet_backup (tg_id, pubkey, secret, source, replaced_at) "
+                                 "VALUES (?, ?, ?, ?, ?)", (tg_id, cur["pubkey"], cur["secret"], cur["source"], now_ms()))
+            self.db.conn.execute("UPDATE sol_wallets SET pubkey = ?, secret = ?, source = ? WHERE tg_id = ?",
+                                 (b["pubkey"], b["secret"], b["source"] or "bot", tg_id))
+        self._bal.pop(cur["pubkey"], None)
+        return b["pubkey"]
 
     def _paper_at_trader_price(self, u, side, mint, amount_raw, sw: Swap, t0: float, decimals: int) -> Fill:
         """Ćwiczenia: Jupiter nie zna jeszcze tokena (np. świeży z Pump.fun) – liczymy po cenie z transakcji

@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS follows (
 CREATE TABLE IF NOT EXISTS sol_wallets (
     tg_id INTEGER PRIMARY KEY, pubkey TEXT NOT NULL, secret TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS sol_wallet_backup (  -- poprzednie portfele (np. przed podłączeniem Axiom) – nic nie ginie
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, pubkey TEXT NOT NULL, secret TEXT NOT NULL,
+    source TEXT, replaced_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sol_paper (tg_id INTEGER NOT NULL, mint TEXT NOT NULL, raw INTEGER NOT NULL,
                                       PRIMARY KEY (tg_id, mint));
 CREATE TABLE IF NOT EXISTS sol_tokens (mint TEXT PRIMARY KEY, symbol TEXT NOT NULL, decimals INTEGER NOT NULL);
@@ -106,6 +110,8 @@ MIGRATIONS = {
     "sol_no_add": "INTEGER NOT NULL DEFAULT 0",  # nie dokupuj – kopiuj tylko pierwszy zakup tokena
     "sol_min_lead": "REAL NOT NULL DEFAULT 0",  # pomijaj zakupy tradera mniejsze niż X SOL (0 = wył.)
     "sol_min_hold": "REAL NOT NULL DEFAULT 0",  # pomijaj „flipperów” trzymających krócej niż X s (0 = wył.)
+    # maks. opłata za szybkość (priority fee) na transakcję – przy małych kwotach to realny koszt
+    "sol_priority": "INTEGER NOT NULL DEFAULT 500000",
     # sesja = od włączenia do wyłączenia kopiowania – po niej bot wysyła szczegółowy raport
     "session_start": "INTEGER",
     "session_end": "INTEGER",
@@ -124,8 +130,9 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
-               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "session_start", "session_end", "session_sol0", "session_cex0"}
+               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
+WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}  # bot = utworzony przez bota, import = np. z Axiom
 # osobne ustawienie dla konkretnego kopiowanego portfela: stała kwota (SOL) albo % kwoty tradera
 FOLLOW_MIGRATIONS = {"sol_buy": "REAL", "sol_pct": "REAL", "priority": "INTEGER NOT NULL DEFAULT 0"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
@@ -153,6 +160,10 @@ class DB:
             for name, ddl in FOLLOW_MIGRATIONS.items():
                 if name not in fcols:
                     self.conn.execute(f"ALTER TABLE follows ADD COLUMN {name} {ddl}")
+            wcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(sol_wallets)")}
+            for name, ddl in WALLET_MIGRATIONS.items():
+                if name not in wcols:
+                    self.conn.execute(f"ALTER TABLE sol_wallets ADD COLUMN {name} {ddl}")
             lcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(leaders)")}
             for name, ddl in LEADER_MIGRATIONS.items():
                 if name not in lcols:

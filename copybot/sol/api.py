@@ -26,7 +26,7 @@ SETTINGS = {
     "sol_mult": (float, 0.01, 100), "sol_max": (float, 0, 1000), "sol_slippage_bps": (int, 50, 5000),
     "sol_tp": (float, 0, 10000), "sol_sl": (float, 0, 100), "sol_day_limit": (float, 0, 1000),
     "sol_safe": (bool, None, None), "sol_x2": (bool, None, None), "sol_no_add": (bool, None, None),
-    "sol_min_lead": (float, 0, 100), "sol_min_hold": (float, 0, 3600),
+    "sol_min_lead": (float, 0, 100), "sol_min_hold": (float, 0, 3600), "sol_priority": (int, 10_000, 10_000_000),
 }
 
 
@@ -404,6 +404,28 @@ async def action(s, u, body: dict) -> dict:
             raise ApiError("Potwierdź przejście na prawdziwe pieniądze")
         s.db.update_user(uid, sol_live=int(live))
         return {"msg": "💰 Grasz prawdziwymi SOL" if live else "🧪 Wróciłeś do ćwiczeń"}
+    if act == "import_wallet":
+        try:
+            kp = se.parse_secret(str(body.get("secret", "")))
+        except Skip as e:
+            raise ApiError(str(e)) from None
+        pub = str(kp.pubkey())
+        if not body.get("confirm"):
+            try:
+                bal = await se.rpc.balance(pub) / LAMPORTS
+            except Exception:  # noqa: BLE001
+                bal = None
+            return {"address": pub, "balance": bal, "confirm_needed": True}
+        if body.get("address") != pub:
+            raise ApiError("Adres się nie zgadza – wklej klucz jeszcze raz")
+        se.import_wallet(uid, kp, "axiom")
+        return {"msg": f"🔗 Podłączono portfel {short(pub)}. Bot handluje nim po przejściu na 💰 prawdziwe pieniądze.",
+                "address": pub}
+    if act == "restore_wallet":
+        pub = se.restore_wallet(uid)
+        if not pub:
+            raise ApiError("Nie ma poprzedniego portfela do przywrócenia")
+        return {"msg": f"↩️ Wrócono do portfela {short(pub)}", "address": pub}
     if act == "reset_demo":
         se.paper_reset(uid)
         return {"msg": f"Ćwiczenia od nowa: {s.cfg.sol_paper_start:g} wirtualnych SOL"}
@@ -510,7 +532,10 @@ def routes(s, app: web.Application, auth):
             bal = await s.sol.rpc.balance(pub) / LAMPORTS
         except Exception:  # noqa: BLE001
             bal = None
-        return {"address": pub, "balance": bal}
+        backups = s.db._q("SELECT pubkey, source FROM sol_wallet_backup WHERE tg_id = ? ORDER BY id DESC LIMIT 1",
+                          (u["tg_id"],))
+        return {"address": pub, "balance": bal, "source": s.sol.wallet_source(u["tg_id"]),
+                "previous": dict(backups[0]) if backups else None}
 
     async def h_action(req, u):
         try:

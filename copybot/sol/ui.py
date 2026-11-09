@@ -22,7 +22,7 @@ MULTS = (0.5, 1.0, 2.0)
 PCTS = (1, 5, 10, 25, 50, 100)
 MAXES = (0.1, 0.5, 1.0, 2.0, 0)
 SLIPS = (300, 500, 1000, 2000, 3000)
-WD = 40
+WD, IMP = 40, 41
 
 
 def valid_address(text: str) -> str | None:
@@ -198,18 +198,27 @@ async def on_sol_button(update: Update, ctx):
         if act == "hist":
             await _ack(update)
             return await show(update, history_text(s, u), KB([SX]))
+        if act == "restore":
+            pub = s.sol.restore_wallet(uid)
+            await _ack(update, f"Wrócono do {short(pub)}" if pub else "Brak poprzedniego portfela", True)
+            act = "wallet"
         if act == "wallet":
-            await _ack(update)
+            if parts[1] != "restore":
+                await _ack(update)
             pub, _ = s.sol.wallet(uid)
             try:
                 bal = f"{await s.sol.rpc.balance(pub) / LAMPORTS:.4f} SOL"
             except Exception:  # noqa: BLE001
                 bal = "?"
-            return await show(update, "👛 <b>Twój portfel Solana</b>\n\n"
+            axiom = s.sol.wallet_source(uid) in ("axiom", "import")
+            prev = s.db._q("SELECT pubkey FROM sol_wallet_backup WHERE tg_id = ? ORDER BY id DESC LIMIT 1", (uid,))
+            return await show(update, f"👛 <b>{'Twój portfel z Axiom 🔗' if axiom else 'Twój portfel Solana'}</b>\n\n"
                                       f"<code>{pub}</code>\n(dotknij, żeby skopiować)\n\nSaldo prawdziwe: <b>{bal}</b>\n\n"
                                       "Wpłać SOL na ten adres (sieć <b>Solana</b>), żeby kopiować na LIVE. Klucz możesz "
                                       "wyeksportować do Phantoma lub Axiom.",
-                              KB([[B("💸 Wypłać SOL", callback_data="sx:wd"), B("🔑 Eksportuj klucz", callback_data="sx:exp")],
+                              KB([[B("🔗 Podłącz portfel z Axiom", callback_data="sx:imp")]]
+                                 + ([[B(f"↩️ Wróć do {short(prev[0]['pubkey'])}", callback_data="sx:restore")]] if prev else [])
+                                 + [[B("💸 Wypłać SOL", callback_data="sx:wd"), B("🔑 Eksportuj klucz", callback_data="sx:exp")],
                                   [B("Zobacz na Solscan", url=f"https://solscan.io/account/{pub}")], SX]))
         if act == "exp":
             await _ack(update)
@@ -224,6 +233,17 @@ async def on_sol_button(update: Update, ctx):
             if getattr(ctx, "job_queue", None):
                 ctx.job_queue.run_once(_delete, 60, data=(m.chat_id, m.message_id))
             return
+        if act in ("impok", "impno"):
+            secret = ctx.user_data.pop("sol_imp", None)
+            if act == "impno" or not secret:
+                await _ack(update, "Anulowano")
+                return await show(update, "Anulowano – nic nie zmieniłem.", KB([SX]))
+            from solders.keypair import Keypair
+            pub = s.sol.import_wallet(uid, Keypair.from_base58_string(secret), "axiom")
+            await _ack(update, "Podłączono 🔗")
+            return await show(update, f"🔗 <b>Podłączono portfel</b> <code>{pub}</code>\n\nBot handluje nim, gdy grasz "
+                                      "💰 prawdziwymi SOL (przełącznik na pulpicie). Na ćwiczeniach nic się nie zmienia.",
+                              KB([[B("Przejdź na 💰 prawdziwe", callback_data="sx:mode")], SX]))
         if act == "wdok":
             pending = ctx.user_data.pop("sol_wd", None)
             if not pending:
@@ -258,6 +278,52 @@ async def _delete(ctx):
         await ctx.bot.delete_message(chat_id, msg_id)
     except Exception:  # noqa: BLE001
         pass
+
+
+# ---------- podłączenie portfela z Axiom (klucz prywatny) ----------
+
+async def imp_start(update: Update, ctx):
+    await _ack(update)
+    if not await require_accepted(update, ctx):
+        return ConversationHandler.END
+    await update.effective_chat.send_message(
+        "🔗 <b>Podłącz portfel z Axiom</b>\n\n1. W Axiom: <b>Settings → Wallets</b> → przy portfelu <b>Export private key</b>\n"
+        "2. Skopiuj klucz i wyślij mi go tutaj – <b>od razu usunę Twoją wiadomość</b> z czatu.\n\n"
+        "🔐 Klucz daje pełną kontrolę nad portfelem. Trzymam go zaszyfrowanego i nigdy nie pokazuję. "
+        "Najlepiej utwórz w Axiom <b>osobny portfel do bota</b> i trzymaj na nim tylko tyle SOL, ile chcesz grać.\n"
+        "/anuluj – przerwij", parse_mode=ParseMode.HTML)
+    return IMP
+
+
+async def imp_text(update: Update, ctx):
+    s = S(ctx)
+    text = update.message.text or ""
+    try:
+        await update.message.delete()  # klucz nie zostaje w historii czatu
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        kp = s.sol.parse_secret(text)
+    except Skip as e:
+        await update.effective_chat.send_message(f"⚠️ {e}\nSpróbuj jeszcze raz albo /anuluj.")
+        return IMP
+    pub = str(kp.pubkey())
+    try:
+        bal = f"{await s.sol.rpc.balance(pub) / LAMPORTS:.4f} SOL"
+    except Exception:  # noqa: BLE001
+        bal = "?"
+    ctx.user_data["sol_imp"] = str(kp)
+    await update.effective_chat.send_message(
+        f"🔗 Podłączyć ten portfel?\n<code>{pub}</code>\nSaldo: <b>{bal}</b>\n\nSprawdź, że to ten sam adres co w Axiom. "
+        "Obecny portfel bota zapiszę – możesz do niego wrócić.", parse_mode=ParseMode.HTML,
+        reply_markup=KB([[B("✅ Tak, podłącz", callback_data="sx:impok")], [B("Anuluj", callback_data="sx:impno")]]))
+    return ConversationHandler.END
+
+
+async def imp_cancel(update: Update, ctx):
+    ctx.user_data.pop("sol_imp", None)
+    await update.message.reply_text("Anulowano.")
+    return ConversationHandler.END
 
 
 # ---------- wypłata (rozmowa: adres + kwota) ----------
@@ -305,6 +371,11 @@ async def wd_cancel(update: Update, ctx):
 def register(app: Application):
     """Rejestrować PRZED bot.register."""
     text = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
+    app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(imp_start, pattern="^sx:imp$"),
+                                                      CommandHandler("axiom", imp_start)],
+                                        states={IMP: [MessageHandler(text, imp_text)]},
+                                        fallbacks=[CommandHandler("anuluj", imp_cancel)], allow_reentry=True,
+                                        conversation_timeout=300))
     app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(wd_start, pattern="^sx:wd$")],
                                         states={WD: [MessageHandler(text, wd_text)]},
                                         fallbacks=[CommandHandler("anuluj", wd_cancel)], allow_reentry=True,

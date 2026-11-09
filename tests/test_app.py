@@ -398,3 +398,61 @@ def test_session_report_counts_tokens_bought_before_session(tmp_path):
     asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "p2"), time.monotonic()))
     rep = asyncio.run(session.build(s, s.db.get_user(OWNER)))
     assert "Sprzedane tokeny: 1" in rep and "z zyskiem 1" in rep
+
+
+def test_import_axiom_wallet_and_restore(tmp_path):
+    from solders.keypair import Keypair
+    from copybot.sol import ui as SU
+    s, ctx, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    bot_pub = s.sol.wallet(OWNER)[0]
+    kp = Keypair()
+    # formaty: base58 (Axiom/Phantom) i lista 64 liczb (solana-keygen)
+    assert str(s.sol.parse_secret(str(kp)).pubkey()) == str(kp.pubkey())
+    assert str(s.sol.parse_secret(json.dumps(list(bytes(kp)))).pubkey()) == str(kp.pubkey())
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "import_wallet", "secret": "zły klucz"})
+        assert st == 400 and "klucz prywatny" in j["error"]
+        st, j = await call(OWNER, "/api/sol/action", {"action": "import_wallet", "secret": str(kp)})
+        assert st == 200 and j["confirm_needed"] and j["address"] == str(kp.pubkey())
+        assert s.sol.wallet(OWNER)[0] == bot_pub  # bez potwierdzenia nic się nie zmienia
+        st, j = await call(OWNER, "/api/sol/action", {"action": "import_wallet", "secret": str(kp),
+                                                      "address": str(kp.pubkey()), "confirm": True})
+        assert st == 200 and s.sol.wallet(OWNER)[0] == str(kp.pubkey())
+        st, j = await call(OWNER, "/api/sol/deposit")
+        assert j["source"] == "axiom" and j["previous"]["pubkey"] == bot_pub
+        st, j = await call(OWNER, "/api/sol/action", {"action": "restore_wallet"})
+        assert st == 200 and s.sol.wallet(OWNER)[0] == bot_pub
+    run(s, steps)
+
+    # w bocie: wiadomość z kluczem jest usuwana, potem potwierdzenie
+    async def chat():
+        assert await SU.imp_start(upd(OWNER, data="sx:imp"), ctx) == SU.IMP
+        u = upd(OWNER, text=str(kp))
+        await SU.imp_text(u, ctx)
+        u.message.delete.assert_called()
+        await SU.on_sol_button(upd(OWNER, data="sx:impok"), ctx)
+    asyncio.run(chat())
+    assert s.sol.wallet(OWNER)[0] == str(kp.pubkey())
+
+
+def test_live_no_route_uses_pumpportal(tmp_path):
+    from copybot.sol.chain import ChainError
+    from copybot.sol.engine import Fill
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, sol_live=1, sol_priority=300_000)
+
+    async def no_route(*a, **kw):
+        raise ChainError("Jupiter: Could not find any route")
+    s.sol.jup.quote = no_route
+    calls = {}
+
+    async def fake_pump(u, side, mint, amount_raw, t0, t_recv, decimals):
+        calls["args"] = (side, amount_raw, s.sol.priority(u))
+        return Fill(amount_raw / 1e9, 1.0, "sig", 5, 1.0, note="przez Pump.fun")
+    s.sol.pump = object()
+    s.sol._live_pumpportal = fake_pump
+    fill = asyncio.run(s.sol.execute(s.db.get_user(OWNER), "buy", TOKEN, 50_000_000, decimals=6))
+    assert fill.note == "przez Pump.fun" and calls["args"] == ("buy", 50_000_000, 300_000)

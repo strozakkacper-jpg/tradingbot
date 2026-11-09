@@ -649,12 +649,17 @@ function settings() {
   <div class="card"><div class="mut tiny">O ile cena może się zmienić, zanim zakup dojdzie do skutku. Memecoiny skaczą – 10–30% to norma; za mało = zakupy często nie wejdą, za dużo = możesz przepłacić.</div>
     ${slider('slip', 'Tolerancja', {min: 50, max: 5000, log: true, round: R.bps, fmt: v => v / 100 + '%', save: v => setS('sol_slippage_bps', v)}, st.sol_slippage_bps)}
     ${chips('sol_slippage_bps', [300, 500, 1000, 2000, 3000], v => v / 100 + '%', st.sol_slippage_bps)}</div>
+  <h2>⚡ Opłata za szybkość</h2>
+  <div class="card"><div class="mut tiny">Ile maksymalnie dopłacasz sieci Solana, żeby Twoja transakcja weszła szybciej (tylko 💰 prawdziwe SOL). Przy małych zakupach to realny koszt: 0,002 SOL przy zakupie za 0,05 SOL to 4% w jedną stronę.</div>
+    ${slider('prio', 'Maks. opłata na transakcję', {min: 10000, max: 5000000, log: true, round: v => Math.round(v / 1000) * 1000, fmt: v => fSol(v / 1e9), save: v => setS('sol_priority', v)}, st.sol_priority)}
+    ${chips('sol_priority', [100000, 500000, 1000000, 2000000], v => (v / 1e9) + ' SOL', st.sol_priority)}
+    <div class="mut tiny" style="margin-top:8px">💡 Polecane: 0,0005 SOL przy zakupach do 0,1 SOL, 0,001–0,002 SOL przy większych. Zwykle zapłacisz mniej niż maksimum.</div></div>
   <h2>💰 Pieniądze</h2>
   <div class="card">
     <div class="row"><div class="sp"><div class="b">${S.live ? '💰 Grasz prawdziwymi SOL' : '🧪 Ćwiczenia (wirtualne SOL)'}</div>
       <div class="mut tiny">${S.live ? 'Bot kupuje i sprzedaje z Twojego portfela.' : `Startujesz z ${S.demo_start} wirtualnymi SOL – bez ryzyka.`}</div></div></div>
     <button class="btn ${S.live ? 'ghost' : 'g'}" style="margin-top:12px" onclick="switchMode()">${S.live ? '🧪 Wróć do ćwiczeń' : '💰 Przejdź na prawdziwe pieniądze'}</button>
-    <button class="btn ghost" style="margin-top:8px" onclick="openDeposit()">👛 Wpłata / wypłata</button>
+    <button class="btn ghost" style="margin-top:8px" onclick="openDeposit()">👛 Portfel · 🔗 podłącz Axiom · wypłata</button>
     ${S.live ? '' : `<button class="btn ghost" style="margin-top:8px" onclick="resetDemo()">🔄 Zacznij ćwiczenia od nowa</button>`}
   </div>
   <h2>Pomoc</h2>
@@ -672,21 +677,48 @@ async function resetDemo() {
   if (await confirmBox('Zacząć ćwiczenia od nowa? Wirtualne tokeny znikną, dostaniesz świeże wirtualne SOL.')) await act('reset_demo');
 }
 async function openDeposit() {
-  loading('Wpłata / wypłata');
+  loading('Portfel');
   try {
     const d = await api('/api/sol/deposit');
-    sheet(hdr('Wpłata / wypłata') + `
-      <div class="card"><div class="b">👛 Twój adres Solana</div>
-        <div class="mut tiny" style="margin:4px 0 10px">Wpłać SOL na ten adres (sieć <b>Solana</b>), żeby grać prawdziwymi pieniędzmi.</div>
+    const axiom = d.source === 'axiom' || d.source === 'import';
+    sheet(hdr('Portfel') + `
+      <div class="card"><div class="row"><div class="sp b">👛 ${axiom ? 'Twój portfel z Axiom' : 'Portfel bota'}</div>
+        ${axiom ? '<span class="pill g">🔗 podłączony</span>' : ''}</div>
+        <div class="mut tiny" style="margin:4px 0 10px">${axiom ? 'Bot kupuje i sprzedaje bezpośrednio z tego portfela (gdy grasz 💰 prawdziwymi SOL). Te same środki widzisz w Axiom.'
+          : 'Wpłać SOL na ten adres (sieć <b>Solana</b>), żeby grać prawdziwymi pieniędzmi – albo podłącz swój portfel z Axiom niżej.'}</div>
         <div class="addr" onclick="copyText('${esc(d.address)}')">${esc(d.address)}</div>
-        <button class="btn" style="margin-top:10px" onclick="copyText('${esc(d.address)}')">📋 Kopiuj adres</button>
-        <div class="row" style="margin-top:12px"><div class="sp mut small">Prawdziwe saldo</div><div class="b">${d.balance != null ? num(d.balance) + ' SOL' : '—'}</div></div></div>
+        <div class="row" style="margin-top:10px;gap:8px"><button class="btn" onclick="copyText('${esc(d.address)}')">📋 Kopiuj adres</button>
+          <button class="btn ghost" onclick="openLink('https://solscan.io/account/${esc(d.address)}')">Solscan</button></div>
+        <div class="row" style="margin-top:12px"><div class="sp mut small">Prawdziwe saldo</div><div class="b">${d.balance != null ? num(d.balance) + ' SOL' : '—'}</div></div>
+        ${S.live ? '' : `<button class="btn g" style="margin-top:10px" onclick="closeSheet();switchMode()">💰 Przejdź na prawdziwe pieniądze</button>`}</div>
+      <h2>🔗 ${axiom ? 'Inny portfel z Axiom' : 'Podłącz portfel z Axiom'}</h2>
+      <div class="card">
+        <div class="small"><b>Jak:</b> w Axiom wejdź w <b>Settings → Wallets</b>, przy portfelu kliknij <b>Export private key</b> i skopiuj klucz. Wklej go tutaj.</div>
+        <textarea id="impk" placeholder="Klucz prywatny (zaczyna się zwykle od cyfr i liter, ok. 88 znaków)" style="margin-top:10px;min-height:64px;-webkit-text-security:disc" autocomplete="off" autocorrect="off" spellcheck="false"></textarea>
+        <button class="btn" style="margin-top:10px" onclick="importWallet()">🔗 Sprawdź i podłącz</button>
+        <div class="warn">🔐 Klucz daje pełną kontrolę nad portfelem. Bot trzyma go zaszyfrowanego i nigdy go nie pokazuje. <b>Najlepiej utwórz w Axiom osobny portfel do bota</b> i trzymaj na nim tylko tyle SOL, ile chcesz nim grać.</div>
+        ${d.previous ? `<button class="btn ghost" style="margin-top:10px" onclick="restoreWallet()">↩️ Wróć do poprzedniego portfela (${short(d.previous.pubkey)})</button>` : ''}
+      </div>
       <h2>💸 Wypłata</h2>
       <div class="card"><input id="wda" placeholder="Adres, na który wysłać SOL"><input id="wdn" inputmode="decimal" placeholder="Ile SOL (albo: wszystko)" style="margin-top:8px">
         <button class="btn r" style="margin-top:10px" onclick="withdraw()">Wypłać</button>
         <div class="mut tiny" style="margin-top:8px">Przelewu w sieci Solana nie da się cofnąć – sprawdź adres dwa razy.</div></div>
-      <div class="mut tiny c">Klucz prywatny (do Phantoma/Axiom) wyeksportujesz w czacie z botem – ze względów bezpieczeństwa nie pokazujemy go w aplikacji.</div>`);
-  } catch (e) { sheet(hdr('Wpłata / wypłata') + `<div class="empty">${esc(e.message)}</div>`); }
+      <div class="mut tiny c">Klucz portfela bota (do Phantoma/Axiom) wyeksportujesz w czacie z botem – ze względów bezpieczeństwa nie pokazujemy go w aplikacji.</div>`);
+  } catch (e) { sheet(hdr('Portfel') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+async function importWallet() {
+  const el = $('#impk'), secret = (el.value || '').trim();
+  if (!secret) return toast('Wklej klucz prywatny z Axiom');
+  let r;
+  try { r = await api('/api/sol/action', {action: 'import_wallet', secret}); } catch (e) { return toast('⚠️ ' + e.message, 4000); }
+  if (!await confirmBox(`Podłączyć portfel ${short(r.address)}${r.balance != null ? ' (saldo ' + num(r.balance) + ' SOL)' : ''}?\n\nSprawdź, że to ten sam adres co w Axiom. Poprzedni portfel bota zostanie zapisany – możesz do niego wrócić.`)) return;
+  el.value = '';
+  await act('import_wallet', {secret, address: r.address, confirm: true});
+  openDeposit();
+}
+async function restoreWallet() {
+  if (!await confirmBox('Wrócić do poprzedniego portfela? Obecny zostanie zapisany i też możesz do niego wrócić.')) return;
+  await act('restore_wallet'); openDeposit();
 }
 async function withdraw() {
   const a = $('#wda').value.trim(), n = $('#wdn').value.trim();

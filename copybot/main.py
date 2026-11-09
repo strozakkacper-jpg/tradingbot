@@ -12,7 +12,7 @@ import aiohttp
 
 from . import demo, mirror, traders
 from .sol import admin as sol_admin, axiom, ui as sol_ui
-from .sol.chain import Jupiter, Rpc
+from .sol.chain import Jupiter, PumpPortal, Rpc
 from .sol.engine import SolEngine
 from .sol.watcher import SolWatcher
 from .live import live_job
@@ -75,6 +75,7 @@ async def post_init(app: Application):
         sol_watcher = SolWatcher(cfg.sol_ws, cfg.sol_ws_enhanced, rpc, session, svc.sol.watched_wallets,
                                  svc.sol.on_swap)
         svc.sol.watcher = sol_watcher
+        svc.sol.pump = PumpPortal(session)
         app.bot_data.update(sol_session=session, sol_task=asyncio.create_task(sol_watcher.run()))
         log.info("Solana: RPC %s · Jupiter %s · %s", "Helius" if cfg.helius_api_key else "publiczny (wolniejszy)",
                  "z kluczem" if cfg.jupiter_api_key else "lite (bez klucza)",
@@ -113,6 +114,7 @@ async def post_init(app: Application):
         BotCommand("traderzy", "Traderzy"), BotCommand("dodaj", "Dodaj tradera"),
         BotCommand("sygnal", "Wyślij sygnał"), BotCommand("kup", "Kup (demo)"),
         BotCommand("sprzedaj", "Sprzedaj (demo)"), BotCommand("polacz", "Podłącz giełdę"),
+        BotCommand("axiom", "Podłącz portfel z Axiom"),
         BotCommand("pomoc", "Jak to działa"),
     ])
 

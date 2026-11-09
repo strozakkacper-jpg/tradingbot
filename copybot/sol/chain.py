@@ -170,8 +170,9 @@ class Jupiter:
 
     async def swap(self, quote: dict, kp: Keypair, priority_max_lamports: int) -> bytes:
         body = {"quoteResponse": quote, "userPublicKey": str(kp.pubkey()), "wrapAndUnwrapSol": True,
-                # stały limit CU zamiast symulacji po stronie Jupitera – szybsze budowanie transakcji
-                "dynamicComputeUnitLimit": False, "skipUserAccountsRpcCalls": False,
+                # dokładny limit CU (symulacja po stronie Jupitera, ~0,1 s): opłata za szybkość liczy się od CU,
+                # więc przy stałym, dużym limicie płaciło się maks. opłatę – przy małych kwotach to kilka % zakupu
+                "dynamicComputeUnitLimit": True, "skipUserAccountsRpcCalls": False,
                 "prioritizationFeeLamports": {"priorityLevelWithMaxLamports": {
                     "maxLamports": priority_max_lamports, "priorityLevel": "veryHigh"}}}
         _, data = await self._request("POST", "/swap/v1/swap", json=body)
@@ -222,3 +223,29 @@ class Jupiter:
             if t.get("id") == mint:
                 return {"symbol": t.get("symbol") or mint[:4], "decimals": int(t.get("decimals") or 0)}
         return None
+
+
+class PumpPortal:
+    """Zapasowa droga dla świeżych tokenów z Pump.fun, których Jupiter jeszcze nie zna („brak trasy”).
+    Local Transaction API: serwer buduje transakcję, my ją podpisujemy i wysyłamy przez własny RPC
+    (klucz nigdy nie opuszcza bota). PumpPortal pobiera za to 0,5% wartości transakcji."""
+
+    URL = "https://pumpportal.fun/api/trade-local"
+
+    def __init__(self, session: aiohttp.ClientSession):
+        self.session = session
+
+    async def tx(self, kp: Keypair, action: str, mint: str, amount: float | str, in_sol: bool,
+                 slippage_pct: float, priority_sol: float) -> bytes:
+        body = {"publicKey": str(kp.pubkey()), "action": action, "mint": mint, "amount": amount,
+                "denominatedInSol": "true" if in_sol else "false", "slippage": round(slippage_pct, 2),
+                "priorityFee": round(priority_sol, 6), "pool": "auto"}
+        async with self.session.post(self.URL, json=body, timeout=aiohttp.ClientTimeout(total=10)) as r:
+            data = await r.read()
+            if r.status != 200:
+                raise ChainError(f"PumpPortal: {data[:150].decode('utf-8', 'ignore') or r.status}")
+        try:
+            raw = VersionedTransaction.from_bytes(data)
+        except Exception as e:  # noqa: BLE001
+            raise ChainError(f"PumpPortal: zła odpowiedź ({e})") from e
+        return bytes(VersionedTransaction(raw.message, [kp]))
