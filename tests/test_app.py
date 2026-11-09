@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock
 sys.path.insert(0, str(Path(__file__).parent))
 from test_private import FRIEND, OWNER, onboard, upd  # noqa: E402
 from test_sol import TOKEN, WALLET, sol_setup, swap  # noqa: E402
+from copybot.sol.parser import SOL_MINT  # noqa: E402
 
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
@@ -456,3 +457,29 @@ def test_live_no_route_uses_pumpportal(tmp_path):
     s.sol._live_pumpportal = fake_pump
     fill = asyncio.run(s.sol.execute(s.db.get_user(OWNER), "buy", TOKEN, 50_000_000, decimals=6))
     assert fill.note == "przez Pump.fun" and calls["args"] == ("buy", 50_000_000, 300_000)
+
+
+def test_demo_start_real_costs_and_auto_settings(tmp_path):
+    from copybot.sol.api import recommended
+    from copybot.sol.engine import ATA_RENT
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "settings", "field": "sol_paper_start", "value": 0.6})
+        st, j = await call(OWNER, "/api/sol/action", {"action": "reset_demo"})
+        assert st == 200 and s.sol.paper(OWNER)[SOL_MINT] == 600_000_000
+        st, j = await call(OWNER, "/api/sol/state")
+        assert j["demo_start"] == 0.6 and abs(j["result"]) < 1e-9
+        st, j = await call(OWNER, "/api/sol/action", {"action": "auto_settings"})
+        u = s.db.get_user(OWNER)
+        assert st == 200 and u["sol_buy"] == 0.047 and u["sol_no_add"] == 1 and u["sol_min_hold"] == 30
+    run(s, steps)
+    # depozyt za konto tokena: pobrany przy pierwszym zakupie, wraca po sprzedaży całości
+    asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.047))
+    after_buy = s.sol.paper(OWNER)[SOL_MINT]
+    assert after_buy == 600_000_000 - 47_000_000 - s.sol.paper_fee(s.db.get_user(OWNER)) - ATA_RENT
+    asyncio.run(s.sol.sell_manual(s.db.get_user(OWNER), TOKEN, 100))
+    assert s.sol.paper(OWNER)[SOL_MINT] > after_buy + 47_000_000  # depozyt wrócił
+    r = recommended(0.6)
+    assert r["sol_buy"] == 0.047 and r["sol_day_limit"] == 0.088 and r["sol_priority"] == 50_000

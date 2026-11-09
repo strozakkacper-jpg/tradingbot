@@ -6,6 +6,7 @@ import time
 
 import aiohttp
 from solders.hash import Hash
+from solders.instruction import AccountMeta, Instruction
 from solders.keypair import Keypair
 from solders.pubkey import Pubkey
 from solders.system_program import TransferParams, transfer
@@ -109,6 +110,36 @@ class Rpc:
                     pass
                 last_send = time.monotonic()
         raise ChainError("brak potwierdzenia w 45 s (blockhash wygasł) – sprawdź saldo")
+
+    async def empty_token_accounts(self, owner: str, mint: str | None = None) -> list[tuple[str, str]]:
+        """Puste konta tokenów [(adres konta, program)] – każde blokuje ~0,002 SOL depozytu."""
+        out = []
+        filters = [{"mint": mint}] if mint else [{"programId": p} for p in TOKEN_PROGRAMS]
+        for f in filters:
+            res = await self.call("getTokenAccountsByOwner", [owner, f, {"encoding": "jsonParsed",
+                                                                         "commitment": "confirmed"}])
+            for acc in res["value"]:
+                info = acc["account"]["data"]["parsed"]["info"]
+                if info["tokenAmount"]["amount"] == "0" and acc["account"]["owner"] in TOKEN_PROGRAMS:
+                    out.append((acc["pubkey"], acc["account"]["owner"]))
+        return out
+
+    async def close_token_accounts(self, kp: Keypair, accounts: list[tuple[str, str]]) -> int:
+        """Zamyka puste konta tokenów (instrukcja CloseAccount) – depozyt wraca do właściciela. Zwraca liczbę."""
+        owner = kp.pubkey()
+        closed = 0
+        for i in range(0, len(accounts), 8):  # po 8 w jednej transakcji
+            ixs = [Instruction(Pubkey.from_string(prog), bytes([9]),
+                               [AccountMeta(Pubkey.from_string(acc), False, True), AccountMeta(owner, False, True),
+                                AccountMeta(owner, True, False)]) for acc, prog in accounts[i:i + 8]]
+            bh = (await self.call("getLatestBlockhash", [{"commitment": "confirmed"}]))["value"]["blockhash"]
+            tx = Transaction.new_signed_with_payer(ixs, owner, [kp], Hash.from_string(bh))
+            try:
+                await self.send_and_confirm(bytes(tx), timeout=30)
+                closed += len(ixs)
+            except ChainError as e:
+                log.info("Nie zamknięto kont tokenów: %s", e)
+        return closed
 
     async def transfer_sol(self, kp: Keypair, dest: str, lamports: int) -> str:
         bh = (await self.call("getLatestBlockhash", [{"commitment": "confirmed"}]))["value"]["blockhash"]

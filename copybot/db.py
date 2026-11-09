@@ -112,6 +112,7 @@ MIGRATIONS = {
     "sol_min_hold": "REAL NOT NULL DEFAULT 0",  # pomijaj „flipperów” trzymających krócej niż X s (0 = wył.)
     # maks. opłata za szybkość (priority fee) na transakcję – przy małych kwotach to realny koszt
     "sol_priority": "INTEGER NOT NULL DEFAULT 500000",
+    "sol_paper_start": "REAL NOT NULL DEFAULT 0",  # kwota startowa ćwiczeń (0 = domyślna z konfiguracji)
     # sesja = od włączenia do wyłączenia kopiowania – po niej bot wysyła szczegółowy raport
     "session_start": "INTEGER",
     "session_end": "INTEGER",
@@ -130,7 +131,7 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
-               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "session_start", "session_end", "session_sol0", "session_cex0"}
+               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}  # bot = utworzony przez bota, import = np. z Axiom
 # osobne ustawienie dla konkretnego kopiowanego portfela: stała kwota (SOL) albo % kwoty tradera

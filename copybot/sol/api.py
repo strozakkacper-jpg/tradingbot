@@ -27,6 +27,7 @@ SETTINGS = {
     "sol_tp": (float, 0, 10000), "sol_sl": (float, 0, 100), "sol_day_limit": (float, 0, 1000),
     "sol_safe": (bool, None, None), "sol_x2": (bool, None, None), "sol_no_add": (bool, None, None),
     "sol_min_lead": (float, 0, 100), "sol_min_hold": (float, 0, 3600), "sol_priority": (int, 10_000, 10_000_000),
+    "sol_paper_start": (float, 0.01, 1000),
 }
 
 
@@ -38,6 +39,20 @@ def _trade(s, r) -> dict:
     return {"ts": r["ts"], "side": r["side"], "mint": r["mint"], "symbol": r["symbol"] or short(r["mint"]),
             "sol": r["sol"], "tokens": r["tokens"], "status": r["status"], "info": r["info"],
             "latency_ms": r["latency_ms"], "sig": r["sig"]}
+
+
+def recommended(balance: float) -> dict:
+    """Ustawienia dobrane do salda: małe zakupy względem kapitału, mało opłat, bez flipperów i dokupień."""
+    usable = max(balance - 0.01, 0.01)  # 0,01 SOL bot zostawia na opłaty i depozyty
+
+    def r(x):
+        return float(f"{x:.2g}")
+    buy = r(min(max(usable * 0.08, 0.01), 2))  # ok. 12 równoległych pozycji
+    return {"sol_buy_mode": "fixed", "sol_buy": buy, "sol_max": r(buy * 1.5),
+            "sol_day_limit": r(max(usable * 0.15, 0.005)), "sol_no_add": 1,
+            "sol_min_lead": 0.5 if balance < 2 else 1.0, "sol_min_hold": 30, "sol_safe": 1, "sol_x2": 1,
+            "sol_tp": 0, "sol_sl": 40, "sol_slippage_bps": 1500,
+            "sol_priority": 50_000 if buy < 0.05 else 100_000 if buy < 0.2 else 300_000}
 
 
 def last_leader_move(s, uid: int) -> int | None:
@@ -194,7 +209,7 @@ async def state(s, u) -> dict:
                         "spark": [v for _, v in rep["series"]][-30:] if ok else [],
                         "own": own_amount(fr)})
     wallets.sort(key=lambda w: (not w["priority"], not w["copy"]))
-    start = s.cfg.sol_paper_start
+    start = se.paper_start(uid)
     series = s.db.sol_equity_series(uid, not live, now_ms() - 7 * DAY_MS) + [(now_ms(), pf["total"])]
     last = s.db._q("SELECT latency_ms FROM sol_trades WHERE tg_id = ? AND latency_ms IS NOT NULL ORDER BY id DESC "
                    "LIMIT 1", (uid,))
@@ -426,9 +441,23 @@ async def action(s, u, body: dict) -> dict:
         if not pub:
             raise ApiError("Nie ma poprzedniego portfela do przywrócenia")
         return {"msg": f"↩️ Wrócono do portfela {short(pub)}", "address": pub}
+    if act == "reclaim_rent":
+        if not se.is_live(u):
+            raise ApiError("Działa na prawdziwym portfelu (💰) – na ćwiczeniach depozyty wracają same")
+        n = await se.reclaim_rent(u)
+        return {"msg": f"🧹 Zamknięto {n} pustych kont tokenów – wróciło ok. {n * 0.00204:.4f} SOL" if n
+                else "Nie ma pustych kont tokenów do zamknięcia"}
+    if act == "auto_settings":
+        from .axiom import portfolio
+        pf = await portfolio(s, u)
+        bal = float(body.get("balance") or pf["total"])
+        vals = recommended(bal)
+        s.db.update_user(uid, **vals)
+        return {"msg": f"✨ Ustawione pod saldo {bal:.3f} SOL: zakup {vals['sol_buy']:g} SOL, maks. "
+                       f"{vals['sol_max']:g} SOL, limit straty {vals['sol_day_limit']:g} SOL/dzień"}
     if act == "reset_demo":
         se.paper_reset(uid)
-        return {"msg": f"Ćwiczenia od nowa: {s.cfg.sol_paper_start:g} wirtualnych SOL"}
+        return {"msg": f"Ćwiczenia od nowa: {se.paper_start(uid):g} wirtualnych SOL"}
     if act == "buy":
         mint = valid_address(str(body.get("mint", "")))
         if not mint:

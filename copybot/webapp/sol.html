@@ -607,7 +607,10 @@ function settings() {
   const example = m === 'fixed' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${st.sol_buy} SOL</b>${inUsd(st.sol_buy) ? ' (' + inUsd(st.sol_buy) + ')' : ''}.`
     : m === 'pct' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${sig2(5 * st.sol_pct / 100)} SOL</b>.` : '';
   return `
-  <h2 style="margin-top:4px">Ile wydać, gdy trader kupi</h2>
+  <div class="card" style="border-color:var(--acc)"><div class="b">✨ Ustaw najlepsze pod moje saldo</div>
+    <div class="mut tiny" style="margin:4px 0 10px">Bot dobierze kwotę zakupu, limity, filtry i opłaty do tego, ile masz (teraz ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}). Potem możesz wszystko poprawić suwakami.</div>
+    <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button></div>
+  <h2>Ile wydać, gdy trader kupi</h2>
   <div class="card">
     <div class="seg">${[['fixed', 'Stała kwota'], ['pct', '% jego kwoty'], ['ratio', '% portfela']].map(([k, l]) => `<button class="${m === k ? 'on' : ''}" onclick="setS('sol_buy_mode','${k}')">${l}</button>`).join('')}</div>
     <div class="mut small" style="margin:10px 0 4px">${modeHelp}</div>
@@ -660,7 +663,12 @@ function settings() {
       <div class="mut tiny">${S.live ? 'Bot kupuje i sprzedaje z Twojego portfela.' : `Startujesz z ${S.demo_start} wirtualnymi SOL – bez ryzyka.`}</div></div></div>
     <button class="btn ${S.live ? 'ghost' : 'g'}" style="margin-top:12px" onclick="switchMode()">${S.live ? '🧪 Wróć do ćwiczeń' : '💰 Przejdź na prawdziwe pieniądze'}</button>
     <button class="btn ghost" style="margin-top:8px" onclick="openDeposit()">👛 Portfel · 🔗 podłącz Axiom · wypłata</button>
-    ${S.live ? '' : `<button class="btn ghost" style="margin-top:8px" onclick="resetDemo()">🔄 Zacznij ćwiczenia od nowa</button>`}
+    ${S.live ? `<button class="btn ghost" style="margin-top:8px" onclick="act('reclaim_rent')">🧹 Odzyskaj depozyty z pustych kont tokenów</button>
+      <div class="mut tiny" style="margin-top:6px">Każdy nowy token blokuje ~0,002 SOL depozytu. Bot zamyka puste konta sam po sprzedaży – ten przycisk sprząta resztę (np. stare konta z Axiom).</div>`
+    : `${slider('pstart', 'Kwota startowa ćwiczeń', {min: 0.01, max: 100, log: true, round: R.sol, fmt: fSol, save: v => setDemoStart(v)}, S.demo_start)}
+      <div class="mut tiny" style="margin:2px 0 8px">Ustaw tyle, ile naprawdę chcesz wpłacić (np. 200 zł ≈ ${S.sol_usd ? (200 / 3.7 / S.sol_usd).toFixed(2) : '0.6'} SOL) – ćwiczenia pokażą realny wynik. Zmiana zaczyna ćwiczenia od nowa.</div>
+      <button class="btn ghost" style="margin-top:8px" onclick="resetDemo()">🔄 Zacznij ćwiczenia od nowa</button>
+      <div class="mut tiny" style="margin-top:6px">Ćwiczenia liczą prawdziwe koszty: opłatę sieci, opłatę za szybkość i depozyt za konto tokena (wraca po sprzedaży całości).</div>`}
   </div>
   <h2>Pomoc</h2>
   <div class="card"><div class="row" style="gap:8px"><button class="btn ghost" onclick="showHtml('Jak to działa', S.help)">❓ Jak to działa</button>
@@ -672,6 +680,15 @@ async function switchMode() {
     if (!await confirmBox('Przejść na prawdziwe pieniądze? Bot będzie naprawdę kupował i sprzedawał tokeny z Twojego portfela Solany. Memecoiny potrafią stracić 90% w kilka minut – wpłać tylko tyle, ile możesz stracić.')) return;
     await act('mode', {live: true, confirm: true});
   } else await act('mode', {live: false});
+}
+async function setDemoStart(v) {
+  if (!await confirmBox(`Zacząć ćwiczenia od nowa z ${fSol(v)}? Wirtualne tokeny i historia ćwiczeń znikną.`)) return render();
+  await act('settings', {field: 'sol_paper_start', value: v}, {reload: false, quiet: true});
+  await act('reset_demo');
+}
+async function autoSettings() {
+  if (!await confirmBox('Ustawić wszystko pod Twoje saldo? Obecne ustawienia zostaną zastąpione (kwota, limity, filtry, opłaty).')) return;
+  await act('auto_settings');
 }
 async function resetDemo() {
   if (await confirmBox('Zacząć ćwiczenia od nowa? Wirtualne tokeny znikną, dostaniesz świeże wirtualne SOL.')) await act('reset_demo');

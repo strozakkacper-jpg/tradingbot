@@ -23,7 +23,9 @@ def b58decode(s: str) -> bytes:
         n = n * 58 + B58.index(ch)
     full = n.to_bytes((n.bit_length() + 7) // 8, "big") if n else b""
     return b"\0" * (len(s) - len(s.lstrip("1"))) + full
-PAPER_TX_FEE = 200_000  # ~0,0002 SOL opłat sieci na transakcję w demo
+PAPER_TX_FEE = 200_000  # ~0,0002 SOL opłat sieci na transakcję (portfele wzorcowe traderów)
+ATA_RENT = 2_039_280  # depozyt za konto tokena w sieci Solana – wraca po zamknięciu pustego konta
+BASE_FEE = 5_000  # podstawowa opłata sieci za transakcję
 MIN_BUY = 1_000_000  # 0,001 SOL
 DAY_MS = 24 * 3600 * 1000
 
@@ -91,12 +93,32 @@ class SolEngine:
                 self.db.conn.execute("INSERT INTO sol_paper VALUES (?, ?, ?) ON CONFLICT(tg_id, mint) "
                                      "DO UPDATE SET raw = MAX(raw + excluded.raw, 0)", (tg_id, mint, int(d)))
 
+    def paper_start(self, tg_id: int) -> float:
+        """Kwota startowa ćwiczeń: ustawiona przez użytkownika (np. tyle, ile naprawdę wpłacił) albo domyślna."""
+        r = self.db._q("SELECT sol_paper_start FROM users WHERE tg_id = ?", (tg_id,)) if tg_id > 0 else []
+        return r[0]["sol_paper_start"] if r and r[0]["sol_paper_start"] else self.cfg.sol_paper_start
+
     def paper_reset(self, tg_id: int):
         with self.db.lock, self.db.conn:
             self.db.conn.execute("DELETE FROM sol_paper WHERE tg_id = ?", (tg_id,))
             self.db.conn.execute("DELETE FROM sol_trades WHERE tg_id = ? AND paper = 1", (tg_id,))
-            self.db.conn.execute("INSERT INTO sol_paper VALUES (?, ?, ?)",
-                                 (tg_id, SOL_MINT, int(self.cfg.sol_paper_start * LAMPORTS)))
+        self.db._q("INSERT INTO sol_paper VALUES (?, ?, ?)", (tg_id, SOL_MINT, int(self.paper_start(tg_id) * LAMPORTS)))
+
+    def paper_fee(self, u) -> int:
+        """Ćwiczenia z prawdziwymi kosztami: opłata sieci + ok. połowa maks. opłaty za szybkość."""
+        return BASE_FEE + self.priority(u) // 2
+
+    def paper_trade(self, u, side: str, mint: str, amount_raw: int, out_raw: int):
+        """Transakcja na ćwiczeniach z kosztami jak na prawdziwych SOL: opłaty + depozyt za nowe konto tokena
+        (wraca po sprzedaży całości, bo bot zamyka puste konta)."""
+        uid, fee = u["tg_id"], self.paper_fee(u)
+        held = self.paper(uid).get(mint, 0)
+        if side == "buy":
+            rent = ATA_RENT if held <= 0 else 0
+            self.paper_apply(uid, {SOL_MINT: -(amount_raw + fee + rent), mint: out_raw})
+        else:
+            refund = ATA_RENT - BASE_FEE if amount_raw >= held else 0
+            self.paper_apply(uid, {mint: -amount_raw, SOL_MINT: out_raw - fee + refund})
 
     def record(self, tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, paper, sig=None, lat=None):
         self.db._q("""INSERT INTO sol_trades (tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, paper,
@@ -276,6 +298,8 @@ class SolEngine:
                     return "none"
                 amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
             fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw)
+            if sw.side == "sell":
+                self.after_sell(u, sw.mint, await self.token_raw(u, sw.mint) <= 0 if live else False)
         except Exception as e:  # noqa: BLE001
             err = e
         symbol, decimals = await info_task
@@ -472,7 +496,9 @@ class SolEngine:
         sol_raw, tok_raw = (amount_raw, out) if side == "buy" else (out, amount_raw)
         if not self.is_live(u):
             lat = int((time.monotonic() - t0) * 1000)
-            if side == "buy":
+            if u["tg_id"] > 0:
+                self.paper_trade(u, side, mint, amount_raw, out)
+            elif side == "buy":
                 self.paper_apply(u["tg_id"], {SOL_MINT: -(amount_raw + PAPER_TX_FEE), mint: out})
             else:
                 self.paper_apply(u["tg_id"], {mint: -amount_raw, SOL_MINT: out - PAPER_TX_FEE})
@@ -484,6 +510,29 @@ class SolEngine:
         self._bal.pop(pub, None)
         sig, confirm_s = await self.rpc.send_and_confirm(tx)
         return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s)
+
+    async def reclaim_rent(self, u, mint: str | None = None) -> int:
+        """Zamyka puste konta tokenów w prawdziwym portfelu – depozyt (~0,002 SOL za konto) wraca."""
+        if not self.is_live(u):
+            return 0
+        pub, kp = self.wallet(u["tg_id"])
+        accounts = await self.rpc.empty_token_accounts(pub, mint)
+        n = await self.rpc.close_token_accounts(kp, accounts) if accounts else 0
+        if n:
+            self._bal.pop(pub, None)
+            log.info("Solana %s: zamknięto %d pustych kont tokenów (+%.4f SOL)", u["tg_id"], n, n * ATA_RENT / LAMPORTS)
+        return n
+
+    def after_sell(self, u, mint: str, sold_all: bool):
+        """Po sprzedaży całości na prawdziwych SOL – w tle zamykamy puste konto tokena (odzysk depozytu)."""
+        if sold_all and self.is_live(u):
+            async def later():
+                await asyncio.sleep(3)
+                try:
+                    await self.reclaim_rent(u, mint)
+                except Exception:  # noqa: BLE001
+                    log.debug("Zamykanie konta tokena", exc_info=True)
+            asyncio.create_task(later())
 
     def priority(self, u) -> int:
         """Maks. opłata za szybkość (lamporty) – ustawienie użytkownika albo domyślna z konfiguracji."""
@@ -579,11 +628,11 @@ class SolEngine:
         per = sw.quote_amount * LAMPORTS / sw.token_raw
         if side == "buy":
             got = int(amount_raw / per * 0.98)
-            self.paper_apply(u["tg_id"], {SOL_MINT: -(amount_raw + PAPER_TX_FEE), mint: got})
+            self.paper_trade(u, side, mint, amount_raw, got)
             sol_raw, tok_raw = amount_raw, got
         else:
             out = int(amount_raw * per * 0.98)
-            self.paper_apply(u["tg_id"], {mint: -amount_raw, SOL_MINT: out - PAPER_TX_FEE})
+            self.paper_trade(u, side, mint, amount_raw, out)
             sol_raw, tok_raw = out, amount_raw
         return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, int((time.monotonic() - t0) * 1000),
                     note="po cenie tradera")
@@ -593,6 +642,7 @@ class SolEngine:
         if held <= 0:
             raise Skip("nie masz tego tokena")
         fill = await self.execute(u, "sell", mint, held if pct >= 100 else int(held * pct / 100))
+        self.after_sell(u, mint, pct >= 100)
         self.record(u["tg_id"], None, None, "sell", mint, fill.sol, fill.tokens, "filled", "ręcznie",
                     not self.is_live(u), fill.sig, fill.latency_ms)
         return fill
@@ -649,7 +699,7 @@ class SolEngine:
         now = now_ms()
         since = int(self.db.get_state(f"sol_ref_start:{lid}") or now)
         equity = await self.equity_sol(rid)
-        start = self.cfg.sol_paper_start
+        start = self.cfg.sol_paper_start  # portfel wzorcowy tradera zawsze startuje z tej samej kwoty
         series = [(since, start)] + self.db.equity_series(rid, True) + [(now, equity)]
         rows = self.db._q("""SELECT t.*, k.symbol FROM sol_trades t LEFT JOIN sol_tokens k ON k.mint = t.mint
                              WHERE t.tg_id = ? AND t.status = 'filled' ORDER BY t.id""", (rid,))

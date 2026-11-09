@@ -79,7 +79,7 @@ async def main_view(s, u) -> tuple[str, KB]:
     else:
         all_ = lam / LAMPORTS + total
         lines.append(f"\nRazem ≈ <b>{all_:.4f} SOL</b>"
-                     + (f" · wynik demo {(all_ / s.cfg.sol_paper_start - 1) * 100:+.1f}%" if not live else ""))
+                     + (f" · wynik demo {(all_ / s.sol.paper_start(u["tg_id"]) - 1) * 100:+.1f}%" if not live else ""))
     copied = [ld["name"] for ld in s.db.copied_leaders(u["tg_id"]) if ld["source"] == "sol"]
     lines.append(f"\nKopiujesz portfele: {html.escape(', '.join(copied)) if copied else '— żadnego (👥 Traderzy)'}")
     if not u["active"]:
@@ -175,7 +175,7 @@ async def on_sol_button(update: Update, ctx):
             return await show(update, *ax_settings(s, s.db.get_user(uid)))
         if act == "reset":
             s.sol.paper_reset(uid)
-            await _ack(update, f"Ćwiczenia od nowa: masz {s.cfg.sol_paper_start:g} wirtualnych SOL", True)
+            await _ack(update, f"Ćwiczenia od nowa: masz {s.sol.paper_start(uid):g} wirtualnych SOL", True)
             from .axiom import settings_view as ax_settings
             return await show(update, *ax_settings(s, s.db.get_user(uid)))
         if act == "mode":

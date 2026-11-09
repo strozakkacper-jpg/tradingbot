@@ -175,8 +175,9 @@ async def home_view(s, u, notice: str | None = None) -> tuple[str, KB]:
     lines += ["", f"👛 Wolne: <b>{pf['sol']:.4f} SOL</b>{in_usd(pf['sol'], px)}",
               f"🪙 Tokeny: pozycje {len(pf['positions'])} ≈ {tokens_val:.3f} SOL{in_usd(tokens_val, px)}"]
     if not live:
-        lines.append(f"📈 Wynik ćwiczeń: {pct((pf['total'] / s.cfg.sol_paper_start - 1) * 100)} "
-                     f"(start {s.cfg.sol_paper_start:g} SOL → teraz {pf['total']:.4f} SOL)")
+        start = se.paper_start(uid)
+        lines.append(f"📈 Wynik ćwiczeń: {pct((pf['total'] / start - 1) * 100)} "
+                     f"(start {start:g} SOL → teraz {pf['total']:.4f} SOL)")
     if px:
         lines.append(f"Kurs SOL {usd(px)}" + (f" · {pct(sol_ch)} w 24 h" if sol_ch is not None else ""))
     last = s.db._q("SELECT latency_ms FROM sol_trades WHERE tg_id = ? AND latency_ms IS NOT NULL ORDER BY id DESC "

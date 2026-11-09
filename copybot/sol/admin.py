@@ -41,7 +41,7 @@ async def user_summary(s, u) -> dict:
         try:
             pf = await asyncio.wait_for(portfolio(s, u), 10)
             out.update(total=pf["total"], sol=pf["sol"], positions=len(pf["positions"]), sol_usd=pf["sol_usd"])
-            start = s.cfg.sol_paper_start if not live else u["session_sol0"]
+            start = s.sol.paper_start(uid) if not live else u["session_sol0"]
             if start:
                 out["result"] = (pf["total"] / start - 1) * 100
         except Exception:  # noqa: BLE001
