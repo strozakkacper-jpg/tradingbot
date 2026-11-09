@@ -1,0 +1,283 @@
+"""Ekran Solany w Telegramie: saldo, pozycje, ustawienia, demo/LIVE, wpłata, wypłata, eksport klucza."""
+import asyncio
+import html
+import logging
+
+from solders.pubkey import Pubkey
+from telegram import InlineKeyboardButton as B
+from telegram import InlineKeyboardMarkup as KB
+from telegram import Update
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
+from telegram.ext import Application, CallbackQueryHandler, ConversationHandler, MessageHandler, filters, CommandHandler
+
+from ..bot import HOME, S, UI_TIMEOUT, header, require_accepted, show
+from .engine import Skip, fmt_tokens, short
+from .parser import LAMPORTS
+
+log = logging.getLogger(__name__)
+SX = [B("« Solana", callback_data="sx")]
+AMOUNTS = (0.01, 0.05, 0.1, 0.25, 0.5)
+MULTS = (0.5, 1.0, 2.0)
+MAXES = (0.1, 0.5, 1.0, 2.0, 0)
+SLIPS = (300, 500, 1000, 2000, 3000)
+WD = 40
+
+
+def valid_address(text: str) -> str | None:
+    try:
+        return str(Pubkey.from_string(text.strip()))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def buy_txt(u) -> str:
+    amount = (f"{u['sol_buy']:g} SOL na zakup" if u["sol_buy_mode"] == "fixed"
+              else f"ten sam % SOL co trader × {u['sol_mult']:g}")
+    cap = f"max {u['sol_max']:g} SOL" if u["sol_max"] > 0 else "bez limitu"
+    return f"{amount} · {cap} · poślizg {u['sol_slippage_bps'] / 100:g}%"
+
+
+async def _ack(update: Update, text=None, alert=False):
+    if update.callback_query:
+        try:
+            await update.callback_query.answer(text, show_alert=alert)
+        except BadRequest:
+            pass
+
+
+async def main_view(s, u) -> tuple[str, KB]:
+    se = s.sol
+    pub, _ = se.wallet(u["tg_id"])
+    live = se.is_live(u)
+    lam = await se.sol_lamports(u, max_age=0)
+    hold = await se.holdings(u)
+    lines = [f"🟣 <b>Solana</b> · {'💰 LIVE' if live else '🧪 demo'}",
+             f"Saldo: <b>{lam / LAMPORTS:.4f} SOL</b>", f"Zakupy: {buy_txt(u)}", ""]
+    rows = []
+    items = list(hold.items())[:8]
+    infos = await asyncio.gather(*(se.token_info(m) for m, _ in items))
+    values = await asyncio.gather(*(se.value_in_sol(m, r) for m, r in items))
+    total = 0.0
+    for (mint, raw), (sym, dec), val in zip(items, infos, values):
+        total += val or 0
+        value = f"≈ {val:.4f} SOL" if val is not None else "(brak ceny)"
+        lines.append(f"• <b>{html.escape(sym)}</b> {fmt_tokens(raw / 10 ** dec)} {value}")
+        rows.append([B(f"Sprzedaj 50% {sym[:10]}", callback_data=f"sx:sell:50:{mint}"),
+                     B(f"100% {sym[:10]}", callback_data=f"sx:sell:100:{mint}")])
+    if not items:
+        lines.append("Brak tokenów. Bot kupi je, gdy kopiowany portfel Solany coś kupi.")
+    else:
+        all_ = lam / LAMPORTS + total
+        lines.append(f"\nRazem ≈ <b>{all_:.4f} SOL</b>"
+                     + (f" · wynik demo {(all_ / s.cfg.sol_paper_start - 1) * 100:+.1f}%" if not live else ""))
+    copied = [ld["name"] for ld in s.db.copied_leaders(u["tg_id"]) if ld["source"] == "sol"]
+    lines.append(f"\nKopiujesz portfele: {html.escape(', '.join(copied)) if copied else '— żadnego (👥 Traderzy)'}")
+    if not u["active"]:
+        lines.append("⏸ Kopiowanie wyłączone – włączysz je na pulpicie.")
+    rows += [[B("⚙️ Ustawienia Solany", callback_data="sx:set"),
+              B("Przejdź na 💰 LIVE" if not live else "Przejdź na 🧪 demo", callback_data="sx:mode")],
+             [B("👛 Adres / wpłata", callback_data="sx:wallet"), B("📜 Historia", callback_data="sx:hist")],
+             [B("🔄 Odśwież", callback_data="sx")], HOME]
+    return "\n".join(lines), KB(rows)
+
+
+def settings_view(u) -> tuple[str, KB]:
+    def mark(cur, v, label):
+        return f"✓ {label}" if abs((cur or 0) - v) < 1e-9 else label
+    fixed = u["sol_buy_mode"] == "fixed"
+    text = ("⚙️ <b>Ustawienia Solany</b>\n\n"
+            "<b>Kwota zakupu</b>: <i>stała</i> – za każdym razem tyle samo SOL; <i>proporcjonalna</i> – ten sam % SOL "
+            "co trader (× mnożnik). Sprzedaż zawsze proporcjonalna.\n"
+            "<b>Poślizg</b>: przy memecoinach 10–30%, inaczej zlecenie często nie wejdzie.\n\n"
+            f"Teraz: {buy_txt(u)}")
+    rows = [header("Kwota zakupu"),
+            [B(("✓ " if fixed else "") + "Stała", callback_data="sx:bm:fixed"),
+             B(("✓ " if not fixed else "") + "Proporcjonalna", callback_data="sx:bm:ratio")]]
+    if fixed:
+        rows.append([B(mark(u["sol_buy"], a, f"{a:g}"), callback_data=f"sx:amt:{a}") for a in AMOUNTS])
+    else:
+        rows.append([B(mark(u["sol_mult"], m, f"{m:g}x"), callback_data=f"sx:mult:{m}") for m in MULTS])
+    rows += [header("Maks. na zakup (SOL)"),
+             [B(mark(u["sol_max"], m, f"{m:g}" if m else "∞"), callback_data=f"sx:max:{m}") for m in MAXES],
+             header("Poślizg"),
+             [B(mark(u["sol_slippage_bps"], b, f"{b / 100:g}%"), callback_data=f"sx:slip:{b}") for b in SLIPS],
+             [B("🔄 Reset demo Solany", callback_data="sx:reset")], SX]
+    return text, KB(rows)
+
+
+def history_text(s, u) -> str:
+    rows = s.sol.history(u["tg_id"])
+    if not rows:
+        return "📜 <b>Historia Solany</b>\n\nJeszcze nic."
+    lines = ["📜 <b>Historia Solany</b>", ""]
+    for r in rows:
+        sym = html.escape(r["symbol"] or short(r["mint"]))
+        if r["status"] == "filled":
+            lat = f" · ⚡{r['latency_ms']} ms" if r["latency_ms"] is not None else ""
+            src = f" · {html.escape(r['info'])}" if r["info"] else ""
+            link = f' · <a href="https://solscan.io/tx/{r["sig"]}">tx</a>' if r["sig"] else ""
+            lines.append(f"{'🟢' if r['side'] == 'buy' else '🔴'} {sym}: {r['sol']:.4f} SOL "
+                         f"<i>({'demo' if r['paper'] else 'LIVE'}{src}{lat})</i>{link}")
+        else:
+            lines.append(f"⚠️ {sym}: <i>{html.escape((r['info'] or r['status'])[:70])}</i>")
+    return "\n".join(lines)
+
+
+async def on_sol_button(update: Update, ctx):
+    if not (u := await require_accepted(update, ctx)):
+        return await _ack(update)
+    s = S(ctx)
+    if not getattr(s, "sol", None):
+        await _ack(update, "Solana jest wyłączona", True)
+        return
+    data = update.callback_query.data
+    uid = u["tg_id"]
+    parts = data.split(":")
+    try:
+        if data == "sx":
+            await _ack(update, "⏳")
+            return await show(update, *await asyncio.wait_for(main_view(s, u), UI_TIMEOUT))
+        act = parts[1]
+        if act == "set":
+            await _ack(update)
+            return await show(update, *settings_view(u))
+        if act in ("bm", "amt", "mult", "max", "slip"):
+            field = {"bm": "sol_buy_mode", "amt": "sol_buy", "mult": "sol_mult", "max": "sol_max",
+                     "slip": "sol_slippage_bps"}[act]
+            val = parts[2] if act == "bm" else int(parts[2]) if act == "slip" else float(parts[2])
+            s.db.update_user(uid, **{field: val})
+            await _ack(update, "Zapisano")
+            return await show(update, *settings_view(s.db.get_user(uid)))
+        if act == "reset":
+            s.sol.paper_reset(uid)
+            await _ack(update, f"Demo Solany: {s.cfg.sol_paper_start:g} SOL", True)
+            return await show(update, *settings_view(u))
+        if act == "mode":
+            await _ack(update)
+            if s.sol.is_live(u):
+                s.db.update_user(uid, sol_live=0)
+                return await show(update, *await main_view(s, s.db.get_user(uid)))
+            return await show(update, "💰 <b>Prawdziwe SOL?</b>\n\nBot będzie kupował i sprzedawał tokeny z Twojego "
+                                      f"portfela Solany. Zakupy: {buy_txt(u)}.\n\nNajpierw wpłać SOL na adres z "
+                                      "„👛 Adres / wpłata”. Zacznij od małej kwoty.",
+                              KB([[B("✅ Tak, przejdź na LIVE", callback_data="sx:modeok")], SX]))
+        if act == "modeok":
+            s.db.update_user(uid, sol_live=1)
+            await _ack(update, "Solana LIVE 💰")
+            return await show(update, *await main_view(s, s.db.get_user(uid)))
+        if act == "hist":
+            await _ack(update)
+            return await show(update, history_text(s, u), KB([SX]))
+        if act == "wallet":
+            await _ack(update)
+            pub, _ = s.sol.wallet(uid)
+            try:
+                bal = f"{await s.sol.rpc.balance(pub) / LAMPORTS:.4f} SOL"
+            except Exception:  # noqa: BLE001
+                bal = "?"
+            return await show(update, "👛 <b>Twój portfel Solana</b>\n\n"
+                                      f"<code>{pub}</code>\n(dotknij, żeby skopiować)\n\nSaldo prawdziwe: <b>{bal}</b>\n\n"
+                                      "Wpłać SOL na ten adres (sieć <b>Solana</b>), żeby kopiować na LIVE. Klucz możesz "
+                                      "wyeksportować do Phantoma lub Axiom.",
+                              KB([[B("💸 Wypłać SOL", callback_data="sx:wd"), B("🔑 Eksportuj klucz", callback_data="sx:exp")],
+                                  [B("Zobacz na Solscan", url=f"https://solscan.io/account/{pub}")], SX]))
+        if act == "exp":
+            await _ack(update)
+            return await show(update, "🔑 <b>Klucz prywatny</b> daje pełną kontrolę nad portfelem. Nie pokazuj go nikomu.",
+                              KB([[B("Pokaż (zniknie po 60 s)", callback_data="sx:expok")], SX]))
+        if act == "expok":
+            await _ack(update)
+            _, kp = s.sol.wallet(uid)
+            m = await update.effective_chat.send_message(
+                f"<code>{kp}</code>\n\nImport: Phantom/Axiom → importuj klucz prywatny. Wiadomość zniknie za 60 s.",
+                parse_mode=ParseMode.HTML)
+            if getattr(ctx, "job_queue", None):
+                ctx.job_queue.run_once(_delete, 60, data=(m.chat_id, m.message_id))
+            return
+        if act == "wdok":
+            pending = ctx.user_data.pop("sol_wd", None)
+            if not pending:
+                return await _ack(update, "Brak oczekującej wypłaty", True)
+            await _ack(update, "Wysyłam…")
+            _, kp = s.sol.wallet(uid)
+            try:
+                sig = await s.sol.rpc.transfer_sol(kp, pending[0], pending[1])
+                return await show(update, f"✅ Wypłacono {pending[1] / LAMPORTS:.6f} SOL\nhttps://solscan.io/tx/{sig}",
+                                  KB([SX]))
+            except Exception as e:  # noqa: BLE001
+                return await show(update, f"❌ Wypłata nieudana: {html.escape(str(e)[:200])}", KB([SX]))
+        if act == "sell":
+            pct, mint = int(parts[2]), parts[3]
+            await _ack(update, "Sprzedaję…")
+            try:
+                fill = await s.sol.sell_manual(u, mint, pct)
+                sym, _ = await s.sol.token_info(mint)
+                msg = f"✅ Sprzedano {fmt_tokens(fill.tokens)} {sym} za {fill.sol:.4f} SOL"
+            except Skip as e:
+                msg = f"⚠️ {e}"
+            text, kb = await main_view(s, s.db.get_user(uid))
+            return await show(update, f"{html.escape(msg)}\n\n{text}", kb)
+    except Exception as e:  # noqa: BLE001
+        log.exception("Ekran Solany")
+        return await show(update, f"❌ Błąd: {html.escape(str(e)[:200]) or 'przekroczony czas'}", KB([SX, HOME]))
+
+
+async def _delete(ctx):
+    chat_id, msg_id = ctx.job.data
+    try:
+        await ctx.bot.delete_message(chat_id, msg_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+# ---------- wypłata (rozmowa: adres + kwota) ----------
+
+async def wd_start(update: Update, ctx):
+    await _ack(update)
+    if not await require_accepted(update, ctx):
+        return ConversationHandler.END
+    await update.effective_chat.send_message("💸 Wyślij: <code>ADRES ILOŚĆ</code> (np. <code>7xKX… 0.5</code>) "
+                                             "albo <code>ADRES all</code>.\n/anuluj – przerwij", parse_mode=ParseMode.HTML)
+    return WD
+
+
+async def wd_text(update: Update, ctx):
+    s = S(ctx)
+    u = s.db.get_user(update.effective_user.id)
+    parts = update.message.text.split()
+    dest = valid_address(parts[0]) if parts else None
+    if not dest or len(parts) < 2:
+        await update.message.reply_text("Format: ADRES ILOŚĆ, np. 7xKX… 0.5")
+        return WD
+    pub, _ = s.sol.wallet(u["tg_id"])
+    bal = await s.sol.rpc.balance(pub)
+    try:
+        lamports = bal - 5000 if parts[1].lower() in ("all", "max", "wszystko") else int(float(parts[1].replace(",", ".")) * LAMPORTS)
+    except ValueError:
+        await update.message.reply_text("Nieprawidłowa kwota.")
+        return WD
+    if lamports <= 0 or lamports + 5000 > bal:
+        await update.message.reply_text(f"Za mało środków. Saldo: {bal / LAMPORTS:.4f} SOL.")
+        return ConversationHandler.END
+    ctx.user_data["sol_wd"] = (dest, lamports)
+    await update.message.reply_text(f"💸 Wypłacić <b>{lamports / LAMPORTS:.6f} SOL</b> na\n<code>{dest}</code>?\n"
+                                    "Przelewu nie da się cofnąć.", parse_mode=ParseMode.HTML,
+                                    reply_markup=KB([[B("✅ Tak, wypłać", callback_data="sx:wdok")], SX]))
+    return ConversationHandler.END
+
+
+async def wd_cancel(update: Update, ctx):
+    ctx.user_data.pop("sol_wd", None)
+    await update.message.reply_text("Anulowano.")
+    return ConversationHandler.END
+
+
+def register(app: Application):
+    """Rejestrować PRZED bot.register."""
+    text = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
+    app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(wd_start, pattern="^sx:wd$")],
+                                        states={WD: [MessageHandler(text, wd_text)]},
+                                        fallbacks=[CommandHandler("anuluj", wd_cancel)], allow_reentry=True,
+                                        conversation_timeout=300))
+    app.add_handler(CallbackQueryHandler(on_sol_button, pattern=r"^sx(:.*)?$"))

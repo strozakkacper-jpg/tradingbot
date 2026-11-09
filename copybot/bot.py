@@ -53,6 +53,7 @@ class Services:
     market: Market
     engine: CopyEngine
     watchers: object | None  # watchers.Watchers
+    sol: object | None = None  # sol.engine.SolEngine – kopiowanie portfeli Solany
 
 
 def S(ctx: ContextTypes.DEFAULT_TYPE) -> Services:
@@ -120,6 +121,12 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
     lines.append(f"<b>Sposób:</b> {how}")
     if watching:
         lines.append(f"<b>Obserwujesz:</b> {watching} (tylko powiadomienia)")
+    sol_on = bool(getattr(s, "sol", None)) and (any(c["source"] == "sol" for c in copied)
+                                                or s.sol.has_wallet(u["tg_id"]))
+    if sol_on:
+        sol_bal = s.sol.paper(u["tg_id"]).get("So11111111111111111111111111111111111111112", 0) / 1e9 \
+            if not u["sol_live"] else None
+        lines.append("<b>Solana:</b> " + ("💰 LIVE" if u["sol_live"] else f"🧪 demo · {sol_bal:.4f} SOL"))
     if not copied:
         lines += ["", "👉 Wejdź w <b>👥 Traderzy</b>, dodaj albo wybierz tradera do kopiowania."]
     if s.db.get_state("paused") == "1":
@@ -127,7 +134,8 @@ def menu_view(s: Services, u) -> tuple[str, KB]:
 
     rows = [[B("⏸ Wyłącz kopiowanie" if u["active"] else "▶️ Włącz kopiowanie", callback_data="toggle")],
             [B("💼 Portfel", callback_data="status"), B("👥 Traderzy", callback_data="traders")],
-            [B("🎮 Handel demo", callback_data="dt")],
+            [B("🎮 Handel demo", callback_data="dt")] + ([B("🟣 Solana", callback_data="sx")]
+                                                        if getattr(s, "sol", None) else []),
             [B("📜 Historia", callback_data="history"), B("⚙️ Ustawienia", callback_data="settings")],
             [B(f"🏦 Giełda: {ex}" if u["api_key"] else "🏦 Podłącz giełdę", callback_data="exchange"),
              B("Przejdź na 💰 LIVE" if u["paper"] else "Przejdź na 🧪 demo", callback_data="mode")]]

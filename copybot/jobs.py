@@ -15,6 +15,13 @@ log = logging.getLogger(__name__)
 async def snapshot_job(ctx: ContextTypes.DEFAULT_TYPE):
     s = ctx.application.bot_data["svc"]
     for lead in s.db.leaders("active"):
+        if lead["source"] == "sol":  # portfel wzorcowy Solany – wartość w SOL
+            if getattr(s, "sol", None):
+                try:
+                    s.db.add_equity(ref_id(lead["id"]), (await s.sol.report(lead["id"], max_age=0))["equity"], True)
+                except Exception:  # noqa: BLE001
+                    log.exception("Nie zapisano wartości portfela Solany tradera %s", lead["id"])
+            continue
         try:
             s.db.ensure_reference(lead["id"], s.cfg.paper_start, s.cfg.quote)
             rid = ref_id(lead["id"])

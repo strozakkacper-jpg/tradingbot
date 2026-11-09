@@ -65,6 +65,12 @@ async def live_text(s, u) -> str:
                      f"{'🧪 demo' if u['paper'] else '💰 LIVE'}")
     except Exception:  # noqa: BLE001
         lines.append("💼 saldo chwilowo niedostępne")
+    if getattr(s, "sol", None) and s.sol.has_wallet(u["tg_id"]):
+        try:
+            lam = await asyncio.wait_for(s.sol.sol_lamports(u), 10)
+            lines.append(f"🟣 {lam / 1e9:.4f} SOL · {'💰 LIVE' if u['sol_live'] else '🧪 demo'}")
+        except Exception:  # noqa: BLE001
+            pass
     copied = s.db.copied_leaders(u["tg_id"])
     names = ", ".join(html.escape(c["name"]) for c in copied)
     state = "▶️" if u["active"] else "⏸"

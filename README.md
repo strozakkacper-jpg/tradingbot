@@ -26,6 +26,16 @@ a kogo tylko obserwujesz. Bot w około sekundę powtarza ich transakcje na Twoim
 - **Model kopiowania: procent portfela.** Trader kupi za 20% salda, to Ty kupisz za 20% (× mnożnik, maks. limit).
   Sprzeda połowę, to Ty też sprzedasz połowę.
 - **🛡 Ochrona:** stop-loss portfela, ochrona ceny, limit na zakup, „🧹 Sprzedaj wszystko”, globalna pauza.
+- **🟣 Kopiowanie portfeli Solany** (traderzy z Axiom, Pump.fun, GMGN…): w **➕ Dodaj tradera** wybierz
+  „🟣 Portfel Solana” i wklej adres. Bot nasłuchuje portfel przez **Helius** i kopiuje wymiany przez **Jupitera**:
+  stała kwota albo ten sam % SOL, sprzedaż proporcjonalna, limit na zakup, poślizg, demo/LIVE, wypłata i eksport
+  klucza. Każde powiadomienie pokazuje czas „⚡ X ms od wykrycia”. Obsługiwany jest też nowy format transakcji (wersja 1).
+  Opóźnienie:
+  - z `HELIUS_API_KEY`: Enhanced WebSocket na statusie *processed*, pełna transakcja w powiadomieniu,
+    bez dodatkowego zapytania;
+  - bez klucza: publiczny RPC i dociągnięcie transakcji (zmierzone ok. 2,2 s wolniej, plus niskie limity zapytań);
+  - wykonanie: wycena i budowa transakcji w Jupiterze (`JUPITER_API_KEY` = wyższe limity), wysyłka bez sprawdzania
+    wstępnego, ponawianie co 400 ms aż do potwierdzenia, równolegle dla wszystkich kopiujących.
 - **🎮 Handel demo**: ręczne kupno i sprzedaż za wirtualne USDT po prawdziwych cenach. Przyciski: kup za 10/50/100 USDT
   lub 25/50/100% gotówki, sprzedaj 25/50/100%. Komendy: `/kup PEPE 20`, `/sprzedaj BTC 50%`.
 - **📌 Na żywo u góry czatu**: przypięta wiadomość odświeżana co `LIVE_SECONDS` s, z cenami (`LIVE_COINS`) i zmianą 24 h,
@@ -87,6 +97,7 @@ copybot/
   mirror.py   – lustro portfela 1:1: porównanie proporcji i wyrównywanie
   demo.py     – handel demo (ręczne kupno/sprzedaż)
   live.py     – przypięta wiadomość „na żywo” u góry czatu
+  sol/        – Solana: nasłuch portfeli (Helius), wymiany (Jupiter), silnik, ekran w Telegramie
   reports.py  – raporty: wyniki lidera, portfel użytkownika
   jobs.py     – zadania okresowe: wartości portfeli, stop-loss, wygasanie subskrypcji
   billing.py  – subskrypcje w Telegram Stars

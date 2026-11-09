@@ -44,6 +44,17 @@ CREATE TABLE IF NOT EXISTS follows (
     created_at INTEGER NOT NULL,
     PRIMARY KEY (tg_id, leader_id)
 );
+CREATE TABLE IF NOT EXISTS sol_wallets (
+    tg_id INTEGER PRIMARY KEY, pubkey TEXT NOT NULL, secret TEXT NOT NULL, created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS sol_paper (tg_id INTEGER NOT NULL, mint TEXT NOT NULL, raw INTEGER NOT NULL,
+                                      PRIMARY KEY (tg_id, mint));
+CREATE TABLE IF NOT EXISTS sol_tokens (mint TEXT PRIMARY KEY, symbol TEXT NOT NULL, decimals INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS sol_trades (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, leader_id INTEGER, leader_sig TEXT,
+    side TEXT NOT NULL, mint TEXT NOT NULL, sol REAL, tokens REAL, status TEXT NOT NULL, info TEXT,
+    paper INTEGER NOT NULL, sig TEXT, latency_ms INTEGER, ts INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS payments (
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, charge_id TEXT NOT NULL UNIQUE,
     amount INTEGER NOT NULL, recurring INTEGER NOT NULL DEFAULT 0, refunded INTEGER NOT NULL DEFAULT 0,
@@ -66,7 +77,14 @@ MIGRATIONS = {
     "mirror_tolerance": "REAL NOT NULL DEFAULT 2",  # % – mniejszych odchyleń lustro nie wyrównuje (oszczędza prowizje)
     "mirror_trades": "INTEGER NOT NULL DEFAULT 1",
     "live_pin": "INTEGER NOT NULL DEFAULT 1",  # przypięta wiadomość „na żywo” u góry czatu
-    "pin_msg_id": "INTEGER",  # id tej wiadomości (do edycji co minutę)  # w lustrze kopiuj też każdą transakcję od razu (1) czy tylko wyrównuj (0)
+    "pin_msg_id": "INTEGER",  # id tej wiadomości (do edycji co minutę)
+    # Solana
+    "sol_live": "INTEGER NOT NULL DEFAULT 0",  # 0 = demo (wirtualne SOL), 1 = prawdziwy portfel
+    "sol_buy_mode": "TEXT NOT NULL DEFAULT 'fixed'",  # fixed = stała kwota SOL, ratio = ten sam % SOL co trader
+    "sol_buy": "REAL NOT NULL DEFAULT 0.05",
+    "sol_mult": "REAL NOT NULL DEFAULT 1.0",
+    "sol_max": "REAL NOT NULL DEFAULT 0.5",
+    "sol_slippage_bps": "INTEGER NOT NULL DEFAULT 1000",  # w lustrze kopiuj też każdą transakcję od razu (1) czy tylko wyrównuj (0)
 }
 
 
@@ -78,9 +96,11 @@ def ref_id(leader_id: int) -> int:
 USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_trade",
                "api_key", "api_secret", "api_password", "stop_loss", "start_equity", "paid_until",
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
-               "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id"}
+               "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
+               "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_max", "sol_slippage_bps"}
+LEADER_MIGRATIONS = {"wallet": "TEXT"}  # adres portfela Solany (traderzy typu „sol”)
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
-                 "exchange"}
+                 "exchange", "wallet"}
 
 
 def now_ms() -> int:
@@ -100,6 +120,10 @@ class DB:
                     self.conn.execute(f"ALTER TABLE users ADD COLUMN {name} {ddl}")
                     if name == "approved":  # użytkownicy sprzed wersji prywatnej zachowują dostęp
                         self.conn.execute("UPDATE users SET approved = 1 WHERE accepted = 1")
+            lcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(leaders)")}
+            for name, ddl in LEADER_MIGRATIONS.items():
+                if name not in lcols:
+                    self.conn.execute(f"ALTER TABLE leaders ADD COLUMN {name} {ddl}")
             # wersja 2 miała jednego wybranego tradera (users.leader_id) – przenosimy do listy śledzonych
             self.conn.execute("""INSERT OR IGNORE INTO follows (tg_id, leader_id, copy, created_at)
                                  SELECT tg_id, leader_id, 1, created_at FROM users WHERE leader_id IS NOT NULL""")
@@ -197,9 +221,9 @@ class DB:
         with self.lock, self.conn:
             cur = self.conn.execute(
                 "INSERT INTO leaders (name, bio, owner_tg_id, source, exchange, api_key, api_secret, api_password, "
-                "status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "status, created_at, wallet) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (name, bio, owner_tg_id, source, keys.get("exchange"), keys.get("api_key"), keys.get("api_secret"),
-                 keys.get("api_password"), status, now_ms()))
+                 keys.get("api_password"), status, now_ms(), keys.get("wallet")))
             return cur.lastrowid
 
     def get_leader(self, leader_id: int | None) -> sqlite3.Row | None:

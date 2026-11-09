@@ -8,7 +8,13 @@ from telegram import BotCommand, MenuButtonWebApp, WebAppInfo
 from telegram.ext import Application
 from telegram.warnings import PTBUserWarning
 
+import aiohttp
+
 from . import demo, mirror, traders
+from .sol import ui as sol_ui
+from .sol.chain import Jupiter, Rpc
+from .sol.engine import SolEngine
+from .sol.watcher import SolWatcher
 from .live import live_job
 from .bot import Services, make_notify, register
 from .config import Config
@@ -58,6 +64,21 @@ async def post_init(app: Application):
     watchers = Watchers(cfg, db, vault, markets, on_orders)
     svc = app.bot_data["svc"] = Services(cfg, db, vault, markets, engine, watchers)
 
+    # --- Solana: kopiowanie portfeli (Axiom, Pump.fun…) – wspólna sesja HTTP = stałe połączenia, mniej ms ---
+    if cfg.sol_enabled:
+        session = aiohttp.ClientSession(trust_env=True, timeout=aiohttp.ClientTimeout(total=20),
+                                        connector=aiohttp.TCPConnector(limit=100, ttl_dns_cache=300,
+                                                                       keepalive_timeout=60))
+        rpc = Rpc(cfg.sol_rpc, session)
+        svc.sol = SolEngine(cfg, db, vault, rpc, Jupiter(cfg.jup_base, cfg.jupiter_api_key, session), engine.notify)
+        sol_watcher = SolWatcher(cfg.sol_ws, cfg.sol_ws_enhanced, rpc, session, svc.sol.watched_wallets,
+                                 svc.sol.on_swap)
+        svc.sol.watcher = sol_watcher
+        app.bot_data.update(sol_session=session, sol_task=asyncio.create_task(sol_watcher.run()))
+        log.info("Solana: RPC %s · Jupiter %s · %s", "Helius" if cfg.helius_api_key else "publiczny (wolniejszy)",
+                 "z kluczem" if cfg.jupiter_api_key else "lite (bez klucza)",
+                 "Enhanced WebSocket" if cfg.helius_api_key else "logsSubscribe")
+
     async def after_trade(leader_id: int):  # lustro: wyrównaj portfele zaraz po ruchu tradera
         for u in db.mirror_followers(leader_id):
             asyncio.create_task(mirror.sync(svc, u, "ruch tradera"))
@@ -103,6 +124,10 @@ async def mirror_job(ctx):
 
 
 async def post_shutdown(app: Application):
+    if task := app.bot_data.get("sol_task"):
+        task.cancel()
+    if session := app.bot_data.get("sol_session"):
+        await session.close()
     if web := app.bot_data.get("web"):
         await web.cleanup()
     s: Services | None = app.bot_data.get("svc")
@@ -124,6 +149,7 @@ def main():
     app.bot_data["cfg"] = cfg
     traders.register(app)  # najpierw – handlery bota łapią wszystkie pozostałe przyciski
     demo.register(app)
+    sol_ui.register(app)
     register(app)
     app.run_polling(drop_pending_updates=False, bootstrap_retries=-1)
 

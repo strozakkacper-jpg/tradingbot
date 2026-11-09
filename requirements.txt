@@ -25,6 +25,8 @@ pycparser==3.0
 python-dotenv==1.0.1
 python-telegram-bot==21.11.1
 requests==2.34.2
+solders==0.23.0
+jsonalias==0.1.1
 typing_extensions==4.16.0
 tzlocal==5.4.5
 urllib3==2.8.0

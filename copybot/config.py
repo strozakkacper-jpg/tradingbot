@@ -84,6 +84,14 @@ class Config:
     snapshot_minutes: int = 15
     realtime: bool = True  # WebSocket giełdy zamiast odpytywania
     mirror_minutes: int = 5
+    # --- Solana (kopiowanie portfeli, np. traderów z Axiom / Pump.fun) ---
+    sol_enabled: bool = True
+    helius_api_key: str = ""  # Helius: szybki RPC + WebSocket z pełnymi transakcjami
+    jupiter_api_key: str = ""  # Jupiter: wymiany; bez klucza – darmowe lite-api (niższe limity)
+    sol_rpc_url: str = ""  # nadpisanie RPC (domyślnie Helius albo publiczny)
+    sol_paper_start: float = 5.0  # wirtualne SOL na start w trybie demo
+    sol_priority_max_lamports: int = 2_000_000  # maks. 0,002 SOL opłaty priorytetowej (szybsze wejście)
+    sol_reserve: float = 0.01  # SOL zostawiane na opłaty sieci
     live_seconds: int = 60  # co ile sekund odświeżać przypiętą wiadomość „na żywo”
     live_coins: tuple[str, ...] = ("BTC", "ETH", "SOL")  # ceny pokazywane u góry
     demo_coins: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP", "DOGE", "BNB")  # szybki wybór w handlu demo  # co ile minut lustro sprawdza zgodność portfeli (poza reakcją na ruch tradera)
@@ -100,6 +108,27 @@ class Config:
     @property
     def leader_enabled(self) -> bool:
         return bool(self.leader_api_key and self.leader_api_secret)
+
+    @property
+    def sol_rpc(self) -> str:
+        if self.sol_rpc_url:
+            return self.sol_rpc_url
+        if self.helius_api_key:
+            return f"https://mainnet.helius-rpc.com/?api-key={self.helius_api_key}"
+        return "https://api.mainnet-beta.solana.com"
+
+    @property
+    def sol_ws(self) -> str:
+        return self.sol_rpc.replace("https://", "wss://").replace("http://", "ws://")
+
+    @property
+    def sol_ws_enhanced(self) -> str:
+        """Helius Enhanced WebSocket (transactionSubscribe) – pełna transakcja w powiadomieniu."""
+        return f"wss://atlas-mainnet.helius-rpc.com/?api-key={self.helius_api_key}" if self.helius_api_key else ""
+
+    @property
+    def jup_base(self) -> str:
+        return "https://api.jup.ag" if self.jupiter_api_key else "https://lite-api.jup.ag"
 
     @property
     def needs_password(self) -> bool:
@@ -133,6 +162,12 @@ class Config:
             realtime=_bool(os.getenv("REALTIME"), True),
             mirror_minutes=int(os.getenv("MIRROR_MINUTES", "5")),
             live_seconds=max(30, int(os.getenv("LIVE_SECONDS", "60"))),
+            sol_enabled=_bool(os.getenv("SOL_ENABLED"), True),
+            helius_api_key=os.getenv("HELIUS_API_KEY", "").strip(),
+            jupiter_api_key=os.getenv("JUPITER_API_KEY", "").strip(),
+            sol_rpc_url=os.getenv("SOL_RPC_URL", "").strip(),
+            sol_paper_start=float(os.getenv("SOL_PAPER_START", "5")),
+            sol_priority_max_lamports=int(os.getenv("SOL_PRIORITY_MAX_LAMPORTS", "2000000")),
             live_coins=tuple(c.strip().upper() for c in os.getenv("LIVE_COINS", "BTC,ETH,SOL").split(",") if c.strip()),
             demo_coins=tuple(c.strip().upper() for c in os.getenv("DEMO_COINS", "BTC,ETH,SOL,XRP,DOGE,BNB").split(",")
                              if c.strip()),

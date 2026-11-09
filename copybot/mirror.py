@@ -73,7 +73,8 @@ async def trader_weights(s, lead) -> dict[str, float]:
 
 async def target_weights(s, u) -> dict[str, float]:
     """Kilku kopiowanych traderów = równy podział kapitału między ich portfele."""
-    leaders = s.db.copied_leaders(u["tg_id"])
+    # lustro dotyczy portfela giełdowego – traderzy Solany kopiowani są osobno (moduł sol)
+    leaders = [ld for ld in s.db.copied_leaders(u["tg_id"]) if ld["source"] != "sol"]
     if not leaders:
         return {}
     parts = [await trader_weights(s, lead) for lead in leaders]
@@ -144,7 +145,8 @@ async def sync(s, u, reason: str = "", notify: bool = True) -> Counter:
 
 def plan_text(s, u, p: Plan) -> str:
     q = s.cfg.quote
-    names = ", ".join(html.escape(lead["name"]) for lead in s.db.copied_leaders(u["tg_id"])) or "—"
+    names = ", ".join(html.escape(lead["name"]) for lead in s.db.copied_leaders(u["tg_id"])
+                      if lead["source"] != "sol") or "—"
     lines = ["🔍 <b>Porównanie z traderem</b>", f"Trader: {names}", ""]
     if not p.target:
         return "\n".join(lines + ["Nie kopiujesz jeszcze żadnego tradera."])

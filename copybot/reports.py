@@ -20,6 +20,9 @@ def fmt_pct(x: float | None) -> str:
 
 async def leader_report(s, leader_id: int, max_age: float = 60) -> dict:
     """Wyniki portfela wzorcowego tradera (każde zlecenie 1:1). Cache, bo panel i ranking pytają często."""
+    lead = s.db.get_leader(leader_id)
+    if lead is not None and lead["source"] == "sol":  # trader Solany – wyniki w SOL
+        return await s.sol.report(leader_id, max_age) if getattr(s, "sol", None) else _empty(leader_id)
     hit = _cache.get((id(s.db), leader_id))
     if hit and time.monotonic() - hit[0] < max_age:
         return hit[1]
@@ -46,6 +49,12 @@ async def leader_report(s, leader_id: int, max_age: float = 60) -> dict:
     }
     _cache[(id(s.db), leader_id)] = (time.monotonic(), rep)
     return rep
+
+
+def _empty(leader_id: int) -> dict:
+    now = now_ms()
+    return {"id": leader_id, "since": now, "equity": 0, "start": 0, "total": 0, "d7": None, "d30": None, "max_dd": 0,
+            "closed": 0, "wins": 0, "win_rate": None, "realized": 0, "best": 0, "worst": 0, "series": [], "recent": []}
 
 
 def score(rep: dict) -> float:
@@ -89,6 +98,7 @@ async def user_report(s, u) -> dict:
 
 
 def leader_text(rep: dict, quote: str, leader=None, followers: tuple[int, int] = (0, 0)) -> str:
+    quote = rep.get("unit", quote)
     wr = rep["win_rate"]
     name = _html.escape(leader["name"]) if leader else "lidera"
     src = ("📡 konto giełdowe, kopiowane automatycznie" if leader and leader["source"] == "api"

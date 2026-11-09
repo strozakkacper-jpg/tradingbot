@@ -1,4 +1,5 @@
 """Traderzy: lista, profil, kopiuj / obserwuj, dodawanie, zmiana nazwy, usuwanie, sygnały."""
+import asyncio
 import html
 import logging
 
@@ -18,11 +19,13 @@ from .reports import fmt_pct, leader_report, leader_text, ranking
 from .sizing import LeaderOrder
 
 log = logging.getLogger(__name__)
-A_NAME, A_SOURCE, A_EXCH, A_KEY, A_SECRET, A_PASS, R_NAME = range(10, 17)
+A_NAME, A_SOURCE, A_EXCH, A_KEY, A_SECRET, A_PASS, R_NAME, A_WALLET = range(10, 18)
 TRADERS = [B("« Traderzy", callback_data="traders")]
 
 
 def src_txt(s, lead) -> str:
+    if lead["source"] == "sol":
+        return f"🟣 Solana {lead['wallet'][:4]}…{lead['wallet'][-4:]}" if lead["wallet"] else "🟣 Solana"
     return f"📡 {exchange_name(user_exchange(s.cfg, lead))}" if lead["source"] == "api" else "✍️ sygnały"
 
 
@@ -71,6 +74,10 @@ async def show_profile(update: Update, ctx, leader_id: int | None, notice: str |
     text = leader_text(rep, s.cfg.quote, lead, counts)
     text = text.replace("📡 konto giełdowe, kopiowane automatycznie", src_txt(s, lead) + " – automatycznie", 1)
     text = text.replace("✍️ sygnały wysyłane przez tradera", "✍️ sygnały wysyłane w bocie", 1)
+    if lead["source"] == "sol":
+        text = text.replace("✍️ sygnały wysyłane w bocie", src_txt(s, lead) + " – kopiowany na żywo", 1)
+        text += (f'\n\n🔎 <a href="https://solscan.io/account/{lead["wallet"]}">Portfel na Solscan</a> · '
+                 f'<a href="https://gmgn.ai/sol/address/{lead["wallet"]}">GMGN</a>')
     me = {True: "✅ <b>Kopiujesz</b> tego tradera.", False: "👁 <b>Obserwujesz</b> – dostajesz tylko powiadomienia.",
           None: "▫️ Nie śledzisz tego tradera."}[status]
     text = (f"ℹ️ {html.escape(notice)}\n\n" if notice else "") + text + f"\n\n{me}"
@@ -117,6 +124,8 @@ async def on_trader_button(update: Update, ctx):
         return await show_profile(update, ctx, lid)
     if action == "cp":
         s.db.follow(uid, lid, True)
+        if lead["source"] == "sol" and getattr(s, "sol", None):
+            s.sol.wallet(uid)  # portfel Solany (demo: wirtualne SOL) tworzy się przy pierwszym kopiowaniu
         msg = f"Kopiujesz: {lead['name']}" + ("" if u["active"] else " – włącz kopiowanie na pulpicie ▶️")
         await _ack(update, msg[:200], not u["active"])
         return await show_profile(update, ctx, lid, None if not u["active"] else msg)
@@ -169,9 +178,12 @@ async def add_name(update: Update, ctx):
         "➕ <b>Nowy trader</b> (krok 2/3)\n\nSkąd bot ma brać jego transakcje?\n\n"
         "📡 <b>Konto na giełdzie</b> – trader daje klucz API <b>tylko do odczytu</b>. Bot widzi każdą jego transakcję "
         "w około sekundę i kopiuje automatycznie.\n\n"
+        "🟣 <b>Portfel Solana</b> – adres portfela tradera z Axiom, Pump.fun, GMGN… Bot widzi jego wymiany na "
+        "blockchainie w ułamku sekundy i kopiuje przez Jupitera. Klucz nie jest potrzebny.\n\n"
         "✍️ <b>Sygnały w bocie</b> – Ty (albo ktoś z dostępem) wysyłasz komendy typu <code>/sygnal buy BTC/USDT 10</code>.",
         parse_mode=ParseMode.HTML,
         reply_markup=KB([[B("📡 Konto na giełdzie", callback_data="src:api")],
+                         [B("🟣 Portfel Solana (Axiom, Pump.fun…)", callback_data="src:sol")],
                          [B("✍️ Sygnały w bocie", callback_data="src:manual")]]))
     return A_SOURCE
 
@@ -181,6 +193,14 @@ async def add_source(update: Update, ctx):
     await _ack(update)
     if q.data == "src:manual":
         return await _add_finish(update, ctx, "manual")
+    if q.data == "src:sol":
+        if not getattr(S(ctx), "sol", None):
+            await q.edit_message_text("Solana jest wyłączona w tej instalacji.")
+            return ConversationHandler.END
+        await q.edit_message_text(
+            "🟣 <b>Portfel Solana</b> (krok 3/3)\n\nWklej <b>adres portfela</b> tradera – znajdziesz go w profilu na "
+            "Axiom, GMGN, Solscan albo w rankingu kolscan.io.\n/anuluj – przerwij", parse_mode=ParseMode.HTML)
+        return A_WALLET
     await q.edit_message_text("➕ <b>Nowy trader</b> (krok 3/3)\n\nNa której giełdzie handluje?",
                               parse_mode=ParseMode.HTML, reply_markup=exchange_kb(S(ctx).cfg, "aex:"))
     return A_EXCH
@@ -197,6 +217,25 @@ async def add_exchange(update: Update, ctx):
         f"(bez handlu i bez wypłat).{hint}\n\nWyślij <b>API Key</b> – wiadomość od razu usunę.\n/anuluj – przerwij",
         parse_mode=ParseMode.HTML)
     return A_KEY
+
+
+async def add_wallet(update: Update, ctx):
+    from .sol.ui import valid_address
+    s = S(ctx)
+    addr = valid_address(update.message.text)
+    if not addr:
+        await update.message.reply_text("To nie jest poprawny adres Solany – wklej sam adres (32–44 znaki).")
+        return A_WALLET
+    preview = ""
+    try:
+        lam = await asyncio.wait_for(s.sol.rpc.balance(addr), 10)
+        tokens = await asyncio.wait_for(s.sol.rpc.token_accounts(addr), 15)
+        preview = f"\nPodgląd: {lam / 1e9:.3f} SOL · {len(tokens)} tokenów w portfelu."
+    except Exception:  # noqa: BLE001
+        preview = "\n(Podgląd portfela chwilowo niedostępny – śledzenie i tak zadziała.)"
+    ctx.user_data.setdefault("add", {})["wallet"] = addr
+    ctx.user_data["add"]["preview"] = preview
+    return await _add_finish(update, ctx, "sol")
 
 
 async def _wipe(update: Update):
@@ -251,13 +290,17 @@ async def _add_finish(update: Update, ctx, source: str):
             await ex.close()
         keys = {k: s.vault.enc(a.get(k)) for k in ("api_key", "api_secret", "api_password")}
         keys["exchange"] = a.get("exchange")
+    if source == "sol":
+        keys = {"wallet": a.get("wallet")}
     lid = s.db.create_leader(a["name"], source, uid, "active", **keys)
     s.db.ensure_reference(lid, s.cfg.paper_start, s.cfg.quote)
     s.db.follow(uid, lid, False)  # dodający od razu obserwuje
     if s.watchers:
         s.watchers.sync()
-    how = ("Bot śledzi jego konto na żywo." if source == "api" else
-           "Wysyłaj sygnały: <code>/sygnal buy BTC/USDT 10</code> albo <code>/sygnal sell BTC/USDT 100</code>.")
+    how = {"api": "Bot śledzi jego konto na żywo.",
+           "sol": "Bot śledzi ten portfel na blockchainie na żywo." + a.get("preview", ""),
+           "manual": "Wysyłaj sygnały: <code>/sygnal buy BTC/USDT 10</code> albo <code>/sygnal sell BTC/USDT 100</code>."
+           }[source]
     await chat.send_message(
         f"✅ <b>Dodano tradera „{html.escape(a['name'])}”.</b>\n{how}\n\nNa razie dostajesz tylko powiadomienia. "
         "Kopiować od razu?", parse_mode=ParseMode.HTML,
@@ -383,7 +426,8 @@ def register(app: Application):
                 A_EXCH: [CallbackQueryHandler(add_exchange, pattern="^aex:")],
                 A_KEY: [MessageHandler(text, add_key)],
                 A_SECRET: [MessageHandler(text, add_secret)],
-                A_PASS: [MessageHandler(text, add_pass)]},
+                A_PASS: [MessageHandler(text, add_pass)],
+                A_WALLET: [MessageHandler(text, add_wallet)]},
         fallbacks=cancel, allow_reentry=True, conversation_timeout=600,
     ))
     app.add_handler(ConversationHandler(
