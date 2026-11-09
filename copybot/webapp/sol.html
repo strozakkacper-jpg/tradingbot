@@ -66,6 +66,19 @@ textarea{min-height:76px;resize:vertical}
 .loader{display:flex;justify-content:center;padding:60px}.loader:after{content:"";width:30px;height:30px;border:3px solid var(--line);border-top-color:var(--acc);border-radius:50%;animation:spin .8s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 svg{display:block}
+.sl{margin-top:14px}.sl:first-child{margin-top:0}
+.slv{font-weight:800;font-size:17px;color:var(--acc2);background:rgba(139,92,246,.12);padding:3px 10px;border-radius:10px;min-width:64px;text-align:center}
+.slv.off{color:var(--mut);background:var(--card2)}
+input[type=range]{-webkit-appearance:none;appearance:none;width:100%;height:8px;border-radius:99px;padding:0;margin:14px 0 4px;border:0;outline:none;
+  background:linear-gradient(90deg,var(--acc) var(--p,0%),var(--card2) var(--p,0%))}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;border-radius:50%;background:#fff;border:4px solid var(--acc);box-shadow:0 2px 10px rgba(0,0,0,.5)}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;background:#fff;border:4px solid var(--acc)}
+.slr{display:flex;justify-content:space-between;font-size:11px;color:var(--mut2)}
+.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.kpi .stat .v{font-size:19px}
+.dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}.dot.g{background:var(--g);box-shadow:0 0 8px var(--g)}.dot.r{background:var(--r)}
+.ucard{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:12px;margin-bottom:8px;cursor:pointer}
+.ucard:active{transform:scale(.99)}
+.warn{background:var(--ybg);border:1px solid rgba(234,179,8,.35);border-radius:12px;padding:10px 12px;font-size:13px;margin-top:10px}
 </style>
 </head>
 <body>
@@ -75,6 +88,7 @@ svg{display:block}
 <nav class="tabs" id="tabs"></nav>
 <script>
 const tg = window.Telegram && Telegram.WebApp;
+try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {}
 try { tg.ready(); tg.expand(); tg.setHeaderColor('#0b0d13'); tg.setBackgroundColor('#0b0d13'); } catch (e) {}
 // initData od Telegrama (albo z adresu – gdy skrypt Telegrama nie zdążył się wczytać)
 const INIT = (tg && tg.initData) || new URLSearchParams(location.hash.slice(1)).get('tgWebAppData') || '';
@@ -141,6 +155,42 @@ function chart(pts, h = 120, mini = false) {
     <path d="${d}" fill="none" stroke="${col}" stroke-width="${mini ? 1.6 : 2.2}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
 }
 
+// ---------- suwaki ----------
+// skala logarytmiczna dla kwot (od 0,001 SOL) – precyzyjnie przy małych kwotach, szybko przy dużych
+const SLD = {};
+const sig2 = v => parseFloat(Number(v).toPrecision(v < 1 ? 2 : 3));
+const R = {
+  sol: v => v < 0.01 ? Math.round(v * 1000) / 1000 : sig2(v),
+  pct: v => v < 10 ? Math.round(v * 10) / 10 : Math.round(v),
+  int: v => Math.round(v),
+  tp: v => v < 100 ? Math.round(v / 5) * 5 : Math.round(v / 10) * 10,
+  bps: v => Math.round(v / 50) * 50,
+};
+function slPos(c, v) {
+  v = Math.min(Math.max(v || c.min, c.min), c.max);
+  return Math.round(c.log ? Math.log(v / c.min) / Math.log(c.max / c.min) * 1000 : (v - c.min) / (c.max - c.min) * 1000);
+}
+function slVal(c, p) { const v = c.log ? c.min * Math.pow(c.max / c.min, p / 1000) : c.min + (c.max - c.min) * p / 1000; return Math.min(Math.max(c.round(v), c.min), c.max); }
+// c: {min, max, log, round, fmt, save(v), off?: tekst gdy 0}
+function slider(id, label, c, value) {
+  SLD[id] = c;
+  const off = c.off && !value, p = slPos(c, off ? c.min : value);
+  return `<div class="sl"><div class="row"><div class="sp b small">${label}</div>
+      <div class="slv ${off ? 'off' : ''}" id="slv-${id}">${off ? c.off : c.fmt(value)}</div></div>
+    <input type="range" min="0" max="1000" value="${p}" style="--p:${p / 10}%" oninput="slMove('${id}', this)" onchange="slSave('${id}', this)">
+    <div class="slr"><span>${c.fmt(c.min)}</span><span>${c.fmt(c.max)}</span></div></div>`;
+}
+function slMove(id, el) {
+  const c = SLD[id], v = slVal(c, +el.value);
+  el.style.setProperty('--p', el.value / 10 + '%');
+  const o = document.getElementById('slv-' + id); o.textContent = c.fmt(v); o.classList.remove('off');
+  if (c.live) c.live(v);
+  if (Math.round(el.value) % 40 === 0) haptic('light');
+}
+function slSave(id, el) { const c = SLD[id]; c.save(slVal(c, +el.value)); }
+const fSol = v => (v < 0.01 ? v.toFixed(3) : v < 1 ? String(sig2(v)) : String(sig2(v))) + ' SOL';
+const fPct = v => v + '%';
+
 // ---------- API ----------
 async function api(path, body) {
   const opt = {headers: {'X-Init-Data': INIT}};
@@ -199,6 +249,14 @@ function statusBox() {
   else if (!n) t = '👁 <b>Tylko obserwujesz.</b> Wejdź w tradera i kliknij ✅ Kopiuj.';
   else { cls = 'on'; t = `✅ <b>Bot działa.</b> Kopiuje ${n} ${n === 1 ? 'portfel' : n < 5 ? 'portfele' : 'portfeli'}. Gdy trader kupi albo sprzeda, zrobisz to samo – ${esc(S.default_amount)}.`; }
   if (S.paused) t += '<br><span class="y small">⏸ Administrator wstrzymał kopiowanie wszystkim.</span>';
+  const wt = S.watcher || {};
+  if (n) {
+    const lm = S.last_leader_move;
+    t += `<div class="small" style="margin-top:8px"><span class="dot ${wt.connected ? 'g' : 'r'}"></span>${wt.connected ? `Bot nasłuchuje ${wt.watched} portf.` : 'Brak połączenia z siecią Solana – łączę ponownie…'}
+      · ostatni ruch Twoich traderów: <b>${lm ? ago(lm) : 'jeszcze żadnego'}</b></div>`;
+    if (!lm || Date.now() - lm > 3 * 3600e3)
+      t += `<div class="warn">😴 Twoi traderzy dawno nic nie kupili – dlatego nic się nie kopiuje. Wejdź w <b>👥 Traderzy → 🔍 Sprawdź, kto naprawdę handluje</b> i włącz aktywnych.</div>`;
+  }
   return `<div class="status ${cls}"><div style="margin-bottom:12px">${t}</div>
     <button class="btn ${S.active ? 'r' : 'g'}" onclick="toggle()">${S.active ? '⏸ Wyłącz kopiowanie' : '▶️ Włącz kopiowanie'}</button></div>`;
 }
@@ -398,9 +456,13 @@ function renderWallet() {
     <div class="card">
       <button class="chip ${!own.sol && !own.pct ? 'on' : ''}" onclick="setAmount({})">jak w ustawieniach</button>
       <div class="mut tiny" style="margin:6px 0 12px">${esc(S.default_amount)}</div>
-      <div class="mut small" style="margin-bottom:8px">Stała kwota</div><div class="chips">${chipsSol}</div>
-      <div class="mut small" style="margin:14px 0 8px">…albo % tego, za ile kupił on</div><div class="chips">${chipsPct}</div>
-      <div class="mut tiny" style="margin-top:8px">Np. 10%: on kupi za 5 SOL → Ty za 0,5 SOL.</div>
+      ${slider('wsol', 'Stała kwota', {min: 0.001, max: 10, log: true, round: R.sol, fmt: fSol, off: '—', save: v => setAmount({sol: v})}, own.sol)}
+      <div class="chips" style="margin-top:6px">${chipsSol}</div>
+      <div style="margin-top:8px" class="mut tiny">…albo</div>
+      ${slider('wpct', '% tego, za ile kupił on', {min: 0.5, max: 200, log: true, round: R.pct, fmt: fPct, off: '—',
+        live: v => { const e = document.getElementById('wpct-ex'); if (e) e.textContent = sig2(5 * v / 100); }, save: v => setAmount({pct: v})}, own.pct)}
+      <div class="chips" style="margin-top:6px">${chipsPct}</div>
+      <div class="mut tiny" style="margin-top:8px">Np. on kupi za 5 SOL → Ty za <b id="wpct-ex">${sig2(5 * (own.pct || 10) / 100)}</b> SOL.</div>
     </div>
     ${st && st.recent && st.recent.length ? `<h2>Jego ostatnie ruchy</h2><div class="card">${st.recent.map(r => `<div class="item" style="cursor:default">
       <div class="av" style="background:${r.side === 'buy' ? 'var(--gbg)' : 'var(--rbg)'}">${r.side === 'buy' ? '🟢' : '🔴'}</div>
@@ -459,7 +521,7 @@ function searchToken() {
   openToken(m);
 }
 
-let TOK = null;
+let TOK = null, BUYV = 0.05;
 async function openToken(mint) {
   loading('Token');
   try { TOK = await api('/api/sol/token/' + encodeURIComponent(mint)); renderToken(); }
@@ -484,7 +546,9 @@ function renderToken() {
       <div class="chips" style="margin-top:12px">${[25, 50, 100].map(p => `<button class="chip red" onclick="sellTok(${p})">🔴 Sprzedaj ${p === 100 ? 'wszystko' : p + '%'}</button>`).join('')}</div></div>` : ''}
     <h2>Kup za</h2>
     <div class="card"><div class="chips">${presets.map(p => `<button class="chip" onclick="buyTok(${p})">🟢 ${p} SOL</button>`).join('')}</div>
-      <div class="row" style="margin-top:10px"><input id="buyx" inputmode="decimal" placeholder="inna kwota, np. 0.3" class="sp"><button class="chip" onclick="buyTok(parseFloat(($('#buyx').value||'').replace(',','.')))">Kup</button></div>
+      ${slider('buy1', 'Inna kwota', {min: 0.001, max: Math.max(S.sol, 0.01), log: true, round: R.sol, fmt: fSol,
+        live: v => { BUYV = v; const b = document.getElementById('buybtn'); if (b) b.textContent = '🟢 Kup za ' + fSol(v); }, save: v => { BUYV = v; }}, BUYV)}
+      <button class="btn g" id="buybtn" style="margin-top:8px" onclick="buyTok(BUYV)">🟢 Kup za ${fSol(BUYV)}</button>
       <div class="mut tiny" style="margin-top:8px">${S.live ? '💰 Kupujesz prawdziwymi SOL' : '🧪 Ćwiczenia – wirtualne SOL'} · tolerancja ceny ${S.settings.sol_slippage_bps / 100}%</div></div>
     <button class="btn ghost" onclick="openLink('https://dexscreener.com/solana/${esc(t.mint)}')">📈 Wykres ceny</button>`);
 }
@@ -520,37 +584,51 @@ function tgl(field, on) { return `<label class="toggle"><input type="checkbox" $
 async function setS(field, value) { await act('settings', {field, value}, {quiet: true}); toast('Zapisano ✅', 1200); }
 function settings() {
   const st = S.settings, m = st.sol_buy_mode;
-  const modeChips = m === 'fixed' ? chips('sol_buy', [0.01, 0.05, 0.1, 0.25, 0.5, 1], v => v + ' SOL', st.sol_buy)
-    : m === 'pct' ? chips('sol_pct', [1, 5, 10, 25, 50, 100], v => v + '%', st.sol_pct)
-    : chips('sol_mult', [0.5, 1, 2], v => v + '×', st.sol_mult);
+  const modeSlider = m === 'fixed'
+    ? slider('buy', 'Kwota na każdy zakup', {min: 0.001, max: 10, log: true, round: R.sol, fmt: fSol, save: v => setS('sol_buy', v)}, st.sol_buy)
+      + chips('sol_buy', [0.01, 0.05, 0.1, 0.25, 0.5, 1], v => v + ' SOL', st.sol_buy)
+    : m === 'pct'
+    ? slider('pct', 'Ile % jego kwoty', {min: 0.5, max: 200, log: true, round: R.pct, fmt: fPct, save: v => setS('sol_pct', v)}, st.sol_pct)
+      + chips('sol_pct', [1, 5, 10, 25, 50, 100], v => v + '%', st.sol_pct)
+    : slider('mult', 'Mnożnik', {min: 0.1, max: 5, round: v => Math.round(v * 10) / 10, fmt: v => v + '×', save: v => setS('sol_mult', v)}, st.sol_mult)
+      + chips('sol_mult', [0.5, 1, 2], v => v + '×', st.sol_mult);
   const modeHelp = {fixed: 'Zawsze tyle samo SOL – najprościej, polecane na start.',
     pct: 'Np. 10%: on kupi za 5 SOL, Ty za 0,5 SOL. Grasz jak on, tylko mniejszymi pieniędzmi.',
     ratio: 'Wydajesz taką część swojego salda, jaką on wydał ze swojego (× mnożnik).'}[m];
+  const example = m === 'fixed' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${st.sol_buy} SOL</b>${inUsd(st.sol_buy) ? ' (' + inUsd(st.sol_buy) + ')' : ''}.`
+    : m === 'pct' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${sig2(5 * st.sol_pct / 100)} SOL</b>.` : '';
   return `
   <h2 style="margin-top:4px">Ile wydać, gdy trader kupi</h2>
   <div class="card">
     <div class="seg">${[['fixed', 'Stała kwota'], ['pct', '% jego kwoty'], ['ratio', '% portfela']].map(([k, l]) => `<button class="${m === k ? 'on' : ''}" onclick="setS('sol_buy_mode','${k}')">${l}</button>`).join('')}</div>
-    <div class="mut small" style="margin:10px 0">${modeHelp}</div>${modeChips}
-    <div class="mut tiny" style="margin-top:10px">Gdy trader sprzedaje, sprzedajesz tę samą część swoich tokenów. Każdemu traderowi możesz ustawić osobną kwotę na jego karcie.</div>
+    <div class="mut small" style="margin:10px 0 4px">${modeHelp}</div>
+    ${modeSlider}
+    ${example ? `<div class="note small" style="border:0;margin-top:6px">💡 ${example}</div>` : ''}
+    <div class="mut tiny" style="margin-top:6px">Gdy trader sprzedaje, sprzedajesz tę samą część swoich tokenów. Każdemu traderowi możesz ustawić osobną kwotę na jego karcie.</div>
   </div>
   <h2>🛡 Bezpieczniki</h2>
   <div class="card">
     <div class="row"><div class="sp"><div class="b">Pomijaj ryzykowne tokeny</div><div class="mut tiny">Bot nie skopiuje zakupu tokena z oceną 🔴 (np. twórca może zamrozić tokeny, mało pieniędzy w puli). Dodaje ok. 0,1–0,3 s.</div></div>${tgl('sol_safe', st.sol_safe)}</div>
-    <div class="b" style="margin-top:16px">Maks. na jeden zakup</div><div class="mut tiny" style="margin-bottom:8px">Nigdy nie wydasz więcej naraz.</div>
+    ${slider('max', 'Maks. na jeden zakup', {min: 0.001, max: 20, log: true, round: R.sol, fmt: fSol, off: 'bez limitu', save: v => setS('sol_max', v)}, st.sol_max)}
+    <div class="mut tiny" style="margin:2px 0 8px">Nigdy nie wydasz więcej naraz.</div>
     ${chips('sol_max', [0.1, 0.5, 1, 2, 0], v => v ? v + ' SOL' : 'bez limitu', st.sol_max)}
-    <div class="b" style="margin-top:16px">Dzienny limit straty</div><div class="mut tiny" style="margin-bottom:8px">Gdy dziś stracisz tyle na sprzedanych tokenach, bot przestaje kupować do jutra.</div>
-    ${chips('sol_day_limit', [0, 0.25, 0.5, 1, 2], v => v ? v + ' SOL' : 'wył.', st.sol_day_limit)}
+    ${slider('day', 'Dzienny limit straty', {min: 0.001, max: 10, log: true, round: R.sol, fmt: fSol, off: 'wył.', save: v => setS('sol_day_limit', v)}, st.sol_day_limit)}
+    <div class="mut tiny" style="margin:2px 0 8px">Gdy dziś stracisz tyle na sprzedanych tokenach, bot przestaje kupować do jutra.</div>
+    ${chips('sol_day_limit', [0, 0.1, 0.25, 0.5, 1], v => v ? v + ' SOL' : 'wył.', st.sol_day_limit)}
   </div>
   <h2>🎯 Automatyczna sprzedaż</h2>
   <div class="card">
     <div class="row"><div class="sp"><div class="b">💸 Zwrot wkładu przy ×2</div><div class="mut tiny">Gdy token podwoi wartość, bot sprzeda połowę – odzyskujesz włożone pieniądze, reszta gra dalej za darmo.</div></div>${tgl('sol_x2', st.sol_x2)}</div>
-    <div class="b" style="margin-top:16px">Sprzedaj wszystko przy zysku</div><div class="mut tiny" style="margin-bottom:8px">Take-profit, np. +100% = gdy token podwoi wartość.</div>
+    ${slider('tp', 'Sprzedaj wszystko przy zysku', {min: 5, max: 1000, log: true, round: R.tp, fmt: v => '+' + v + '%', off: 'wył.', save: v => setS('sol_tp', v)}, st.sol_tp)}
+    <div class="mut tiny" style="margin:2px 0 8px">Take-profit, np. +100% = gdy token podwoi wartość.</div>
     ${chips('sol_tp', [0, 50, 100, 200, 500], v => v ? '+' + v + '%' : 'wył.', st.sol_tp)}
-    <div class="b" style="margin-top:16px">Sprzedaj wszystko przy stracie</div><div class="mut tiny" style="margin-bottom:8px">Stop-loss, np. −30% = ucina stratę, zanim urośnie.</div>
+    ${slider('sl', 'Sprzedaj wszystko przy stracie', {min: 1, max: 95, round: R.int, fmt: v => '−' + v + '%', off: 'wył.', save: v => setS('sol_sl', v)}, st.sol_sl)}
+    <div class="mut tiny" style="margin:2px 0 8px">Stop-loss, np. −30% = ucina stratę, zanim urośnie.</div>
     ${chips('sol_sl', [0, 20, 30, 50], v => v ? '−' + v + '%' : 'wył.', st.sol_sl)}
   </div>
   <h2>Tolerancja ceny</h2>
-  <div class="card"><div class="mut tiny" style="margin-bottom:8px">O ile cena może się zmienić, zanim zakup dojdzie do skutku. Memecoiny skaczą – 10–30% to norma; za mało = zakupy często nie wejdą.</div>
+  <div class="card"><div class="mut tiny">O ile cena może się zmienić, zanim zakup dojdzie do skutku. Memecoiny skaczą – 10–30% to norma; za mało = zakupy często nie wejdą, za dużo = możesz przepłacić.</div>
+    ${slider('slip', 'Tolerancja', {min: 50, max: 5000, log: true, round: R.bps, fmt: v => v / 100 + '%', save: v => setS('sol_slippage_bps', v)}, st.sol_slippage_bps)}
     ${chips('sol_slippage_bps', [300, 500, 1000, 2000, 3000], v => v / 100 + '%', st.sol_slippage_bps)}</div>
   <h2>💰 Pieniądze</h2>
   <div class="card">
@@ -600,39 +678,114 @@ async function withdraw() {
 }
 
 // ---------- admin ----------
+let ADM_T = 'users', ADM_SORT = 'active', ADM_AT = 0;
+const ROLE = {owner: '👑 właściciel', admin: '⭐ admin', user: '👤 użytkownik'};
 function adminTab() {
   if (!ADMIN) return '<div class="loader"></div>';
-  const u = ADMIN.users;
-  const live = u.filter(x => x.live).length, on = u.filter(x => x.active).length;
+  const T = ADMIN.totals, W = ADMIN.watcher || {}, st = W.stats || {};
+  const seg = [['users', '👥 Osoby'], ['feed', '📡 Ruchy'], ['leaders', '🏆 Traderzy'], ['issues', '⚠️ Problemy']];
   return `
-  <div class="row" style="margin:4px 2px 12px"><div class="sp b" style="font-size:18px">🛠 Kto handluje</div><span class="pill">${u.length} os.</span></div>
-  <div class="grid" style="margin-bottom:10px"><div class="stat"><div class="mut tiny">Kopiuje teraz</div><div class="v">${on}</div></div>
-    <div class="stat"><div class="mut tiny">Na prawdziwych SOL</div><div class="v">${live}</div></div></div>
-  <div class="card">${u.map(x => `<div class="item" onclick="openUser(${x.id})">${avatar(x.name.replace('@', ''))}
-    <div class="sp"><div class="b">${esc(x.name)} ${x.role === 'owner' ? '👑' : x.role === 'admin' ? '⭐' : ''}</div>
-      <div class="mut tiny">${x.active ? '▶️ kopiuje' : '⏸ stoi'} · ${x.live ? '💰' : '🧪'} · traderzy: ${x.wallets.filter(w => w.copy).length} · ruchy 24h: ${x.trades24 ?? 0}</div></div>
-    <div style="text-align:right"><div class="b">${x.total != null ? num(x.total, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(x.result)}</div></div></div>`).join('') || '<div class="empty">Nikogo</div>'}</div>
-  <button class="btn ghost" onclick="loadAdmin()">🔄 Odśwież</button>`;
+  <div class="row" style="margin:4px 2px 12px"><div class="sp b" style="font-size:18px">🛠 Panel admina</div>
+    <button class="chip" onclick="loadAdmin(true)">🔄 ${hhmm(ADM_AT)}</button></div>
+  <div class="card">
+    <div class="row"><div class="sp"><div class="b"><span class="dot ${W.connected ? 'g' : 'r'}"></span>${W.connected ? 'Bot działa i nasłuchuje' : 'Brak połączenia z siecią Solana'}</div>
+      <div class="mut tiny">nasłuchuje ${W.watched ?? 0} portfeli · tryb ${esc(W.mode || '—')}${W.since ? ' · od ' + hhmm(W.since) : ''}</div></div>
+      ${ADMIN.paused ? '<span class="pill y">⏸ wstrzymane</span>' : '<span class="pill g">▶️ aktywne</span>'}</div>
+    <div class="grid" style="margin-top:10px">
+      <div class="stat"><div class="mut tiny">Wykryte wymiany traderów</div><div class="v">${st.swaps ?? 0}</div><div class="mut tiny">ostatnia: ${W.last_swap ? ago(W.last_swap) : '—'}</div></div>
+      <div class="stat"><div class="mut tiny">Odrzucony spam</div><div class="v">${(st.failed ?? 0).toLocaleString('pl-PL')}</div><div class="mut tiny">nieudane tx + ${(st.filtered ?? 0).toLocaleString('pl-PL')} innych</div></div></div>
+    ${W.error && !W.connected ? `<div class="warn">Ostatni błąd: ${esc(W.error)}</div>` : ''}
+    <button class="btn ${ADMIN.paused ? 'g' : 'r'}" style="margin-top:10px" onclick="adminPause(${!ADMIN.paused})">${ADMIN.paused ? '▶️ Wznów kopiowanie wszystkim' : '⏸ Wstrzymaj kopiowanie wszystkim'}</button>
+  </div>
+  <div class="kpi" style="margin-bottom:10px">
+    <div class="stat"><div class="mut tiny">Osoby</div><div class="v">${T.users}</div></div>
+    <div class="stat"><div class="mut tiny">Kopiuje teraz</div><div class="v g">${T.copying}</div></div>
+    <div class="stat"><div class="mut tiny">💰 Prawdziwe</div><div class="v ${T.live ? 'y' : ''}">${T.live}</div></div>
+    <div class="stat"><div class="mut tiny">Kopie 24 h</div><div class="v">${T.trades24}</div></div>
+    <div class="stat"><div class="mut tiny">Pominięte / błędy</div><div class="v ${T.errors24 ? 'r' : ''}">${T.skipped24} / ${T.errors24}</div></div>
+    <div class="stat"><div class="mut tiny">Śr. szybkość</div><div class="v">${T.latency_ms != null ? (T.latency_ms / 1000).toFixed(2) + ' s' : '—'}</div></div>
+  </div>
+  <div class="grid" style="margin-bottom:12px">
+    <div class="stat"><div class="mut tiny">Wartość 💰 prawdziwe</div><div class="v">${num(T.value_live, 3)} SOL</div><div class="mut tiny">${inUsd(T.value_live)}</div></div>
+    <div class="stat"><div class="mut tiny">Wynik dziś (wszyscy)</div><div class="v ${T.today_pnl > 0 ? 'g' : T.today_pnl < 0 ? 'r' : ''}">${solTxt(T.today_pnl, 3)}</div><div class="mut tiny">🧪 w ćwiczeniach: ${num(T.value_demo, 2)} SOL</div></div>
+  </div>
+  <div class="seg" style="margin-bottom:10px">${seg.map(([k, l]) => `<button class="${ADM_T === k ? 'on' : ''}" onclick="ADM_T='${k}';render()">${l}</button>`).join('')}</div>
+  ${({users: admUsers, feed: admFeed, leaders: admLeaders, issues: admIssues})[ADM_T]()}`;
 }
-async function loadAdmin() {
-  try { ADMIN = await api('/api/sol/admin/users'); } catch (e) { toast('⚠️ ' + e.message); }
-  if (TAB === 'admin') render();
+function admUsers() {
+  const sorts = {active: (a, b) => (b.active - a.active) || ((b.last_ts || 0) - (a.last_ts || 0)), value: (a, b) => (b.total || 0) - (a.total || 0),
+    result: (a, b) => (b.result ?? -1e9) - (a.result ?? -1e9), trades: (a, b) => (b.trades24 || 0) - (a.trades24 || 0)};
+  const list = ADMIN.users.slice().sort(sorts[ADM_SORT]);
+  const chip = (k, l) => `<button class="chip ${ADM_SORT === k ? 'on' : ''}" onclick="ADM_SORT='${k}';render()">${l}</button>`;
+  return `<div class="chips" style="margin-bottom:10px">${chip('active', 'Aktywni')}${chip('value', 'Wartość')}${chip('result', 'Wynik')}${chip('trades', 'Ruchy 24 h')}</div>` +
+    (list.map(x => `<div class="ucard" onclick="openUser(${x.id})">
+      <div class="row">${avatar(x.name.replace('@', ''))}<div class="sp"><div class="b">${esc(x.name)} <span class="tiny">${x.role === 'owner' ? '👑' : x.role === 'admin' ? '⭐' : ''}</span></div>
+        <div class="row" style="gap:4px;flex-wrap:wrap;margin-top:3px"><span class="pill ${x.active ? 'g' : ''}">${x.active ? '▶️ kopiuje' : '⏸ stoi'}</span>
+          ${x.live ? '<span class="pill y">💰</span>' : '<span class="pill a">🧪</span>'}<span class="pill">👥 ${x.wallets.filter(w => w.copy).length}</span></div></div>
+        <div style="text-align:right"><div class="b">${x.total != null ? num(x.total, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(x.result)}</div></div></div>
+      ${x.has_wallet ? `<div style="margin-top:8px">${chart(x.spark, 36, true)}</div>
+      <div class="row tiny mut" style="margin-top:6px;flex-wrap:wrap;gap:8px"><span>dziś <b class="${x.today_pnl > 0 ? 'g' : x.today_pnl < 0 ? 'r' : ''}">${solTxt(x.today_pnl || 0, 3)}</b></span>
+        <span>ruchy 24 h: <b>${x.trades24 ?? 0}</b></span><span>pozycje: <b>${x.positions}</b></span><span>ostatni ruch: <b>${x.last_ts ? ago(x.last_ts) : '—'}</b></span></div>`
+      : '<div class="mut tiny" style="margin-top:6px">jeszcze nie używa Solany</div>'}</div>`).join('') || '<div class="empty">Nikogo</div>');
+}
+function admFeed() {
+  const f = ADMIN.feed;
+  return `<div class="card">${f.length ? f.map(r => {
+    const ok = r.status === 'filled', buy = r.side === 'buy';
+    return `<div class="item" onclick="openUser(${r.uid})"><div class="av" style="background:${!ok ? 'var(--ybg)' : buy ? 'var(--gbg)' : 'var(--rbg)'}">${!ok ? '⚠️' : buy ? '🟢' : '🔴'}</div>
+      <div class="sp"><div class="b">${esc(r.user)} · ${ok ? (buy ? 'kupił' : 'sprzedał') : 'pominięto'} ${esc(r.symbol)}</div>
+        <div class="mut tiny">${hhmm(r.ts)}${r.leader ? ' · od ' + esc(r.leader) : ' · ręcznie'} · ${r.paper ? '🧪' : '💰'}${ok && r.latency_ms != null ? ' · ⚡' + (r.latency_ms / 1000).toFixed(2) + ' s' : ''}${!ok ? ' · ' + esc((r.info || '').slice(0, 70)) : ''}</div></div>
+      ${ok ? `<div style="text-align:right"><div class="b">${num(r.sol, 3)}</div><div class="mut tiny">SOL</div></div>` : ''}</div>`;
+  }).join('') : '<div class="empty">Jeszcze żadnych ruchów</div>'}</div>`;
+}
+function admLeaders() {
+  const l = ADMIN.leaders;
+  return `<div class="card">${l.length ? l.map((x, i) => `<div class="item" onclick="openLink('https://gmgn.ai/sol/address/${esc(x.wallet)}')">
+      <div class="av">${i + 1}</div><div class="sp"><div class="b">${esc(x.name)}</div>
+      <div class="mut tiny">kopiuje ${x.copiers} os. · obserwuje ${x.followers - x.copiers} · kopie 24 h: ${x.copies24}</div></div>
+      <div>${pct(x.result)}</div></div>`).join('') : '<div class="empty">Nikt nikogo nie kopiuje</div>'}</div>
+    <div class="mut tiny c">Kliknij, żeby zobaczyć tradera na GMGN.</div>`;
+}
+function admIssues() {
+  const r = ADMIN.skip_reasons, T = ADMIN.totals;
+  const hint = s => /za późno/.test(s) ? 'Kopia przyszła później niż limit – zwykle przy przeciążeniu RPC albo limicie Jupitera.'
+    : /limit zapytań/.test(s) ? 'Darmowy plan Jupitera: 10 zapytań / 10 s. Pomaga mniej kopiowanych traderów albo płatny klucz.'
+    : /za mało SOL/.test(s) ? 'Ktoś nie ma już wolnych SOL – wpłata albo mniejsza kwota zakupu.'
+    : /ryzykowny/.test(s) ? 'Zadziałał filtr 🛡 ryzykownych tokenów – tak ma być.'
+    : /brak trasy/.test(s) ? 'Jupiter nie znalazł trasy wymiany (np. świeży token z Pump.fun bez płynności).'
+    : /dzienny limit/.test(s) ? 'Zadziałał dzienny limit straty – tak ma być.' : '';
+  return `<div class="card"><div class="b">Ostatnie 24 h</div><div class="mut small" style="margin-top:4px">Skopiowano ${T.trades24} · pominięto ${T.skipped24} · błędy ${T.errors24}</div></div>
+    <div class="card">${r.length ? r.map(x => `<div class="note"><div class="row"><div class="sp">${esc(x.info || '—')}</div><span class="pill">×${x.n}</span></div>
+      ${hint(x.info || '') ? `<div class="mut tiny" style="margin-top:4px">💡 ${hint(x.info || '')}</div>` : ''}</div>`).join('') : '<div class="empty">Brak problemów 🎉</div>'}</div>`;
+}
+async function loadAdmin(manual) {
+  try { ADMIN = await api('/api/sol/admin/users'); ADM_AT = Date.now(); if (manual) toast('Odświeżono', 900); } catch (e) { toast('⚠️ ' + e.message); }
+  if (TAB === 'admin' && !SHEET) render();
+}
+async function adminPause(on) {
+  if (on && !await confirmBox('Wstrzymać kopiowanie WSZYSTKIM? Bot przestanie kupować i sprzedawać za kogokolwiek, dopóki nie wznowisz.')) return;
+  await act('admin_pause', {on}, {reload: false}); loadAdmin();
 }
 async function openUser(id) {
   loading('Podgląd');
   try {
     const d = await api('/api/sol/admin/user/' + id);
-    const own = ADMIN && ADMIN.owner;
+    const own = ADMIN && ADMIN.owner, ds = d.day_stats || {};
     sheet(hdr(esc(d.name)) + `
       <div class="card"><div class="row" style="flex-wrap:wrap;gap:6px">${d.live ? '<span class="pill y">💰 prawdziwe</span>' : '<span class="pill a">🧪 ćwiczenia</span>'}
-        <span class="pill ${d.active ? 'g' : ''}">${d.active ? '▶️ kopiuje' : '⏸ stoi'}</span><span class="pill">${{owner: '👑 właściciel', admin: '⭐ admin', user: '👤 użytkownik'}[d.role]}</span></div>
+        <span class="pill ${d.active ? 'g' : ''}">${d.active ? '▶️ kopiuje' : '⏸ stoi'}</span><span class="pill">${ROLE[d.role]}</span>${d.session ? '<span class="pill g">sesja trwa</span>' : ''}</div>
         <div class="big" style="margin-top:10px">${d.total != null ? num(d.total) + ' SOL' : '—'}</div>
-        <div class="small">${pct(d.result)} <span class="mut">· dziś ${solTxt(d.today_pnl || 0, 3)} · ruchy 24h: ${d.trades24 ?? 0}</span></div>
-        <div class="mut tiny" style="margin-top:6px">⚙️ ${esc(d.settings)}</div></div>
-      <h2>Kopiuje</h2><div class="card">${d.wallets.length ? d.wallets.map(w => `<div class="note">${w.copy ? '✅' : '👁'} ${esc(w.name)}</div>`).join('') : '<div class="empty">nikogo</div>'}</div>
-      <h2>Tokeny</h2><div class="card">${d.positions_list.length ? d.positions_list.map(p => `<div class="item" style="cursor:default">${avatar(p.symbol)}<div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
+        <div class="small">${pct(d.result)} <span class="mut">${inUsd(d.total)}</span></div>
+        <div style="margin:10px -4px 0">${chart(d.series, 100)}</div>
+        <div class="kpi" style="margin-top:10px">
+          <div class="stat"><div class="mut tiny">Dziś</div><div class="v small ${d.today_pnl > 0 ? 'g' : d.today_pnl < 0 ? 'r' : ''}">${solTxt(d.today_pnl || 0, 3)}</div></div>
+          <div class="stat"><div class="mut tiny">Kopie 24 h</div><div class="v small">${ds.filled || 0}</div></div>
+          <div class="stat"><div class="mut tiny">Pominięte</div><div class="v small ${(ds.skipped || 0) + (ds.error || 0) ? 'y' : ''}">${(ds.skipped || 0) + (ds.error || 0)}</div></div></div>
+        <div class="mut tiny" style="margin-top:8px">⚙️ ${esc(d.settings)}</div></div>
+      <h2>Traderzy (${d.wallets.length})</h2><div class="card">${d.wallets.length ? d.wallets.map(w => `<div class="note">${w.copy ? '🟢' : '👁'} ${esc(w.name)}</div>`).join('') : '<div class="empty">nikogo</div>'}</div>
+      <h2>Tokeny (${d.positions_list.length})</h2><div class="card">${d.positions_list.length ? d.positions_list.map(p => `<div class="item" onclick="openToken('${esc(p.mint)}')">${avatar(p.symbol)}<div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
         <div style="text-align:right"><div class="b">${p.value != null ? num(p.value, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(p.pnl)}</div></div></div>`).join('') : '<div class="empty">brak</div>'}</div>
-      <h2>Ostatnie ruchy</h2><div class="card">${d.history.length ? d.history.map(h => feedItem(Object.assign({mint: '', latency_ms: null}, h))).join('') : '<div class="empty">brak</div>'}</div>
+      <h2>Ostatnie ruchy</h2><div class="card">${d.history.length ? d.history.map(feedItem).join('') : '<div class="empty">brak</div>'}</div>
       ${d.active ? `<button class="btn r" onclick="adminStop(${d.id})">⏸ Zatrzymaj mu kopiowanie</button>` : ''}
       ${own && d.role !== 'owner' ? `<button class="btn ghost" style="margin-top:8px" onclick="adminRole(${d.id})">${d.role === 'admin' ? 'Zabierz rangę admina' : '⭐ Daj rangę admina'}</button>` : ''}`);
   } catch (e) { sheet(hdr('Podgląd') + `<div class="empty">${esc(e.message)}</div>`); }
@@ -645,7 +798,11 @@ async function adminRole(id) { await act('admin_role', {uid: id}, {reload: false
 
 // ---------- start ----------
 load();
-setInterval(() => { if (!SHEET && document.visibilityState === 'visible' && ['home', 'history'].includes(TAB)) load(); }, 15000);
+setInterval(() => {
+  if (SHEET || document.visibilityState !== 'visible') return;
+  if (['home', 'history'].includes(TAB)) load();
+  else if (TAB === 'admin') loadAdmin();
+}, 15000);
 </script>
 </body>
 </html>

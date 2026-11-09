@@ -39,6 +39,13 @@ def _trade(s, r) -> dict:
             "latency_ms": r["latency_ms"], "sig": r["sig"]}
 
 
+def last_leader_move(s, uid: int) -> int | None:
+    """Kiedy któryś z kopiowanych traderów ostatnio coś kupił/sprzedał (wg portfeli wzorcowych)."""
+    r = s.db._q("""SELECT MAX(t.ts) ts FROM sol_trades t JOIN follows f ON f.leader_id = -t.tg_id
+                   WHERE f.tg_id = ? AND t.tg_id < 0""", (uid,))
+    return r[0]["ts"] if r else None
+
+
 def settings_of(u) -> dict:
     return {k: (bool(u[k]) if t is bool else u[k]) for k, (t, *_r) in SETTINGS.items()} | {
         "summary": buy_txt(u), "presets": [float(x) for x in (u["sol_presets"] or "0.05,0.1,0.5,1").split(",") if x]}
@@ -199,6 +206,8 @@ async def state(s, u) -> dict:
         "wallets": wallets, "feed": [_trade(s, r) for r in se.history(uid, 30)],
         "series": [[t, v] for t, v in series], "last_latency_ms": last[0]["latency_ms"] if last else None,
         "settings": settings_of(u),
+        "watcher": {k: v for k, v in adm.watcher_status(s).items() if k in ("connected", "watched", "last_swap")},
+        "last_leader_move": last_leader_move(s, uid),
         "default_amount": mode_txt(u["sol_buy_mode"], u["sol_buy"], u["sol_pct"], u["sol_mult"]),
         "help": HELP, "glossary": GLOSSARY,
     }
@@ -428,6 +437,11 @@ async def action(s, u, body: dict) -> dict:
             raise ApiError(f"Za mało środków. Saldo: {bal / LAMPORTS:.4f} SOL")
         sig = await se.rpc.transfer_sol(kp, dest, lamports)
         return {"msg": f"✅ Wypłacono {lamports / LAMPORTS:.6f} SOL", "sig": sig}
+    if act == "admin_pause":
+        if uid not in admin_ids(s):
+            raise ApiError("Tylko dla administratora")
+        s.db.set_state("paused", "1" if body.get("on") else "0")
+        return {"msg": "⏸ Kopiowanie wstrzymane wszystkim" if body.get("on") else "▶️ Kopiowanie wznowione"}
     if act in ("admin_stop", "admin_role"):
         if uid not in admin_ids(s):
             raise ApiError("Tylko dla administratora")
@@ -511,7 +525,7 @@ def routes(s, app: web.Application, auth):
     async def h_admin_users(_, u):
         if u["tg_id"] not in admin_ids(s):
             raise ApiError("Tylko dla administratora")
-        return {"users": await adm.overview(s), "me": u["tg_id"], "owner": adm.role_of(s, u["tg_id"]) == "owner"}
+        return dict(await adm.dashboard(s), me=u["tg_id"], owner=adm.role_of(s, u["tg_id"]) == "owner")
 
     async def h_admin_user(req, u):
         if u["tg_id"] not in admin_ids(s):

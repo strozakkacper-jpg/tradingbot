@@ -206,7 +206,8 @@ class SolEngine:
         # (miejsca po przecinku znamy z samej transakcji tradera)
         info_task = asyncio.create_task(self.token_info(sw.mint, sw.decimals))
         followers = []
-        for u in self.db.active_followers(lead["id"]):
+        paused = self.db.get_state("paused") == "1"  # admin wstrzymał kopiowanie wszystkim
+        for u in ([] if paused else self.db.active_followers(lead["id"])):
             if self.has_wallet(u["tg_id"]):
                 fr = self.db.follow_row(u["tg_id"], lead["id"])
                 followers.append(dict(u, follow_sol_buy=fr["sol_buy"] if fr else None,

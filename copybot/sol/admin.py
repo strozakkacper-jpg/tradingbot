@@ -50,6 +50,9 @@ async def user_summary(s, u) -> dict:
         day = s.db._q("SELECT COUNT(*) n, MAX(ts) last FROM sol_trades WHERE tg_id = ? AND status = 'filled' "
                       "AND ts >= ?", (uid, now_ms() - DAY_MS))[0]
         out["trades24"], out["last_ts"] = day["n"], day["last"]
+        series = s.db.sol_equity_series(uid, not live, now_ms() - DAY_MS)
+        out["spark"] = [v for _, v in series][-40:] + ([out["total"]] if out["total"] is not None else [])
+        out["session"] = bool(u["session_start"] and not u["session_end"])
     return out
 
 
@@ -57,6 +60,68 @@ async def overview(s) -> list[dict]:
     users = s.db.approved_users()
     res = await asyncio.gather(*(user_summary(s, u) for u in users), return_exceptions=True)
     return [r for r in res if isinstance(r, dict)]
+
+
+def watcher_status(s) -> dict:
+    """Stan nasłuchu Solany – czy bot w ogóle widzi transakcje traderów."""
+    w = getattr(s.sol, "watcher", None)
+    watched = len(s.sol.watched_wallets())
+    if not w:
+        return {"connected": False, "mode": None, "watched": watched, "stats": {}, "last_swap": None, "error": None}
+    return {"connected": bool(w.connected), "mode": w.mode, "watched": watched, "stats": dict(w.stats),
+            "last_swap": int(w.last_swap * 1000) if w.last_swap else None, "since": int(w.since * 1000),
+            "error": w.last_error}
+
+
+def global_feed(s, limit: int = 60) -> list[dict]:
+    """Ostatnie ruchy wszystkich osób (bez wirtualnych portfeli wzorcowych)."""
+    users = {u["tg_id"]: display_name(u) for u in s.db.approved_users()}
+    rows = s.db._q("""SELECT t.*, k.symbol, l.name leader FROM sol_trades t LEFT JOIN sol_tokens k ON k.mint = t.mint
+                      LEFT JOIN leaders l ON l.id = t.leader_id WHERE t.tg_id > 0 ORDER BY t.id DESC LIMIT ?""", (limit,))
+    return [{"ts": r["ts"], "user": users.get(r["tg_id"], str(r["tg_id"])), "uid": r["tg_id"], "side": r["side"],
+             "mint": r["mint"], "symbol": r["symbol"] or short(r["mint"]), "sol": r["sol"], "status": r["status"],
+             "info": r["info"], "leader": r["leader"], "paper": bool(r["paper"]), "latency_ms": r["latency_ms"]}
+            for r in rows]
+
+
+def top_leaders(s, limit: int = 15) -> list[dict]:
+    """Najczęściej kopiowani traderzy i ile ruchów skopiowano w 24 h."""
+    rows = s.db._q("""SELECT l.id, l.name, l.wallet, SUM(f.copy) copiers, COUNT(*) followers FROM leaders l
+                      JOIN follows f ON f.leader_id = l.id WHERE l.source = 'sol' AND l.status = 'active'
+                      GROUP BY l.id ORDER BY copiers DESC, followers DESC LIMIT ?""", (limit,))
+    since = now_ms() - DAY_MS
+    out = []
+    for r in rows:
+        n = s.db._q("SELECT COUNT(*) n FROM sol_trades WHERE leader_id = ? AND tg_id > 0 AND status = 'filled' "
+                    "AND ts >= ?", (r["id"], since))[0]["n"]
+        rep = s.sol._report_cache.get(r["id"]) if hasattr(s.sol, "_report_cache") else None
+        out.append({"id": r["id"], "name": r["name"], "wallet": r["wallet"], "copiers": r["copiers"] or 0,
+                    "followers": r["followers"], "copies24": n,
+                    "result": rep[1]["total"] * 100 if rep else None})
+    return out
+
+
+async def dashboard(s) -> dict:
+    users = await overview(s)
+    feed = global_feed(s)
+    since = now_ms() - DAY_MS
+    day = s.db._q("""SELECT COUNT(*) n, SUM(CASE WHEN status = 'filled' THEN 1 ELSE 0 END) ok,
+                     SUM(CASE WHEN status = 'skipped' THEN 1 ELSE 0 END) skipped,
+                     SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) errors,
+                     AVG(CASE WHEN status = 'filled' AND leader_id IS NOT NULL THEN latency_ms END) lat
+                     FROM sol_trades WHERE tg_id > 0 AND ts >= ?""", (since,))[0]
+    totals = {"users": len(users), "copying": sum(1 for u in users if u["active"]),
+              "live": sum(1 for u in users if u["live"]),
+              "value_demo": sum(u["total"] or 0 for u in users if not u["live"]),
+              "value_live": sum(u["total"] or 0 for u in users if u["live"]),
+              "today_pnl": sum(u.get("today_pnl") or 0 for u in users),
+              "trades24": day["ok"] or 0, "skipped24": day["skipped"] or 0, "errors24": day["errors"] or 0,
+              "latency_ms": int(day["lat"]) if day["lat"] else None}
+    reasons = s.db._q("""SELECT info, COUNT(*) n FROM sol_trades WHERE tg_id > 0 AND status != 'filled' AND ts >= ?
+                         GROUP BY substr(info, 1, 30) ORDER BY n DESC LIMIT 5""", (since,))
+    return {"users": users, "totals": totals, "feed": feed, "leaders": top_leaders(s),
+            "watcher": watcher_status(s), "paused": s.db.get_state("paused") == "1",
+            "skip_reasons": [{"info": (r["info"] or "")[:90], "n": r["n"]} for r in reasons]}
 
 
 async def user_detail(s, uid: int) -> dict | None:
@@ -75,8 +140,15 @@ async def user_detail(s, uid: int) -> dict | None:
                                     "value": p["value"], "pnl": p["pnl"]} for p in pf["positions"][:15]]
         except Exception:  # noqa: BLE001
             pass
-    d["history"] = [{"ts": r["ts"], "side": r["side"], "symbol": r["symbol"] or short(r["mint"]), "sol": r["sol"],
-                     "status": r["status"], "info": r["info"]} for r in s.sol.history(uid, 15)]
+    d["history"] = [{"ts": r["ts"], "side": r["side"], "mint": r["mint"], "symbol": r["symbol"] or short(r["mint"]),
+                     "sol": r["sol"], "status": r["status"], "info": r["info"], "latency_ms": r["latency_ms"]}
+                    for r in s.sol.history(uid, 25)]
+    d["series"] = [[t, v] for t, v in s.db.sol_equity_series(uid, not d["live"], now_ms() - 7 * DAY_MS)]
+    if d["total"] is not None:
+        d["series"].append([now_ms(), d["total"]])
+    stats = s.db._q("""SELECT status, COUNT(*) n FROM sol_trades WHERE tg_id = ? AND ts >= ? GROUP BY status""",
+                    (uid, now_ms() - DAY_MS))
+    d["day_stats"] = {r["status"]: r["n"] for r in stats}
     return d
 
 
@@ -88,8 +160,16 @@ def _pct(x):
 
 
 async def users_view(s) -> tuple[str, KB]:
-    rows = await overview(s)
-    lines = ["👥 <b>Kto handluje</b> – podgląd wszystkich", ""]
+    d = await dashboard(s)
+    rows, T, W = d["users"], d["totals"], d["watcher"]
+    st = W.get("stats") or {}
+    lines = ["👥 <b>Kto handluje</b> – podgląd wszystkich", "",
+             f"{'🟢 Bot nasłuchuje' if W['connected'] else '🔴 Brak połączenia z Solaną'} {W['watched']} portfeli · "
+             f"wykryte wymiany: {st.get('swaps', 0)} · odrzucony spam: {st.get('failed', 0)}",
+             f"Kopiuje teraz: <b>{T['copying']}</b>/{T['users']} · 💰 prawdziwe: {T['live']} · kopie 24 h: {T['trades24']} · "
+             f"pominięte: {T['skipped24']} · błędy: {T['errors24']}",
+             f"Wynik dziś (wszyscy): <b>{T['today_pnl']:+.3f} SOL</b>"
+             + (" · ⏸ <b>kopiowanie wstrzymane</b>" if d["paused"] else ""), ""]
     kb = []
     for d in rows:
         state = "▶️ kopiuje" if d["active"] else "⏸ stoi"

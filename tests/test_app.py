@@ -262,3 +262,26 @@ def test_bot_import_file_and_toggle(tmp_path):
     asyncio.run(AX.on_saved_button(upd(OWNER, data=f"sv:s:{W2}"), ctx))
     from copybot.sol.api import saved_list
     assert [i["wallet"] for i in saved_list(s, OWNER) if i["priority"]] == [WALLET, W2]
+
+
+def test_admin_pause_stops_solana_copies(tmp_path):
+    s, _, _ = ready(tmp_path)
+    lid = s.db.create_leader("K", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, active=1)
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "admin_pause", "on": True})
+        assert st == 200
+        res = await s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic())
+        assert not res.get("filled") and TOKEN not in s.sol.paper(OWNER)
+        st, j = await call(OWNER, "/api/sol/action", {"action": "admin_pause", "on": False})
+        await s.sol.on_swap(WALLET, swap("buy", 0.1, "s2"), time.monotonic())
+        assert TOKEN in s.sol.paper(OWNER)
+        st, j = await call(OWNER, "/api/sol/admin/users")
+        assert j["totals"]["trades24"] == 1 and j["feed"][0]["symbol"] == "MEME" and j["leaders"][0]["copiers"] == 1
+        assert "watcher" in j and j["totals"]["copying"] == 1
+        st, j = await call(OWNER, "/api/sol/state")
+        assert "watcher" in j and j["last_leader_move"]
+    run(s, steps)

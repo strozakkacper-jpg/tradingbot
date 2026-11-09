@@ -61,7 +61,9 @@ class SolWatcher:
         self.connected = False
         self.enhanced_failed = not enhanced_url
         self.last_error: str | None = None
-        self.stats = {"events": 0, "swaps": 0, "filtered": 0}
+        self.stats = {"events": 0, "swaps": 0, "filtered": 0, "failed": 0}
+        self.last_swap: float | None = None  # time.time() ostatniej wykrytej wymiany
+        self.since = time.time()
         self._fetch_sem = asyncio.Semaphore(10)  # nie zalewamy RPC przy portfelach z setkami transakcji
 
     async def run(self):
@@ -168,6 +170,8 @@ class SolWatcher:
                     p = data["params"]
                     value = p["result"]["value"]
                     w = subs.get(p["subscription"])
+                    if w and value.get("err") is not None:
+                        self.stats["failed"] += 1  # nieudane transakcje (spam botów) – nie kopiujemy
                     if w and value.get("err") is None:
                         if looks_like_swap(value.get("logs")):
                             asyncio.create_task(self._handle_sig(w, value["signature"], t_recv))
@@ -209,6 +213,7 @@ class SolWatcher:
         if not swap:
             return
         self.stats["swaps"] += 1
+        self.last_swap = time.time()
         log.info("Solana %s: %s %s (%.4g %s, %.1f%%) – wykryto w %.0f ms od sygnału", wallet[:6], swap.side,
                  swap.mint[:6], swap.quote_amount, swap.quote_symbol, swap.fraction * 100,
                  (time.monotonic() - t_recv) * 1000)
