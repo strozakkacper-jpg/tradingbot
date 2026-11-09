@@ -361,7 +361,7 @@ async function loadSaved() {
     const h = $('#savedh'); if (h) h.textContent = 'Traderzy (' + SAVED.items.length + ')';
   }
   clearTimeout(SCAN_T);
-  if (SAVED.scan && SAVED.scan.running) SCAN_T = setTimeout(() => { if (TAB === 'traders' && !SHEET) loadSaved(); }, 8000);
+  if ((SAVED.scan && SAVED.scan.running) || (SAVED.research && SAVED.research.running)) SCAN_T = setTimeout(() => { if (TAB === 'traders' && !SHEET) loadSaved(); }, 8000);
 }
 function agoTxt(it) {
   if (!it.checked_at) return '';
@@ -375,20 +375,28 @@ function savedFiltered() {
   const q = SAVED_Q.toLowerCase();
   return SAVED.items.filter(it => (!q || (it.name || '').toLowerCase().includes(q) || it.wallet.toLowerCase().includes(q))
     && (SAVED_F === 'all' || (SAVED_F === 'on' && it.status === 'copy') || (SAVED_F === 'star' && it.priority)
-        || (SAVED_F === 'active' && it.last_active && SAVED.now - it.last_active < DAY)));
+        || (SAVED_F === 'active' && it.last_active && SAVED.now - it.last_active < DAY)
+        || (SAVED_F === 'best' && it.label === '🏆 dobry')));
 }
 function savedHtml() {
   if (!SAVED) return '<div class="card"><div class="loader"></div></div>';
   if (!SAVED.items.length) return '<div class="card"><div class="empty">Nikogo jeszcze nie ma – dodaj portfel albo zaimportuj listę z Axiom.</div></div>';
-  const sc = SAVED.scan;
+  const sc = SAVED.scan, rs = SAVED.research;
   const chip = (k, l) => `<button class="chip ${SAVED_F === k ? 'on' : ''}" onclick="SAVED_F='${k}';SAVED_N=40;$('#saved').innerHTML=savedHtml()">${l}</button>`;
+  // chip „🏆 Najlepsi” – tylko gdy są wyniki badania
   return `<div class="card">
     <div class="row"><div class="sp"><div class="b">Kopiujesz ${SAVED.copied}/${SAVED.max_copied}</div>
       <div class="mut tiny">🟢 włączony = bot powtarza jego zakupy i sprzedaże · ⭐ = priorytet, zawsze na górze</div></div></div>
     <input style="margin-top:10px" placeholder="🔍 Szukaj po nazwie albo adresie" value="${esc(SAVED_Q)}" oninput="SAVED_Q=this.value;SAVED_N=40;$('#savedl').innerHTML=savedRows()">
-    <div class="chips" style="margin-top:10px">${chip('all', 'Wszyscy')}${chip('on', '🟢 Włączeni')}${chip('star', '⭐ Priorytet')}${chip('active', '🔥 Aktywni 24 h')}</div>
-    <button class="btn ghost" style="margin-top:10px" ${sc && sc.running ? 'disabled' : ''} onclick="scanActivity()">${sc && sc.running
-      ? `🔍 Sprawdzam aktywność… ${sc.done}/${sc.total}` : '🔍 Sprawdź, kto naprawdę handluje'}</button>
+    <div class="chips" style="margin-top:10px">${chip('all', 'Wszyscy')}${chip('on', '🟢 Włączeni')}${chip('star', '⭐ Priorytet')}${chip('active', '🔥 Aktywni 24 h')}${chip('best', '🏆 Najlepsi')}</div>
+    <button class="btn" style="margin-top:10px" ${rs && rs.running ? 'disabled' : ''} onclick="research()">${rs && rs.running
+      ? `🏆 Badam traderów… ${rs.done}/${rs.total}` : '🏆 Znajdź najlepszych (zbadaj zysk i skuteczność)'}</button>
+    <div class="row" style="gap:8px;margin-top:8px">
+      <button class="btn ghost" onclick="enableBest()">🟢 Włącz 5 najlepszych</button>
+      <button class="btn ghost" onclick="removeInactive()">🧹 Usuń nieaktywnych</button></div>
+    <button class="btn ghost" style="margin-top:8px" ${sc && sc.running ? 'disabled' : ''} onclick="scanActivity()">${sc && sc.running
+      ? `🔍 Sprawdzam aktywność… ${sc.done}/${sc.total}` : '🔍 Tylko sprawdź, kto jest aktywny (szybciej)'}</button>
+    <div class="mut tiny" style="margin-top:8px">🏆 dobry = zarabia i trafia ≥50% · ⚡ flipper = trzyma sekundy (kopia nie zdąży) · 📉 traci · 😴 nie handluje</div>
   </div>
   <div class="card" id="savedl">${savedRows()}</div>`;
 }
@@ -400,12 +408,30 @@ function savedRows() {
     return `<div class="item" style="cursor:default">
       <div class="av" onclick="${open}">${esc(it.emoji || (it.name || '?').slice(0, 2).toUpperCase())}</div>
       <div class="sp" onclick="${open}" style="cursor:pointer"><div class="b">${esc(it.name || short(it.wallet))}</div>
-        <div class="mut tiny">${short(it.wallet)}${it.status === 'watch' ? ' · 👁 obserwujesz' : ''}${agoTxt(it) ? ' · ' + agoTxt(it) : ''}${holdTxt(it.hold) ? ' · ' + holdTxt(it.hold) : ''}</div></div>
+        <div class="mut tiny">${short(it.wallet)}${it.status === 'watch' ? ' · 👁 obserwujesz' : ''}${agoTxt(it) ? ' · ' + agoTxt(it) : ''}${holdTxt(it.hold) ? ' · ' + holdTxt(it.hold) : ''}</div>
+        ${statsTxt(it)}</div>
       <button class="chip" style="padding:6px 10px;${it.priority ? 'color:var(--y);border-color:var(--y)' : ''}" onclick="setPrio('${w}', ${!it.priority})">${it.priority ? '⭐' : '☆'}</button>
       <label class="toggle"><input type="checkbox" ${on ? 'checked' : ''} onchange="setSwitch('${w}', this.checked, this)"><span></span></label></div>`;
   }).join('');
   return (rows || '<div class="empty">Nic nie pasuje</div>') + (list.length > SAVED_N
     ? `<button class="btn ghost" style="margin-top:8px" onclick="SAVED_N+=60;$('#savedl').innerHTML=savedRows()">Pokaż więcej (${list.length - SAVED_N})</button>` : '');
+}
+function statsTxt(it) {
+  const st = it.stats;
+  if (!st) return '';
+  if (!st.swaps) return `<div class="tiny" style="margin-top:2px">${esc(it.label || '')}</div>`;
+  const cls = it.label === '🏆 dobry' ? 'g' : it.label === '⚡ flipper' || it.label === '📉 traci' ? 'r' : 'y';
+  return `<div class="tiny" style="margin-top:2px"><span class="${cls} b">${esc(it.label)}</span>
+    <span class="mut">· 3 dni: ${st.closed ? `<b class="${st.pnl >= 0 ? 'g' : 'r'}">${st.pnl >= 0 ? '+' : ''}${st.pnl.toFixed(2)} SOL</b> · trafia ${Math.round((st.win_rate || 0) * 100)}% (${st.closed})` : st.swaps + ' wymian'}${st.hold_s != null ? ' · trzyma ~' + fSec(st.hold_s) : ''} · ${st.per_day.toFixed(0)}/dzień</span></div>`;
+}
+async function research() { await act('research', {}, {reload: false}); setTimeout(loadSaved, 1500); }
+async function enableBest() {
+  if (!await confirmBox('Włączyć kopiowanie 5 traderów z najlepszą oceną 🏆?')) return;
+  await act('enable_best', {n: 5}, {reload: false}); await loadSaved(); load();
+}
+async function removeInactive() {
+  if (!await confirmBox('Usunąć z listy traderów, którzy od 7 dni nic nie kupili? Włączonych, obserwowanych i ⭐ nie ruszam.')) return;
+  await act('remove_inactive', {days: 7}, {reload: false}); await loadSaved();
 }
 async function setSwitch(wallet, on, el) {
   try { await act('switch', {wallet, on}, {reload: false}); } catch (e) { if (el) el.checked = !on; return; }

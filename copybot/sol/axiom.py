@@ -665,6 +665,11 @@ def saved_view(s, u, page: int = 0, notice: str | None = None) -> tuple[str, KB]
         on = it["status"] == "copy"
         label = f"{'⭐' if it['priority'] else ''}{it['emoji'] or ''} {it['name'] or short(it['wallet'])}".strip()[:26]
         act = f" · {_ago(it['last_active'])}" if it["checked_at"] else ""
+        st = it.get("stats")
+        if st and st.get("closed"):
+            act += f" · {it['label']} {st['pnl']:+.2f} SOL, trafia {(st['win_rate'] or 0) * 100:.0f}%"
+        elif it.get("label"):
+            act += f" · {it['label']}"
         lines.append(f"{'🟢' if on else '👁' if it['status'] == 'watch' else '⚪'} {html.escape(label)} · "
                      f"<code>{short(it['wallet'])}</code>{act}")
         kb.append([B(label, url=f"https://gmgn.ai/sol/address/{it['wallet']}"),
@@ -680,7 +685,8 @@ def saved_view(s, u, page: int = 0, notice: str | None = None) -> tuple[str, KB]
     if nav:
         kb.append(nav)
     if items:
-        kb.append([B("🔍 Sprawdź, kto jest aktywny", callback_data="sv:a:0")])
+        kb.append([B("🏆 Znajdź najlepszych", callback_data="sv:r:0"), B("🟢 Włącz 5 najlepszych", callback_data="sv:b:0")])
+        kb.append([B("🧹 Usuń nieaktywnych", callback_data="sv:x:0"), B("🔍 Kto aktywny", callback_data="sv:a:0")])
     kb.append(MAIN)
     return "\n".join(lines), KB(kb)
 
@@ -694,9 +700,12 @@ async def on_saved_button(update: Update, ctx):
         await _ack(update)
         return await show(update, *saved_view(s, u, int(arg)))
     from . import api
-    if act == "a":
-        r = await api.action(s, u, {"action": "scan_activity"})
+    if act in ("a", "r", "b", "x"):
+        name = {"a": "scan_activity", "r": "research", "b": "enable_best", "x": "remove_inactive"}[act]
+        r = await api.action(s, u, {"action": name})
         await _ack(update, r["msg"][:190], True)
+        if act in ("b", "x"):
+            return await show(update, *saved_view(s, s.db.get_user(u["tg_id"]), 0))
         return
     items = api.saved_list(s, u["tg_id"])
     it = next((x for x in items if x["wallet"] == arg), None)
@@ -897,7 +906,7 @@ def register(app: Application):
     app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(buyx_start, pattern=r"^tbx:")],
                                         states={BUY_X: [MessageHandler(text, buyx_amount)]},
                                         fallbacks=cancel, allow_reentry=True, conversation_timeout=120))
-    app.add_handler(CallbackQueryHandler(on_saved_button, pattern=r"^sv:(p:\d+|a:0|[ts]:\w+)$"))
+    app.add_handler(CallbackQueryHandler(on_saved_button, pattern=r"^sv:(p:\d+|[arbx]:0|[ts]:\w+)$"))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^(home|ax:.*|aw:\d+|a[ap]:\d+:.*|aq:.*|tk:.*|tb:.*|ts:.*)$"))
 
 

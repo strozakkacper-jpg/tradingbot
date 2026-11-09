@@ -483,3 +483,30 @@ def test_demo_start_real_costs_and_auto_settings(tmp_path):
     assert s.sol.paper(OWNER)[SOL_MINT] > after_buy + 47_000_000  # depozyt wrócił
     r = recommended(0.6)
     assert r["sol_buy"] == 0.047 and r["sol_day_limit"] == 0.088 and r["sol_priority"] == 50_000
+
+
+def test_research_scoring_and_list_tools(tmp_path):
+    from copybot.sol import api
+    from copybot.sol.parser import Swap
+    from copybot.sol.research import label, summarize
+    now = time.time()
+
+    def sw(side, mint, sol, raw, frac=1.0):
+        return Swap("x", WALLET, side, mint, raw, 6, "SOL", sol, frac, 0)
+    good = summarize(WALLET, [(now - 900, sw("buy", "A", 1, 100)), (now - 600, sw("sell", "A", 1.5, 100)),
+                              (now - 500, sw("buy", "B", 1, 100)), (now - 200, sw("sell", "B", 1.2, 100)),
+                              (now - 150, sw("buy", "C", 1, 100)), (now - 100, sw("sell", "C", 0.9, 100))], 3)
+    assert good["closed"] == 3 and abs(good["pnl"] - 0.6) < 1e-9 and label(good) == "🏆 dobry"
+    flip = summarize(W2, [(now - 10, sw("buy", "A", 1, 100)), (now - 5, sw("sell", "A", 1.1, 100))], 3)
+    assert label(flip) == "⚡ flipper" and flip["score"] < good["score"]
+    s, _, _ = ready(tmp_path)
+    s.db.save_wallets(OWNER, [(WALLET, "Dobry", None), (W2, "Flip", None),
+                              ("Wa11et3333333333333333333333333333333333333", "Śpioch", None)], "t")
+    s.db.set_research(WALLET, good)
+    s.db.set_research(W2, flip)
+    s.db.set_research("Wa11et3333333333333333333333333333333333333", summarize("x", [], 3))
+    items = api.saved_list(s, OWNER)
+    assert items[0]["name"] == "Dobry" and items[0]["label"] == "🏆 dobry"
+    assert api.enable_best(s, OWNER) == ["Dobry"] and s.sol.watched_wallets() == {WALLET}
+    assert api.remove_inactive(s, OWNER) == 1  # śpioch usunięty, flipper (aktywny) zostaje
+    assert [i["name"] for i in api.saved_list(s, OWNER)] == ["Dobry", "Flip"]

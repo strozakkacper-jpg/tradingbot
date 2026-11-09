@@ -4,6 +4,7 @@ Każde zapytanie jest podpisane przez Telegrama (nagłówek X-Init-Data) – spr
 Odpowiedzi to czyste dane (JSON); wygląd robi copybot/webapp/sol.html.
 """
 import asyncio
+import json
 import logging
 
 from aiohttp import web
@@ -87,7 +88,11 @@ def saved_list(s, uid: int) -> list[dict]:
     for i, r in enumerate(s.db.saved_wallets(uid)):
         f = follows.get(r["wallet"])
         seen.add(r["wallet"])
+        stats = json.loads(r["stats"]) if r["stats"] else None
         out.append({"wallet": r["wallet"], "name": r["name"] or (f["name"] if f else None), "emoji": r["emoji"],
+                    "stats": stats and {k: stats.get(k) for k in ("swaps", "closed", "pnl", "win_rate", "hold_s",
+                                                                  "per_day", "avg_buy")},
+                    "score": r["score"], "label": research_label(stats) if stats else None,
                     "status": (("copy" if f["copy"] else "watch") if f else None), "lid": f["id"] if f else None,
                     "priority": bool(r["priority"] or (f and f["priority"])), "last_active": r["last_active"],
                     "checked_at": r["checked_at"], "order": i,
@@ -97,8 +102,69 @@ def saved_list(s, uid: int) -> list[dict]:
             out.append({"wallet": w, "name": f["name"], "emoji": None, "status": "copy" if f["copy"] else "watch",
                         "lid": f["id"], "priority": bool(f["priority"]), "last_active": None, "checked_at": None,
                         "order": -1, "hold": s.sol.hold_stats(f["id"])})
-    out.sort(key=lambda x: (not x["priority"], x["status"] != "copy", -(x["last_active"] or 0), x["order"]))
+    for x in out:
+        x.setdefault("stats", None)
+        x.setdefault("score", None)
+        x.setdefault("label", None)
+    out.sort(key=lambda x: (not x["priority"], x["status"] != "copy", -(x["score"] if x["score"] is not None else -1e9),
+                            -(x["last_active"] or 0), x["order"]))
     return out
+
+
+def research_label(stats: dict) -> str:
+    from .research import label
+    return label(stats)
+
+
+_RESEARCH: dict[int, dict] = {}
+
+
+def start_research(s, uid: int) -> bool:
+    st = _RESEARCH.get(uid)
+    if (st and st["running"]) or not hasattr(s.sol.rpc, "call"):
+        return False
+    wallets = [it["wallet"] for it in saved_list(s, uid)]
+    _RESEARCH[uid] = {"total": len(wallets), "done": 0, "running": True}
+
+    async def run():
+        from .research import analyze_wallet
+        try:
+            for w in wallets:
+                try:
+                    s.db.set_research(w, await asyncio.wait_for(analyze_wallet(s.sol.rpc, w), 90))
+                except Exception:  # noqa: BLE001
+                    log.debug("Badanie %s", w, exc_info=True)
+                _RESEARCH[uid]["done"] += 1
+                await asyncio.sleep(0.5)  # nie zabieramy limitu RPC kopiowaniu
+        finally:
+            _RESEARCH[uid]["running"] = False
+    asyncio.create_task(run())
+    return True
+
+
+def remove_inactive(s, uid: int, days: float = 7) -> int:
+    """Usuwa z listy sprawdzonych traderów, którzy od X dni nic nie kupili – tylko niewłączonych."""
+    cutoff = now_ms() - int(days * DAY_MS)
+    n = 0
+    for it in saved_list(s, uid):
+        if it["status"] or it["priority"] or not it["checked_at"]:
+            continue  # kopiowanych, obserwowanych, ⭐ i niesprawdzonych nie ruszamy
+        if not it["last_active"] or it["last_active"] < cutoff:
+            s.db.unsave_wallet(uid, it["wallet"])
+            n += 1
+    return n
+
+
+def enable_best(s, uid: int, n: int = 5) -> list[str]:
+    """Włącza N najlepszych wg badania (🏆, bez flipperów), w ramach limitu kopiowanych."""
+    best = [it for it in saved_list(s, uid) if it["status"] != "copy" and it["label"] == "🏆 dobry"]
+    best.sort(key=lambda it: -(it["score"] or 0))
+    room = max(MAX_COPIED - copied_count(s, uid), 0)
+    on = []
+    for it in best[:min(n, room)]:
+        switch(s, uid, it["wallet"], True)
+        on.append(it["name"] or short(it["wallet"]))
+    return on
 
 
 def ensure_saved(s, uid: int, wallet: str):
@@ -390,6 +456,21 @@ async def action(s, u, body: dict) -> dict:
         ensure_saved(s, uid, wallet)
         s.db.set_priority(uid, wallet, on)
         return {"msg": "⭐ Priorytet – na samej górze listy" if on else "Bez priorytetu"}
+    if act == "research":
+        if not start_research(s, uid):
+            st = _RESEARCH.get(uid)
+            return {"msg": f"Już badam: {st['done']}/{st['total']}" if st else "Badanie niedostępne"}
+        n = _RESEARCH[uid]["total"]
+        return {"msg": f"🏆 Badam {n} traderów (zysk, skuteczność, czas trzymania) – ok. {max(n // 20, 1)}–{max(n // 8, 2)} "
+                       "min, lista sama się odświeży"}
+    if act == "remove_inactive":
+        n = remove_inactive(s, uid, float(body.get("days") or 7))
+        return {"msg": f"🧹 Usunięto {n} nieaktywnych z listy" if n else
+                "Nie ma kogo usunąć – najpierw sprawdź aktywność albo zbadaj traderów"}
+    if act == "enable_best":
+        on = enable_best(s, uid, int(body.get("n") or 5))
+        return {"msg": ("🟢 Włączono: " + ", ".join(on)) if on else
+                "Brak traderów z oceną 🏆 – najpierw kliknij „Znajdź najlepszych”"}
     if act == "scan_activity":
         st = _SCANS.get(uid)
         if st and st["running"]:
@@ -577,7 +658,8 @@ def routes(s, app: web.Application, auth):
 
     async def h_saved(_, u):
         return {"items": saved_list(s, u["tg_id"]), "max_copied": MAX_COPIED,
-                "copied": copied_count(s, u["tg_id"]), "scan": _SCANS.get(u["tg_id"]), "now": now_ms()}
+                "copied": copied_count(s, u["tg_id"]), "scan": _SCANS.get(u["tg_id"]), "now": now_ms(),
+                "research": _RESEARCH.get(u["tg_id"])}
 
     async def h_admin_users(_, u):
         if u["tg_id"] not in admin_ids(s):

@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import threading
 import time
@@ -133,7 +134,8 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
                "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
-WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}  # bot = utworzony przez bota, import = np. z Axiom
+WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}
+SAVED_MIGRATIONS = {"stats": "TEXT", "score": "REAL", "analyzed_at": "INTEGER"}  # wyniki badania tradera  # bot = utworzony przez bota, import = np. z Axiom
 # osobne ustawienie dla konkretnego kopiowanego portfela: stała kwota (SOL) albo % kwoty tradera
 FOLLOW_MIGRATIONS = {"sol_buy": "REAL", "sol_pct": "REAL", "priority": "INTEGER NOT NULL DEFAULT 0"}
 LEADER_FIELDS = {"name", "bio", "owner_tg_id", "source", "api_key", "api_secret", "api_password", "status",
@@ -161,6 +163,10 @@ class DB:
             for name, ddl in FOLLOW_MIGRATIONS.items():
                 if name not in fcols:
                     self.conn.execute(f"ALTER TABLE follows ADD COLUMN {name} {ddl}")
+            scols = {r["name"] for r in self.conn.execute("PRAGMA table_info(sol_saved)")}
+            for name, ddl in SAVED_MIGRATIONS.items():
+                if name not in scols:
+                    self.conn.execute(f"ALTER TABLE sol_saved ADD COLUMN {name} {ddl}")
             wcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(sol_wallets)")}
             for name, ddl in WALLET_MIGRATIONS.items():
                 if name not in wcols:
@@ -368,6 +374,13 @@ class DB:
     def set_activity(self, wallet: str, last_active: int | None):
         """Aktywność to cecha portfela – zapisujemy u wszystkich, którzy go mają na liście."""
         self._q("UPDATE sol_saved SET last_active = ?, checked_at = ? WHERE wallet = ?", (last_active, now_ms(), wallet))
+
+    def set_research(self, wallet: str, stats: dict):
+        """Wynik badania tradera – zapisujemy u wszystkich, którzy mają go na liście."""
+        last = int(stats["last"] * 1000) if stats.get("last") else None
+        self._q("""UPDATE sol_saved SET stats = ?, score = ?, analyzed_at = ?, checked_at = ?,
+                   last_active = COALESCE(?, last_active) WHERE wallet = ?""",
+                (json.dumps(stats), stats["score"], now_ms(), now_ms(), last, wallet))
 
     def set_priority(self, tg_id: int, wallet: str, on: bool):
         """⭐ priorytet – na liście saved i przy śledzonym traderze (jeśli jest)."""
