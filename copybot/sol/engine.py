@@ -474,6 +474,13 @@ class SolEngine:
                              AND paper = ? ORDER BY id""", (tg_id, int(paper)))
         return sum(c["pnl"] for c in closed_trades(rows) if c["ts"] >= since)
 
+    def open_positions(self, tg_id: int, paper: bool) -> int:
+        """Ile tokenów kupionych przez bota (kopie i ręczne) wciąż trzymasz – spam z portfela się nie liczy."""
+        r = self.db._q("""SELECT COUNT(*) n FROM (SELECT mint, SUM(CASE WHEN side = 'buy' THEN tokens ELSE -tokens END) t
+                          FROM sol_trades WHERE tg_id = ? AND paper = ? AND status = 'filled' GROUP BY mint)
+                          WHERE t > 1e-9""", (tg_id, int(paper)))
+        return r[0]["n"] if r else 0
+
     def note_buy(self, lid: int, mint: str):
         now = time.time()
         self._recent_buys.setdefault(mint, {})[lid] = now
@@ -545,17 +552,29 @@ class SolEngine:
             if pnl <= -limit:
                 raise Skip(f"🛑 dzienny limit straty – dziś już −{-pnl:.3f} SOL (limit {limit:g} SOL), "
                            "bot wraca do kupowania jutro")
+        paper = not self.is_live(u)
+        max_pos = u["sol_max_pos"] if "sol_max_pos" in keys else 0
+        if max_pos and max_pos > 0 and not allow_add:
+            n = self.open_positions(u["tg_id"], paper)
+            if n >= max_pos and await self.token_raw(u, sw.mint) <= 0:
+                raise Skip(f"masz już {n} otwartych pozycji (Twój limit {max_pos}) – czekam, aż coś się sprzeda")
+        streak = u["sol_streak"] if "sol_streak" in keys else 0
+        if streak and streak > 0:
+            last = self.db._q("""SELECT pnl, ts FROM sol_trades WHERE tg_id = ? AND paper = ? AND side = 'sell'
+                                 AND status = 'filled' AND pnl IS NOT NULL ORDER BY id DESC LIMIT ?""",
+                              (u["tg_id"], int(paper), int(streak)))
+            if len(last) >= streak and all(r["pnl"] < 0 for r in last) and now_ms() - last[0]["ts"] < 30 * 60_000:
+                left = 30 - (now_ms() - last[0]["ts"]) // 60_000
+                raise Skip(f"☕ przerwa po {streak} stratach z rzędu – bot wraca do kupowania za ok. {left} min")
         if "sol_safe" in keys and u["sol_safe"]:
-            from .risk import risk
+            from .risk import trap_reason
             try:
                 info = await asyncio.wait_for(self.jup.token_full(sw.mint), 3)
             except Exception:  # noqa: BLE001
                 info = None
-            if info:
-                level, notes = risk(info)
-                if level.startswith("🔴"):
-                    why = next((n for n in notes if n.startswith("⚠️")), "")
-                    raise Skip(f"🛡 ryzykowny token (🔴) – {why.removeprefix('⚠️ ')}".rstrip(" –"))
+            why = trap_reason(info)
+            if why:
+                raise Skip(f"🛡 pułapka – {why}")
 
     async def usd_txt(self, sol: float) -> str:
         """„ (≈ $12.30)” – kurs SOL z pamięci podręcznej (10 s), bez czekania dłużej niż 2 s."""
@@ -606,6 +625,9 @@ class SolEngine:
         want = min(want, bal - reserve)
         if want < MIN_BUY:
             raise Skip(f"za mało SOL na koncie (masz {bal / LAMPORTS:.4f} SOL)")
+        floor = u["sol_min_buy"] if "sol_min_buy" in u.keys() else 0
+        if floor and want < floor * LAMPORTS:
+            raise Skip(f"za mała kwota ({want / LAMPORTS:.4f} SOL, Twoje minimum {floor:g} SOL) – opłaty zjadłyby zysk")
         return want
 
     async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,

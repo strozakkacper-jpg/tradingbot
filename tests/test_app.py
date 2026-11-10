@@ -123,7 +123,7 @@ def test_safety_filter_and_day_limit(tmp_path):
         return d
     s.sol.jup.token_full = risky
     res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic()))
-    assert res["skipped"] == 1 and any("🛡 ryzykowny token" in t and "zamrozić" in t for _, t in sent)
+    assert res["skipped"] == 1 and any("🛡 pułapka" in t and "zamrozić" in t for _, t in sent)
     s.sol.jup.token_full = good
     asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "s2"), time.monotonic()))
     assert TOKEN in s.sol.paper(OWNER)
@@ -473,7 +473,8 @@ def test_demo_start_real_costs_and_auto_settings(tmp_path):
         assert j["demo_start"] == 0.6 and abs(j["result"]) < 1e-9
         st, j = await call(OWNER, "/api/sol/action", {"action": "auto_settings"})
         u = s.db.get_user(OWNER)
-        assert st == 200 and u["sol_buy"] == 0.047 and u["sol_no_add"] == 1 and u["sol_min_hold"] == 30
+        assert st == 200 and u["sol_buy_mode"] == "pct" and u["sol_pct"] == 3.5 and u["sol_max"] == 0.071
+        assert u["sol_min_buy"] == 0.0082 and u["sol_max_pos"] == 15 and u["sol_streak"] == 5 and u["sol_trail"] == 40
     run(s, steps)
     # depozyt za konto tokena: pobrany przy pierwszym zakupie, wraca po sprzedaży całości
     asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.047))
@@ -481,8 +482,9 @@ def test_demo_start_real_costs_and_auto_settings(tmp_path):
     assert after_buy == 600_000_000 - 47_000_000 - s.sol.paper_fee(s.db.get_user(OWNER)) - ATA_RENT
     asyncio.run(s.sol.sell_manual(s.db.get_user(OWNER), TOKEN, 100))
     assert s.sol.paper(OWNER)[SOL_MINT] > after_buy + 47_000_000  # depozyt wrócił
-    r = recommended(0.6)
-    assert r["sol_buy"] == 0.047 and r["sol_day_limit"] == 0.088 and r["sol_priority"] == 50_000
+    r = recommended(0.6, typical_buy=2.0, live=True)
+    assert r["sol_pct"] == 1.8 and r["sol_day_limit"] == 0.15 and r["sol_priority"] == 200_000 and r["sol_turbo"] == 1
+    assert recommended(50, 2.0)["sol_max_pos"] == 15 and recommended(0.15)["sol_min_buy"] <= 0.15 * 0.06
 
 
 def test_research_scoring_and_list_tools(tmp_path):
@@ -811,3 +813,39 @@ def test_bulk_select_actions(tmp_path):
         st, j = await call(OWNER, "/api/sol/action", {"action": "bulk", "op": "zle", "wallets": [W2]})
         assert st == 400
     run(s, steps)
+
+
+def test_sensible_safeguards(tmp_path):
+    from copybot.sol.risk import trap_reason
+    fresh = {"liquidity": 6000, "holderCount": 40,
+             "audit": {"mintAuthorityDisabled": True, "freezeAuthorityDisabled": True, "topHoldersPercentage": 85}}
+    assert trap_reason(fresh) is None  # świeży token z Pump.fun to nie pułapka
+    assert "zamrozić" in trap_reason({**fresh, "audit": {"freezeAuthorityDisabled": False}})
+    assert "prawie nie ma" in trap_reason({**fresh, "liquidity": 500})
+    s, ctx, sent = ready(tmp_path)
+    _two_leaders(s)
+    # minimalna kwota zakupu
+    s.db.update_user(OWNER, sol_buy=0.004, sol_min_buy=0.01)
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "m1"), time.monotonic()))
+    assert res["skipped"] == 1 and any("za mała kwota" in t for _, t in sent)
+    # limit otwartych pozycji
+    s.db.update_user(OWNER, sol_buy=0.05, sol_min_buy=0, sol_max_pos=1)
+    asyncio.run(AX.buy(s, s.db.get_user(OWNER), "Other1111111111111111111111111111111111111", 0.05))
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "m2"), time.monotonic()))
+    assert res["skipped"] == 1 and any("otwartych pozycji" in t for _, t in sent)
+    # przerwa po serii strat
+    s.db.update_user(OWNER, sol_max_pos=0, sol_streak=2)
+    for i in range(2):
+        s.sol.record(OWNER, None, None, "sell", f"L{i}", 0.01, 1, "filled", "x", True, pnl=-0.01)
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "m3"), time.monotonic()))
+    assert res["skipped"] == 1 and any("przerwa po 2 stratach" in t for _, t in sent)
+    # ruchomy stop przy zwrocie wkładu włącza się dopiero od ×2
+    s.db.update_user(OWNER, sol_streak=0, sol_trail=40, sol_x2=1)
+    s.sol.paper_reset(OWNER)
+    asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.1))
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    s.sol.jup.token_usd = 0.18  # ×1,8 – szczyt
+    asyncio.run(AX.tpsl_job(jctx))
+    s.sol.jup.token_usd = 0.1  # spadek o 44% od szczytu, ale szczyt < ×2 → trzymamy
+    asyncio.run(AX.tpsl_job(jctx))
+    assert TOKEN in s.sol.paper(OWNER)

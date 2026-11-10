@@ -872,13 +872,14 @@ async def tpsl_job(ctx):
             if pnl is None:
                 continue
             # ruchomy stop-loss: pamiętamy szczyt (wielokrotność kosztu) i sprzedajemy po spadku o X% od szczytu,
-            # ale dopiero gdy token był już co najmniej +30% (żeby nie wyrzucało na zwykłych wahaniach)
+            # ale dopiero gdy token był już ×2 (z „zwrotem wkładu”) albo ×1,5 – wcześniej to zwykłe wahania memecoina
             ratio, trail_hit = 1 + pnl / 100, False
             pkey = f"peak:{u['tg_id']}:{pos['mint']}"
             if u["sol_trail"]:
                 peak = max(float(s.db.get_state(pkey) or 0), ratio)
                 s.db.set_state(pkey, f"{peak:.4f}")
-                trail_hit = peak >= 1.3 and ratio <= peak * (1 - u["sol_trail"] / 100)
+                arm = 2.0 if u["sol_x2"] else 1.5  # wcześniej memecoin zwykle po prostu się waha
+                trail_hit = peak >= arm and ratio <= peak * (1 - u["sol_trail"] / 100)
             hit = ("🎯 <b>TAKE-PROFIT</b> – zysk osiągnięty" if u["sol_tp"] and pnl >= u["sol_tp"] else
                    "🛑 <b>STOP-LOSS</b> – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else
                    f"📉 <b>RUCHOMY STOP</b> – spadek o {u['sol_trail']:g}% od szczytu (było ×{peak:.2f})"

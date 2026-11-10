@@ -215,7 +215,7 @@ function slMove(id, el) {
   if (Math.round(el.value) % 40 === 0) haptic('light');
 }
 function slSave(id, el) { const c = SLD[id]; c.save(slVal(c, +el.value)); }
-const fSol = v => (v < 0.01 ? v.toFixed(3) : v < 1 ? String(sig2(v)) : String(sig2(v))) + ' SOL';
+const fSol = v => (v < 0.01 ? String(parseFloat(v.toFixed(5))) : String(sig2(v))) + ' SOL';
 const fPct = v => v + '%';
 const fSec = v => v < 90 ? Math.round(v) + ' s' : v < 5400 ? Math.round(v / 60) + ' min' : (v / 3600).toFixed(1) + ' h';
 function holdTxt(h, long) {
@@ -737,7 +737,7 @@ function settings() {
     : m === 'pct' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${sig2(5 * st.sol_pct / 100)} SOL</b>.` : '';
   return `
   <div class="card" style="border-color:var(--acc)"><div class="b">✨ Ustaw najlepsze pod moje saldo</div>
-    <div class="mut tiny" style="margin:4px 0 10px">Bot dobierze kwotę zakupu, limity, filtry i opłaty do tego, ile masz (teraz ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}). Potem możesz wszystko poprawić suwakami.</div>
+    <div class="mut tiny" style="margin:4px 0 10px">Bot dobierze wszystko do Twojego salda (ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}) i do tego, za ile zwykle kupują Twoi traderzy: % ich kwoty (mocne wejście = większa pozycja), zwykła pozycja ok. 6% kapitału, maks. 12%, min. kwota (żeby opłaty nie zjadały zysku), limit pozycji, filtr pułapek, zwrot wkładu ×2, ruchomy stop 40% po ×2, stop-loss awaryjny −60%, limit dnia 25%, przerwa po 5 stratach. Najlepiej najpierw włącz traderów i kliknij 🏆 Znajdź najlepszych.</div>
     <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button></div>
   <h2>💵 Ile wydać, gdy trader kupi</h2>
   <div class="card">
@@ -756,7 +756,7 @@ function settings() {
     ${chips('sol_boost', [1, 1.5, 2, 3], v => v === 1 ? 'zwykła' : '×' + v, st.sol_boost || 1)}
     ${slider('cwin', 'Okno potwierdzenia', {min: 1, max: 60, round: R.int, fmt: v => v + ' min', save: v => setS('sol_cons_window', v)}, st.sol_cons_window || 10)}
     <div class="b" style="margin-top:16px">📉 Ruchomy stop-loss</div>
-    <div class="mut tiny" style="margin:4px 0 0">Gdy token urośnie (min. +30%), bot pilnuje zysku: sprzeda, jeśli cena spadnie o X% od szczytu. Chroni duże wygrane, gdy trader trzyma za długo.</div>
+    <div class="mut tiny" style="margin:4px 0 0">Gdy token urośnie (×2 przy włączonym zwrocie wkładu, inaczej ×1,5), bot pilnuje zysku: sprzeda resztę, jeśli cena spadnie o X% od szczytu. Wcześniej nie – memecoiny wahają się o 20–30% bez powodu.</div>
     ${slider('trail', 'Sprzedaj po spadku od szczytu o', {min: 5, max: 80, round: R.int, fmt: v => v + '%', off: 'wył.', save: v => setS('sol_trail', v)}, st.sol_trail)}
     ${chips('sol_trail', [0, 20, 30, 40], v => v ? v + '%' : 'wył.', st.sol_trail)}
     <div class="row" style="margin-top:16px"><div class="sp"><div class="b">🤖 Automatyczna ocena traderów</div>
@@ -774,7 +774,13 @@ function settings() {
   </div>
   <h2>🛡 Bezpieczniki</h2>
   <div class="card">
-    <div class="row"><div class="sp"><div class="b">Pomijaj ryzykowne tokeny</div><div class="mut tiny">Bot nie skopiuje zakupu tokena z oceną 🔴 (np. twórca może zamrozić tokeny, mało pieniędzy w puli). Dodaje ok. 0,1–0,3 s.</div></div>${tgl('sol_safe', st.sol_safe)}</div>
+    <div class="row"><div class="sp"><div class="b">🛡 Pomijaj pułapki</div><div class="mut tiny">Bot nie kupi tokena, w którym twórca może zamrozić albo dodrukować tokeny, ani takiego z prawie pustą pulą. Świeże tokeny z Pump.fun przepuszcza – to one najczęściej robią ×10. Dodaje ok. 0,1–0,3 s.</div></div>${tgl('sol_safe', st.sol_safe)}</div>
+    ${slider('minbuy', 'Minimalna kwota zakupu', {min: 0.001, max: 1, log: true, round: R.sol, fmt: fSol, off: 'wył.', save: v => setS('sol_min_buy', v)}, st.sol_min_buy)}
+    <div class="mut tiny" style="margin:2px 0 8px">Mniejszych kopii bot nie robi – kupno i sprzedaż kosztują ok. ${fSol(2 * (5000 + st.sol_priority) / 1e9)} opłat, więc przy groszowych zakupach opłaty zjadają zysk.</div>
+    ${slider('maxpos', 'Maks. otwartych pozycji naraz', {min: 1, max: 40, round: R.int, fmt: v => v + ' tokenów', off: 'bez limitu', save: v => setS('sol_max_pos', v)}, st.sol_max_pos)}
+    <div class="mut tiny" style="margin:2px 0 8px">Gdy tyle tokenów już trzymasz, nowych nie kupuje, dopóki coś się nie sprzeda. Chroni przed wydaniem wszystkiego naraz.</div>
+    <div class="b" style="margin-top:14px">☕ Przerwa po serii strat</div><div class="mut tiny" style="margin-bottom:8px">Po tylu sprzedażach ze stratą z rzędu bot przestaje kupować na 30 min (sprzedaje dalej). Zła passa często trwa chwilę.</div>
+    ${chips('sol_streak', [0, 3, 5, 8], v => v ? 'po ' + v + ' stratach' : 'wył.', st.sol_streak)}
     ${slider('max', 'Maks. na jeden zakup', {min: 0.001, max: 20, log: true, round: R.sol, fmt: fSol, off: 'bez limitu', save: v => setS('sol_max', v)}, st.sol_max)}
     <div class="mut tiny" style="margin:2px 0 8px">Nigdy nie wydasz więcej naraz.</div>
     ${chips('sol_max', [0.1, 0.5, 1, 2, 0], v => v ? v + ' SOL' : 'bez limitu', st.sol_max)}
@@ -848,7 +854,7 @@ function secSummary(title) {
     if (st.sol_min_hold) f.push('bez flipperów < ' + fSec(st.sol_min_hold));
     return f.join(' · ') || 'bez filtrów – kopiuje wszystko';
   }
-  if (title.includes('Bezpieczniki')) return `maks. ${st.sol_max ? st.sol_max + ' SOL' : 'bez limitu'} na zakup · limit dnia ${st.sol_day_limit ? st.sol_day_limit + ' SOL' : 'wył.'}${st.sol_safe ? ' · 🛡 ryzykowne pomijane' : ''}`;
+  if (title.includes('Bezpieczniki')) return `maks. ${st.sol_max ? st.sol_max + ' SOL' : 'bez limitu'} na zakup · limit dnia ${st.sol_day_limit ? st.sol_day_limit + ' SOL' : 'wył.'}${st.sol_max_pos ? ' · do ' + st.sol_max_pos + ' pozycji' : ''}${st.sol_safe ? ' · 🛡 pułapki' : ''}${st.sol_streak ? ' · ☕ po ' + st.sol_streak + ' stratach' : ''}`;
   if (title.includes('Automatyczna')) {
     if (st.sol_x2) f.push('zwrot wkładu ×2');
     if (st.sol_tp) f.push('zysk +' + st.sol_tp + '%');
@@ -889,8 +895,9 @@ async function setDemoStart(v) {
   await act('reset_demo');
 }
 async function autoSettings() {
-  if (!await confirmBox('Ustawić wszystko pod Twoje saldo? Obecne ustawienia zostaną zastąpione (kwota, limity, filtry, opłaty).')) return;
-  await act('auto_settings');
+  if (!await confirmBox('Ustawić wszystko pod Twoje saldo i traderów? Obecne ustawienia zostaną zastąpione (kwota, limity, filtry, opłaty, strategia).')) return;
+  const r = await act('auto_settings', {}, {quiet: true});
+  if (r && r.msg) showHtml('✨ Gotowe', esc(r.msg) + '<br><br><span class="mut">Każdą wartość możesz poprawić suwakami w Opcjach.</span>');
 }
 async function resetDemo() {
   if (await confirmBox('Zacząć ćwiczenia od nowa? Wirtualne tokeny znikną, dostaniesz świeże wirtualne SOL.')) await act('reset_demo');

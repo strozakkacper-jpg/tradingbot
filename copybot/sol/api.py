@@ -33,6 +33,7 @@ SETTINGS = {
     "sol_consensus": (int, 0, 5), "sol_cons_window": (float, 1, 120), "sol_boost": (float, 1, 5),
     "sol_trail": (float, 0, 90), "sol_auto_rank": (bool, None, None), "chat_notify": (bool, None, None),
     "sol_turbo": (bool, None, None),
+    "sol_min_buy": (float, 0, 10), "sol_max_pos": (int, 0, 100), "sol_streak": (int, 0, 20),
 }
 
 
@@ -46,19 +47,41 @@ def _trade(s, r) -> dict:
             "latency_ms": r["latency_ms"], "sig": r["sig"], "pnl": r["pnl"] if "pnl" in r.keys() else None}
 
 
-def recommended(balance: float) -> dict:
-    """Ustawienia dobrane do salda: małe zakupy względem kapitału, mało opłat, bez flipperów i dokupień."""
+def recommended(balance: float, typical_buy: float = 1.0, live: bool = False) -> dict:
+    """Ustawienia dobrane do salda i do tego, za ile zwykle kupują Twoi traderzy.
+
+    Zasady (wnioski z prawdziwych sesji):
+    - % kwoty tradera zamiast stałej kwoty – mocne wejście tradera = większa pozycja, jego test za grosze = grosze
+    - zwykła pozycja ok. 6% kapitału, mocne wejście maks. 12%, ok. 10–15 pozycji naraz
+    - minimalna kwota zakupu, żeby opłaty (2 × sieć + napiwek) nie zjadały małych transakcji
+    - filtr tylko prawdziwych pułapek (świeże tokeny z Pump.fun przepuszcza – to one robią ×10)
+    - wygrane rosną: zwrot wkładu przy ×2, ruchomy stop 40% dopiero po ×2, stop-loss tylko awaryjny −60%
+    - bezpieczniki: limit dnia 25% kapitału, przerwa po 5 stratach z rzędu, limit pozycji
+    """
     usable = max(balance - 0.01, 0.01)  # 0,01 SOL bot zostawia na opłaty i depozyty
 
     def r(x):
         return float(f"{x:.2g}")
-    buy = r(min(max(usable * 0.08, 0.01), 2))  # ok. 12 równoległych pozycji
-    return {"sol_buy_mode": "fixed", "sol_buy": buy, "sol_max": r(buy * 2),
-            "sol_day_limit": r(max(usable * 0.15, 0.005)), "sol_no_add": 1,
-            "sol_min_lead": 0.5 if balance < 2 else 1.0, "sol_min_hold": 30, "sol_safe": 1, "sol_x2": 1,
-            "sol_tp": 0, "sol_sl": 40, "sol_slippage_bps": 1500,
-            "sol_priority": 50_000 if buy < 0.05 else 100_000 if buy < 0.2 else 300_000,
-            "sol_boost": 2, "sol_trail": 30, "sol_auto_rank": 1, "sol_consensus": 0}
+    tip = 200_000  # 0,0002 SOL – opłata za szybkość / napiwek Jito
+    fees = 2 * (5_000 + tip) / LAMPORTS  # koszt kupna + sprzedaży
+    target = usable * 0.06
+    typical = max(typical_buy or 1.0, 0.05)
+    pct = r(min(max(target / typical * 100, 0.1), 100))
+    min_buy = r(min(max(0.005, fees * 20), target * 0.5))
+    return {"sol_buy_mode": "pct", "sol_pct": pct, "sol_buy": r(target), "sol_max": r(usable * 0.12),
+            "sol_min_buy": min_buy, "sol_max_pos": int(min(max(usable / max(target, min_buy), 4), 15)),
+            "sol_day_limit": r(max(usable * 0.25, 0.005)), "sol_streak": 5,
+            "sol_no_add": 0, "sol_min_lead": 0, "sol_min_hold": 20, "sol_safe": 1,
+            "sol_x2": 1, "sol_tp": 0, "sol_sl": 60, "sol_trail": 40, "sol_slippage_bps": 2000,
+            "sol_priority": tip, "sol_turbo": 1 if live else 0,
+            "sol_boost": 2, "sol_consensus": 0, "sol_auto_rank": 1}
+
+
+def typical_trader_buy(s, uid: int) -> float:
+    """Za ile zwykle kupują Twoi włączeni traderzy (mediana z badania), domyślnie 1 SOL."""
+    vals = sorted(it["stats"]["avg_buy"] for it in saved_list(s, uid)
+                  if it["status"] == "copy" and it.get("stats") and it["stats"].get("avg_buy"))
+    return vals[len(vals) // 2] if vals else 1.0
 
 
 def today_stats(s, uid: int, paper: bool) -> dict:
@@ -671,10 +694,13 @@ async def action(s, u, body: dict) -> dict:
         from .axiom import portfolio
         pf = await portfolio(s, u)
         bal = float(body.get("balance") or pf["total"])
-        vals = recommended(bal)
+        typical = typical_trader_buy(s, uid)
+        vals = recommended(bal, typical, se.is_live(u))
         s.db.update_user(uid, **vals)
-        return {"msg": f"✨ Ustawione pod saldo {bal:.3f} SOL: zakup {vals['sol_buy']:g} SOL, maks. "
-                       f"{vals['sol_max']:g} SOL, limit straty {vals['sol_day_limit']:g} SOL/dzień"}
+        return {"msg": f"✨ Ustawione pod {bal:.3f} SOL: {vals['sol_pct']:g}% kwoty tradera (on zwykle ~{typical:.2g} SOL "
+                       f"→ Ty ~{typical * vals['sol_pct'] / 100:.3g} SOL), maks. {vals['sol_max']:g} SOL na zakup, "
+                       f"min. {vals['sol_min_buy']:g} SOL, do {vals['sol_max_pos']} pozycji, limit dnia "
+                       f"{vals['sol_day_limit']:g} SOL", "values": vals}
     if act == "reset_demo":
         se.paper_reset(uid)
         return {"msg": f"Ćwiczenia od nowa: {se.paper_start(uid):g} wirtualnych SOL"}

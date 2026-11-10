@@ -61,3 +61,20 @@ def risk(info: dict) -> tuple[str, list[str]]:
 
 def is_risky(info: dict | None) -> bool:
     return bool(info) and risk(info)[0].startswith("🔴")
+
+
+def trap_reason(info: dict | None) -> str | None:
+    """Prawdziwa pułapka (powód) albo None. Świeży token z Pump.fun ma zawsze małą pulę i mało posiadaczy,
+    a bonding curve trzyma większość podaży – to NIE są pułapki (a właśnie takie tokeny robią ×10).
+    Pułapka to: twórca może zamrozić albo dodrukować tokeny, albo w puli nie ma prawie nic."""
+    if not info:
+        return None
+    a = info.get("audit") or {}
+    if a.get("freezeAuthorityDisabled") is False:
+        return "twórca może zamrozić Twoje tokeny (nie sprzedasz ich)"
+    if a.get("mintAuthorityDisabled") is False:
+        return "twórca może dodrukować tokeny (Twoje stracą wartość)"
+    liq = info.get("liquidity")
+    if liq is not None and liq < 1500:
+        return f"w puli prawie nie ma pieniędzy ({usd(liq)}) – nie dałoby się sprzedać"
+    return None
