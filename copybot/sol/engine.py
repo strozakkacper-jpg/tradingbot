@@ -19,6 +19,26 @@ log = logging.getLogger(__name__)
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
+def friendly_error(e: Exception, u=None) -> str:
+    """Błąd sieci / Jupitera / Pump.fun zwykłymi słowami."""
+    s = str(e)
+    slip = f" ({u['sol_slippage_bps'] / 100:g}%)" if u is not None and "sol_slippage_bps" in u.keys() else ""
+    if "'Custom': 6001" in s or "Slippage" in s or "'Custom': 6002" in s or "'Custom': 6003" in s:
+        return (f"cena uciekła poza tolerancję ceny{slip} w trakcie transakcji – nie weszła, pobrano tylko opłatę "
+                "sieci. Przy szybkich memecoinach pomaga wyższa tolerancja (20–30%).")
+    if "'Custom': 6005" in s:
+        return "token właśnie przeszedł z Pump.fun na giełdę (PumpSwap/Raydium) – nie zdążyliśmy w tej sekundzie"
+    if "429" in s or "Too many requests" in s:
+        return "limit zapytań Jupitera – za dużo transakcji naraz (pomaga płatny klucz Jupitera albo mniej traderów)"
+    if "brak potwierdzenia" in s:
+        return "sieć nie potwierdziła transakcji w 45 s (przeciążenie) – sprawdź saldo, mogła nie wejść"
+    if "insufficient" in s.lower() or "'Custom': 1}" in s:
+        return "za mało SOL na transakcję i opłaty"
+    if "transakcja odrzucona przez sieć" in s:
+        return f"sieć odrzuciła transakcję ({s.split(': ', 1)[-1][:80]})"
+    return s[:200]
+
+
 def b58decode(s: str) -> bytes:
     n = 0
     for ch in s:
@@ -362,7 +382,10 @@ class SolEngine:
                     return "none"
                 amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
             basis = self.cost_basis(u["tg_id"], sw.mint, not live) if sw.side == "sell" else None
-            fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw)
+            if sw.side == "sell":
+                fill = await self.sell_with_retry(u, sw.mint, amount, t_recv, sw.decimals, sw)
+            else:
+                fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw)
             if boost_note:
                 fill.note = boost_note + (f" · {fill.note}" if fill.note else "")
             if sw.side == "sell":
@@ -388,9 +411,10 @@ class SolEngine:
                            [token_btn])
             return "skipped"
         except Exception as e:  # noqa: BLE001
-            log.exception("Solana: kopiowanie dla %s", u["tg_id"])
-            self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "error", str(e)[:300], not live)
-            await self.say(u, "error", f"❌ <b>BŁĄD · {sym}</b>\n{trader}\n{html.escape(str(e)[:200])}", [token_btn])
+            why = friendly_error(e, u)
+            log.warning("Solana %s → %s: nie weszło – %s (%s)", lead["name"], u["tg_id"], why, str(e)[:160])
+            self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "error", why[:300], not live)
+            await self.say(u, "error", f"❌ <b>NIE WESZŁO · {sym}</b>\n{trader}\nPowód: {html.escape(why)}", [token_btn])
             return "error"
         self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, fill.sol, fill.tokens, "filled",
                     lead["name"] + (f" · {fill.note}" if fill.note else ""), not live, fill.sig, fill.latency_ms,
@@ -632,6 +656,26 @@ class SolEngine:
                     log.debug("Zamykanie konta tokena", exc_info=True)
             asyncio.create_task(later())
 
+    async def sell_with_retry(self, u, mint: str, amount: int, t_recv: float | None = None,
+                              decimals: int | None = None, fallback: Swap | None = None) -> "Fill":
+        """Sprzedaż, która nie weszła (cena uciekła, chwilowy limit, token przeszedł na giełdę), jest ponawiana
+        do 2 razy z większą tolerancją ceny – lepiej sprzedać trochę taniej niż zostać ze spadającym tokenem."""
+        uu = dict(u) if not isinstance(u, dict) else dict(u)
+        for attempt in range(3):
+            try:
+                return await self.execute(uu, "sell", mint, amount, t_recv if attempt == 0 else None,
+                                          decimals=decimals, fallback=fallback)
+            except ChainError as e:
+                if attempt == 2 or not self.is_live(uu):
+                    raise
+                log.info("Solana %s: sprzedaż %s nie weszła (%s) – ponawiam", uu["tg_id"], mint[:6], str(e)[:120])
+                await asyncio.sleep(1.5 * (attempt + 1))
+                uu["sol_slippage_bps"] = min(int(uu["sol_slippage_bps"] * 2), 4900)
+                amount = min(amount, await self.token_raw(uu, mint))
+                if amount <= 0:
+                    raise
+        raise ChainError("sprzedaż nie weszła")
+
     def priority(self, u) -> int:
         """Maks. opłata za szybkość (lamporty) – ustawienie użytkownika albo domyślna z konfiguracji."""
         v = u["sol_priority"] if "sol_priority" in u.keys() and u["sol_priority"] else self.cfg.sol_priority_max_lamports
@@ -740,7 +784,10 @@ class SolEngine:
         if held <= 0:
             raise Skip("nie masz tego tokena")
         basis = self.cost_basis(u["tg_id"], mint, not self.is_live(u))
-        fill = self.sell_pnl(basis, await self.execute(u, "sell", mint, held if pct >= 100 else int(held * pct / 100)))
+        try:
+            fill = self.sell_pnl(basis, await self.sell_with_retry(u, mint, held if pct >= 100 else int(held * pct / 100)))
+        except ChainError as e:
+            raise Skip(friendly_error(e, u)) from e
         self.after_sell(u, mint, pct >= 100)
         self.record(u["tg_id"], None, None, "sell", mint, fill.sol, fill.tokens, "filled", "ręcznie",
                     not self.is_live(u), fill.sig, fill.latency_ms, fill.pnl)

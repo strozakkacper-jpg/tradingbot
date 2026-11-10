@@ -603,3 +603,34 @@ def test_consensus_boost_trailing_and_auto_rank(tmp_path):
     s.db.set_research(W2, good)
     off, on = api.apply_rank(s, OWNER)
     assert off == ["A"] and on == ["C"] and s.sol.watched_wallets() == {W2, "Wa11et3333333333333333333333333333333333333"}
+
+
+def test_sell_retry_and_friendly_errors(tmp_path):
+    from copybot.sol.chain import ChainError
+    from copybot.sol.engine import Fill, friendly_error
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, sol_live=1, sol_slippage_bps=1500)
+    tries = []
+
+    async def flaky(u, side, mint, amount, t_recv=None, decimals=None, fallback=None):
+        tries.append(u["sol_slippage_bps"])
+        if len(tries) < 3:
+            raise ChainError("transakcja odrzucona przez sieć: {'InstructionError': [3, {'Custom': 6001}]}")
+        return Fill(0.05, 1.0, "sig", 5, 1.0)
+
+    async def bal(u, mint):
+        return 1000
+    s.sol.execute, s.sol.token_raw = flaky, bal
+    import copybot.sol.engine as E
+    real = E.asyncio.sleep
+    E.asyncio.sleep = AsyncMock()
+    try:
+        fill = asyncio.run(s.sol.sell_with_retry(s.db.get_user(OWNER), TOKEN, 1000))
+    finally:
+        E.asyncio.sleep = real
+    assert fill.sig == "sig" and tries == [1500, 3000, 4900]  # tolerancja rośnie przy ponowieniach
+    u = s.db.get_user(OWNER)
+    assert "cena uciekła" in friendly_error(ChainError("{'InstructionError': [3, {'Custom': 6001}]}"), u)
+    assert "przeszedł z Pump.fun" in friendly_error(ChainError("{'InstructionError': [3, {'Custom': 6005}]}"), u)
+    assert "limit zapytań" in friendly_error(ChainError("Jupiter swap: {'code': 429}"), u)
