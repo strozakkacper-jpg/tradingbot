@@ -31,7 +31,7 @@ SETTINGS = {
     "sol_min_lead": (float, 0, 100), "sol_min_hold": (float, 0, 3600), "sol_priority": (int, 10_000, 10_000_000),
     "sol_paper_start": (float, 0.01, 1000), "sol_notify": ("notify", None, None),
     "sol_consensus": (int, 0, 5), "sol_cons_window": (float, 1, 120), "sol_boost": (float, 1, 5),
-    "sol_trail": (float, 0, 90), "sol_auto_rank": (bool, None, None),
+    "sol_trail": (float, 0, 90), "sol_auto_rank": (bool, None, None), "chat_notify": (bool, None, None),
 }
 
 
@@ -133,6 +133,34 @@ def research_label(stats: dict) -> str:
 
 
 _RESEARCH: dict[int, dict] = {}
+_CHAT_LAST_SENT: dict[int, float] = {}  # antyspam: ostatnia wiadomość użytkownika
+_CHAT_PING: dict[int, float] = {}  # kiedy ostatnio powiadomiliśmy daną osobę o czacie
+
+
+def chat_msg(s, r, me: int) -> dict:
+    name = r["nickname"] or (f"@{r['username']}" if r["username"] else str(r["tg_id"]))
+    return {"id": r["id"], "uid": r["tg_id"], "name": name, "role": adm.role_of(s, r["tg_id"]), "text": r["text"],
+            "ts": r["ts"], "mine": r["tg_id"] == me}
+
+
+async def chat_notify_others(s, sender, text: str):
+    """Krótkie powiadomienie w czacie z botem dla pozostałych (maks. raz na 2 min na osobę – bez spamu)."""
+    import time as _t
+    name = html.escape(adm.display_name(sender))
+    url = f"{s.cfg.webapp_url}/app?tab=chat" if s.cfg.webapp_url.startswith("https://") else None
+    for u in s.db.approved_users():
+        if u["tg_id"] == sender["tg_id"] or not u["chat_notify"]:
+            continue
+        if _t.time() - _CHAT_PING.get(u["tg_id"], 0) < 120:
+            continue
+        _CHAT_PING[u["tg_id"]] = _t.time()
+        try:
+            await s.sol.notify(u["tg_id"], f"💬 <b>{name}</b> na czacie: {html.escape(text[:200])}", html=True,
+                               buttons=[[("💬 Otwórz czat", "webapp:" + url)]] if url else None)
+        except TypeError:
+            await s.sol.notify(u["tg_id"], f"💬 {adm.display_name(sender)} na czacie: {text[:200]}")
+        except Exception:  # noqa: BLE001
+            log.debug("Powiadomienie o czacie", exc_info=True)
 
 
 def start_research(s, uid: int) -> bool:
@@ -350,6 +378,7 @@ async def state(s, u) -> dict:
         "wallets": wallets, "feed": [_trade(s, r) for r in se.history(uid, 30)],
         "series": [[t, v] for t, v in series], "last_latency_ms": last[0]["latency_ms"] if last else None,
         "settings": settings_of(u),
+        "chat_last_id": s.db.chat_last_id(),
         "watcher": {k: v for k, v in adm.watcher_status(s).items() if k in ("connected", "watched", "last_swap")},
         "last_leader_move": last_leader_move(s, uid),
         "default_amount": mode_txt(u["sol_buy_mode"], u["sol_buy"], u["sol_pct"], u["sol_mult"]),
@@ -641,6 +670,26 @@ async def action(s, u, body: dict) -> dict:
             raise ApiError("Tylko dla administratora")
         s.db.set_state("paused", "1" if body.get("on") else "0")
         return {"msg": "⏸ Kopiowanie wstrzymane wszystkim" if body.get("on") else "▶️ Kopiowanie wznowione"}
+    if act == "chat_send":
+        import time as _t
+        text = str(body.get("text", "")).strip()[:1000]
+        if not text:
+            raise ApiError("Pusta wiadomość")
+        if _t.time() - _CHAT_LAST_SENT.get(uid, 0) < 0.7:
+            raise ApiError("Za szybko – chwila przerwy")
+        _CHAT_LAST_SENT[uid] = _t.time()
+        mid = s.db.chat_add(uid, text)
+        asyncio.create_task(chat_notify_others(s, u, text))
+        return {"id": mid}
+    if act == "chat_delete":
+        mid = int(_num(body, "id", 1, 10 ** 12, int))
+        r = s.db._q("SELECT tg_id FROM chat_messages WHERE id = ?", (mid,))
+        if not r:
+            raise ApiError("Nie ma takiej wiadomości")
+        if r[0]["tg_id"] != uid and uid not in admin_ids(s):
+            raise ApiError("Usunąć może autor albo administrator")
+        s.db.chat_delete(mid)
+        return {"msg": "Usunięto wiadomość"}
     if act == "nickname":  # admin: dowolnej osobie; każdy: sobie
         target = int(body.get("uid") or uid)
         if target != uid and uid not in admin_ids(s):
@@ -729,6 +778,11 @@ def routes(s, app: web.Application, auth):
             raise ApiError("Złe zapytanie")
         return await action(s, s.db.get_user(u["tg_id"]), body)
 
+    async def h_chat(req, u):
+        after = int(req.query.get("after") or 0)
+        return {"messages": [chat_msg(s, r, u["tg_id"]) for r in s.db.chat_list(after)],
+                "last_id": s.db.chat_last_id(), "me": u["tg_id"], "admin": u["tg_id"] in admin_ids(s)}
+
     async def h_saved(_, u):
         return {"items": saved_list(s, u["tg_id"]), "max_copied": MAX_COPIED,
                 "copied": copied_count(s, u["tg_id"]), "scan": _SCANS.get(u["tg_id"]), "now": now_ms(),
@@ -756,5 +810,6 @@ def routes(s, app: web.Application, auth):
     r.add_get("/api/sol/deposit", handler(h_deposit))
     r.add_post("/api/sol/action", handler(h_action))
     r.add_get("/api/sol/saved", handler(h_saved))
+    r.add_get("/api/sol/chat", handler(h_chat))
     r.add_get("/api/sol/admin/users", handler(h_admin_users))
     r.add_get("/api/sol/admin/user/{uid:\\d+}", handler(h_admin_user))

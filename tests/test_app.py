@@ -658,3 +658,38 @@ def test_nicknames(tmp_path):
         await ADM.cmd_nazwa(upd(OWNER, text="/nazwa Kacper"), ctx)
     asyncio.run(chat())
     assert s.db.get_user(FRIEND)["nickname"] == "Bratan" and s.db.get_user(OWNER)["nickname"] == "Kacper"
+
+
+def test_group_chat(tmp_path):
+    from copybot.sol import api
+    s, ctx, sent = ready(tmp_path)
+    s.db.update_user(OWNER, nickname="Kacper")
+    api._CHAT_PING.clear()
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "chat_send", "text": "siema, patrzcie " + TOKEN})
+        assert st == 200
+        await asyncio.sleep(0.05)
+        st, j = await call(OWNER, "/api/sol/action", {"action": "chat_send", "text": "spam"})
+        assert st == 400  # za szybko
+        st, j = await call(FRIEND, "/api/sol/chat")
+        m = j["messages"][0]
+        assert m["name"] == "Kacper" and m["role"] == "owner" and not m["mine"] and TOKEN in m["text"]
+        st, j = await call(FRIEND, "/api/sol/action", {"action": "chat_send", "text": "<b>xd</b>"})
+        st, j = await call(OWNER, f"/api/sol/chat?after={m['id']}")
+        assert len(j["messages"]) == 1 and j["messages"][0]["text"] == "<b>xd</b>"  # tekst surowy, escapowany w UI
+        st, j = await call(FRIEND, "/api/sol/action", {"action": "chat_delete", "id": m["id"]})
+        assert st == 400  # cudzej nie usunie
+        st, j = await call(OWNER, "/api/sol/action", {"action": "chat_delete", "id": m["id"]})
+        st, j = await call(OWNER, "/api/sol/chat")
+        assert [x["text"] for x in j["messages"]] == ["<b>xd</b>"]
+        st, j = await call(OWNER, "/api/sol/state")
+        assert j["chat_last_id"] >= 2
+    run(s, steps)
+    assert any(uid == FRIEND and "Kacper na czacie" in t for uid, t in sent)  # powiadomienie dla reszty
+
+    async def chat_cmd():
+        ctx.args = ["hej", "z", "telegrama"]
+        await ADM.cmd_czat(upd(FRIEND, text="/czat hej z telegrama"), ctx)
+    asyncio.run(chat_cmd())
+    assert s.db.chat_list()[-1]["text"] == "hej z telegrama"

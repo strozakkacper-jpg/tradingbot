@@ -353,7 +353,28 @@ async def cmd_nazwa(update: Update, ctx):
     await update.message.reply_text(f"✅ Twoja nazwa: {name}" if name else "Usunięto nazwę. Ustaw: /nazwa Kacper")
 
 
+async def cmd_czat(update: Update, ctx):
+    """/czat tekst – wiadomość na czat grupowy w aplikacji (bez otwierania aplikacji)."""
+    from ..bot import require_accepted
+    from .api import chat_notify_others
+    s = S(ctx)
+    if not (u := await require_accepted(update, ctx)):
+        return
+    text = " ".join(ctx.args or []).strip()[:1000]
+    if not text:
+        last = s.db.chat_list(limit=8)
+        lines = [f"<b>{html.escape(r['nickname'] or (('@' + r['username']) if r['username'] else str(r['tg_id'])))}</b>: "
+                 f"{html.escape(r['text'][:200])}" for r in last] or ["Pusto – napisz pierwszy: /czat cześć"]
+        return await update.message.reply_text("💬 <b>Czat grupowy</b> (ostatnie wiadomości)\n\n" + "\n".join(lines)
+                                               + "\n\nNapisz: /czat treść albo otwórz 📱 aplikację → 💬 Czat",
+                                               parse_mode=ParseMode.HTML)
+    s.db.chat_add(u["tg_id"], text)
+    await chat_notify_others(s, u, text)
+    await update.message.reply_text("💬 Wysłano na czat grupowy")
+
+
 def register(app: Application):
+    app.add_handler(CommandHandler("czat", cmd_czat))
     text = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
     app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(ren_start, pattern=r"^adm:ren:\d+$")],
                                         states={REN: [MessageHandler(text, ren_text)]},

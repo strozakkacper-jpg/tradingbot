@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS follows (
 CREATE TABLE IF NOT EXISTS sol_wallets (
     tg_id INTEGER PRIMARY KEY, pubkey TEXT NOT NULL, secret TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS chat_messages (  -- czat grupowy w aplikacji
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS sol_wallet_backup (  -- poprzednie portfele (np. przed podłączeniem Axiom) – nic nie ginie
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, pubkey TEXT NOT NULL, secret TEXT NOT NULL,
     source TEXT, replaced_at INTEGER NOT NULL
@@ -106,6 +110,7 @@ MIGRATIONS = {
     "sol_sl": "REAL NOT NULL DEFAULT 0",  # auto stop-loss w % (0 = wył.)
     "role": "TEXT NOT NULL DEFAULT 'user'",  # user | admin (właściciel 👑 zawsze jest adminem)
     "nickname": "TEXT",  # nazwa nadana przez admina albo samego użytkownika (zamiast @nicku / numeru)
+    "chat_notify": "INTEGER NOT NULL DEFAULT 1",  # powiadomienie w czacie z botem o nowych wiadomościach czatu grupowego
     "sol_safe": "INTEGER NOT NULL DEFAULT 0",  # 🛡 nie kopiuj zakupów tokenów z ryzykiem 🔴
     "sol_day_limit": "REAL NOT NULL DEFAULT 0",  # dzienny limit straty w SOL – po nim bot przestaje kupować (0 = wył.)
     "sol_x2": "INTEGER NOT NULL DEFAULT 0",  # zwrot wkładu: przy +100% sprzedaj połowę
@@ -140,7 +145,7 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
-               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "nickname", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "sol_consensus", "sol_cons_window", "sol_boost", "sol_trail",
+               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "nickname", "chat_notify", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "sol_consensus", "sol_cons_window", "sol_boost", "sol_trail",
                "sol_auto_rank", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}
@@ -388,6 +393,27 @@ class DB:
     def set_activity(self, wallet: str, last_active: int | None):
         """Aktywność to cecha portfela – zapisujemy u wszystkich, którzy go mają na liście."""
         self._q("UPDATE sol_saved SET last_active = ?, checked_at = ? WHERE wallet = ?", (last_active, now_ms(), wallet))
+
+    # --- czat grupowy ---
+    def chat_add(self, tg_id: int, text: str) -> int:
+        with self.lock, self.conn:
+            cur = self.conn.execute("INSERT INTO chat_messages (tg_id, text, ts) VALUES (?, ?, ?)", (tg_id, text, now_ms()))
+            return cur.lastrowid
+
+    def chat_list(self, after: int = 0, limit: int = 100) -> list[sqlite3.Row]:
+        if after:
+            return self._q("""SELECT m.*, u.nickname, u.username FROM chat_messages m LEFT JOIN users u ON u.tg_id = m.tg_id
+                              WHERE m.id > ? AND m.deleted = 0 ORDER BY m.id LIMIT ?""", (after, limit))
+        rows = self._q("""SELECT m.*, u.nickname, u.username FROM chat_messages m LEFT JOIN users u ON u.tg_id = m.tg_id
+                          WHERE m.deleted = 0 ORDER BY m.id DESC LIMIT ?""", (limit,))
+        return list(reversed(rows))
+
+    def chat_last_id(self) -> int:
+        r = self._q("SELECT MAX(id) m FROM chat_messages WHERE deleted = 0")
+        return r[0]["m"] or 0
+
+    def chat_delete(self, msg_id: int):
+        self._q("UPDATE chat_messages SET deleted = 1 WHERE id = ?", (msg_id,))
 
     def set_research(self, wallet: str, stats: dict):
         """Wynik badania tradera – zapisujemy u wszystkich, którzy mają go na liście."""

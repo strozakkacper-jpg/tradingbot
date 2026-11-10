@@ -78,6 +78,15 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;bac
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}.dot.g{background:var(--g);box-shadow:0 0 8px var(--g)}.dot.r{background:var(--r)}
 .ucard{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:12px;margin-bottom:8px;cursor:pointer}
 .ucard:active{transform:scale(.99)}
+.chatl{display:flex;flex-direction:column;gap:6px;padding-bottom:70px}
+.msg{max-width:82%;padding:8px 11px;border-radius:14px;background:var(--card);border:1px solid var(--line);word-wrap:break-word;white-space:pre-wrap}
+.msg.me{align-self:flex-end;background:rgba(139,92,246,.22);border-color:rgba(139,92,246,.4)}
+.msg .who{font-size:12px;font-weight:700;color:var(--acc2);margin-bottom:2px}.msg .when{font-size:10px;color:var(--mut2);margin-top:3px;text-align:right}
+.msg .del{float:right;color:var(--mut2);margin-left:8px;cursor:pointer;font-size:11px}
+.chatbar{position:fixed;left:0;right:0;bottom:calc(58px + env(safe-area-inset-bottom));display:flex;gap:8px;padding:8px 12px;background:rgba(11,13,19,.97);border-top:1px solid var(--line);z-index:4}
+.chatbar textarea{min-height:42px;max-height:110px;padding:10px 12px;flex:1}
+.chatbar button{border:0;background:var(--acc);color:#fff;border-radius:12px;padding:0 16px;font-size:18px}
+.tabs button{position:relative}.tabs .badge{position:absolute;top:2px;right:calc(50% - 18px);width:9px;height:9px;border-radius:50%;background:var(--r)}
 details.sec{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);margin-bottom:10px;overflow:hidden}
 details.sec>summary{list-style:none;cursor:pointer;padding:14px;display:flex;align-items:center;gap:10px}
 details.sec>summary::-webkit-details-marker{display:none}
@@ -99,7 +108,7 @@ try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {}
 try { tg.ready(); tg.expand(); tg.setHeaderColor('#0b0d13'); tg.setBackgroundColor('#0b0d13'); } catch (e) {}
 // initData od Telegrama (albo z adresu – gdy skrypt Telegrama nie zdążył się wczytać)
 const INIT = (tg && tg.initData) || new URLSearchParams(location.hash.slice(1)).get('tgWebAppData') || '';
-let S = null, TAB = ({saved: 'traders', traders: 'traders', tokens: 'tokens', history: 'history', settings: 'settings'})[new URLSearchParams(location.search).get('tab')] || 'home', SHEET = null, ADMIN = null, TREND = null, LAST_FEED = null;
+let S = null, TAB = ({saved: 'traders', traders: 'traders', tokens: 'tokens', history: 'history', settings: 'settings', chat: 'chat'})[new URLSearchParams(location.search).get('tab')] || 'home', SHEET = null, ADMIN = null, TREND = null, LAST_FEED = null;
 
 // ---------- pomocnicze ----------
 const $ = s => document.querySelector(s);
@@ -242,16 +251,17 @@ async function load() {
 
 // ---------- zakładki ----------
 const TABS = [['home', '🏠', 'Pulpit'], ['traders', '👥', 'Traderzy'], ['tokens', '🪙', 'Tokeny'],
-              ['history', '📜', 'Historia'], ['settings', '⚙️', 'Ustawienia']];
+              ['history', '📜', 'Historia'], ['chat', '💬', 'Czat'], ['settings', '⚙️', 'Opcje']];
 function renderTabs() {
   const tabs = TABS.concat(S && S.user.admin ? [['admin', '🛠', 'Admin']] : []);
-  $('#tabs').innerHTML = tabs.map(([k, i, l]) => `<button class="${TAB === k ? 'on' : ''}" onclick="go('${k}')"><span class="i">${i}</span>${l}</button>`).join('');
+  const unread = k => k === 'chat' && TAB !== 'chat' && S && S.chat_last_id > chatSeen();
+  $('#tabs').innerHTML = tabs.map(([k, i, l]) => `<button class="${TAB === k ? 'on' : ''}" onclick="go('${k}')"><span class="i">${i}</span>${l}${unread(k) ? '<span class="badge"></span>' : ''}</button>`).join('');
 }
-function go(t) { TAB = t; haptic(); window.scrollTo(0, 0); render(); if (t === 'tokens' && !TREND) loadTrend(); if (t === 'admin') loadAdmin(); }
+function go(t) { TAB = t; haptic(); window.scrollTo(0, 0); render(); if (t === 'tokens' && !TREND) loadTrend(); if (t === 'admin') loadAdmin(); if (t === 'chat') loadChat(true); }
 function render() {
   if (!S) return;
   renderTabs();
-  $('#view').innerHTML = ({home, traders, tokens, history, settings, admin: adminTab})[TAB]();
+  $('#view').innerHTML = ({home, traders, tokens, history, settings, chat: chatTab, admin: adminTab})[TAB]();
   if (TAB === 'settings') foldSettings();
 }
 
@@ -569,7 +579,12 @@ let TOK = null, BUYV = 0.05;
 async function openToken(mint) {
   loading('Token');
   try { TOK = await api('/api/sol/token/' + encodeURIComponent(mint)); renderToken(); }
-  catch (e) { sheet(hdr('Token') + `<div class="empty">${esc(e.message)}</div>`); }
+  catch (e) {
+    sheet(hdr('Token') + `<div class="empty">${esc(e.message)}</div>
+      <div class="card"><div class="mut small">To może być adres portfela tradera, a nie tokena.</div>
+        <button class="btn" style="margin-top:10px" onclick="act('import', {text: '${esc(mint)}'}, {reload: false}).then(() => { closeSheet(); SAVED = null; go('traders'); })">👤 Zapisz jako tradera na liście</button>
+        <button class="btn ghost" style="margin-top:8px" onclick="openLink('https://gmgn.ai/sol/address/${esc(mint)}')">Zobacz na GMGN</button></div>`);
+  }
 }
 function renderToken() {
   const t = TOK, rk = t.risk, lvl = rk.level.startsWith('🟢') ? 'g' : rk.level.startsWith('🟡') ? 'y' : 'r';
@@ -594,7 +609,8 @@ function renderToken() {
         live: v => { BUYV = v; const b = document.getElementById('buybtn'); if (b) b.textContent = '🟢 Kup za ' + fSol(v); }, save: v => { BUYV = v; }}, BUYV)}
       <button class="btn g" id="buybtn" style="margin-top:8px" onclick="buyTok(BUYV)">🟢 Kup za ${fSol(BUYV)}</button>
       <div class="mut tiny" style="margin-top:8px">${S.live ? '💰 Kupujesz prawdziwymi SOL' : '🧪 Ćwiczenia – wirtualne SOL'} · tolerancja ceny ${S.settings.sol_slippage_bps / 100}%</div></div>
-    <button class="btn ghost" onclick="openLink('https://dexscreener.com/solana/${esc(t.mint)}')">📈 Wykres ceny</button>`);
+    <div class="row" style="gap:8px"><button class="btn ghost" onclick="openLink('https://dexscreener.com/solana/${esc(t.mint)}')">📈 Wykres ceny</button>
+      <button class="btn ghost" onclick="shareToken()">💬 Wyślij na czat</button></div>`);
 }
 async function buyTok(sol) {
   if (!(sol > 0)) return toast('Podaj kwotę');
@@ -713,6 +729,7 @@ function settings() {
   <h2>🔔 Powiadomienia w czacie</h2>
   <div class="card">
     <div class="seg">${[['all', 'Wszystkie'], ['sells', 'Tylko wyniki'], ['none', 'Wyłączone']].map(([k, l]) => `<button class="${(st.sol_notify || 'all') === k ? 'on' : ''}" onclick="setS('sol_notify','${k}')">${l}</button>`).join('')}</div>
+    <div class="row" style="margin-top:12px"><div class="sp"><div class="b">💬 Nowe wiadomości na czacie grupowym</div><div class="mut tiny">Krótkie powiadomienie w czacie z botem (maks. raz na 2 min).</div></div>${tgl('chat_notify', st.chat_notify)}</div>
     <div class="mut tiny" style="margin-top:8px">${{all: 'Każde kupno, sprzedaż, pominięcie i ruch obserwowanych traderów.', sells: 'Tylko sprzedaże z wynikiem (zysk / strata) i automatyczne sprzedaże – bez zasypywania czatu.', none: 'Bez powiadomień – wszystko widzisz w aplikacji (📜 Historia). Raport sesji i tak przyjdzie.'}[st.sol_notify || 'all']}</div>
   </div>
   <h2>⚡ Opłata za szybkość</h2>
@@ -858,6 +875,66 @@ async function withdraw() {
   if (r && r.sig) openDeposit();
 }
 
+// ---------- czat grupowy ----------
+let CHAT = {msgs: [], last: 0, admin: false, loaded: false};
+function chatSeen() { try { return +localStorage.getItem('chat_seen') || 0; } catch (e) { return 0; } }
+function setChatSeen(id) { try { localStorage.setItem('chat_seen', String(id)); } catch (e) {} }
+const ADDR_RE = /[1-9A-HJ-NP-Za-km-z]{32,44}/g;
+function msgHtml(m) {
+  const text = esc(m.text).replace(ADDR_RE, a => `<a class="chip" style="display:inline-block;padding:3px 8px;margin:2px 0;font-size:12px" onclick="openToken('${a}')">🔍 ${short(a)}</a>`);
+  const role = m.role === 'owner' ? ' 👑' : m.role === 'admin' ? ' ⭐' : '';
+  const canDel = m.mine || CHAT.admin;
+  return `<div class="msg ${m.mine ? 'me' : ''}">${canDel ? `<span class="del" onclick="chatDelete(${m.id})">✕</span>` : ''}${m.mine ? '' : `<div class="who">${esc(m.name)}${role}</div>`}${text}<div class="when">${hhmm(m.ts)}</div></div>`;
+}
+function chatTab() {
+  if (!CHAT.loaded) loadChat(true);
+  return `<div class="row" style="margin:4px 2px 10px"><div class="sp b" style="font-size:18px">💬 Czat grupowy</div>${CHAT.msgs.length ? `<span class="pill">${CHAT.msgs.length} wiad.</span>` : ''}</div>
+    <div class="chatl" id="chatl">${CHAT.loaded ? (CHAT.msgs.map(msgHtml).join('') || '<div class="empty">Pusto – napisz pierwszy! Wklej adres tokena albo tradera, a reszta od razu go zobaczy.</div>') : '<div class="loader"></div>'}</div>
+    <div class="chatbar"><textarea id="chatin" rows="1" placeholder="Napisz wiadomość…" onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();chatSend()}"></textarea>
+      <button onclick="chatSend()">➤</button></div>`;
+}
+async function loadChat(full) {
+  try {
+    const r = await api('/api/sol/chat' + (full || !CHAT.last ? '' : '?after=' + CHAT.last));
+    CHAT.admin = r.admin;
+    CHAT.msgs = full || !CHAT.last ? r.messages : CHAT.msgs.concat(r.messages);
+    const changed = full || r.messages.length;
+    CHAT.last = CHAT.msgs.length ? CHAT.msgs[CHAT.msgs.length - 1].id : 0;
+    CHAT.loaded = true;
+    if (S) S.chat_last_id = Math.max(S.chat_last_id || 0, r.last_id);
+    if (TAB === 'chat') {
+      setChatSeen(r.last_id);
+      const el = $('#chatl');
+      if (el && changed) {
+        const nearBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+        el.innerHTML = CHAT.msgs.map(msgHtml).join('') || '<div class="empty">Pusto – napisz pierwszy!</div>';
+        if (full || nearBottom) window.scrollTo(0, document.body.scrollHeight);
+      }
+      renderTabs();
+    }
+  } catch (e) { if (full) toast('⚠️ ' + e.message); }
+}
+async function chatSend(text) {
+  const el = $('#chatin');
+  text = (text ?? (el ? el.value : '')).trim();
+  if (!text) return;
+  try {
+    await api('/api/sol/action', {action: 'chat_send', text});
+    if (el) el.value = '';
+    haptic();
+    await loadChat(false);
+    window.scrollTo(0, document.body.scrollHeight);
+  } catch (e) { toast('⚠️ ' + e.message); }
+}
+async function chatDelete(id) {
+  if (!await confirmBox('Usunąć tę wiadomość?')) return;
+  await act('chat_delete', {id}, {reload: false}); loadChat(true);
+}
+async function shareToken() {
+  await chatSend(`🪙 ${TOK.symbol || ''} ${TOK.mint}`);
+  toast('💬 Wysłano na czat');
+}
+
 // ---------- admin ----------
 let ADM_T = 'users', ADM_SORT = 'active', ADM_AT = 0;
 const ROLE = {owner: '👑 właściciel', admin: '⭐ admin', user: '👤 użytkownik'};
@@ -991,6 +1068,7 @@ setInterval(() => {
   if (['home', 'history'].includes(TAB)) load();
   else if (TAB === 'admin') loadAdmin();
 }, 15000);
+setInterval(() => { if (TAB === 'chat' && !SHEET && document.visibilityState === 'visible') loadChat(false); }, 3000);
 </script>
 </body>
 </html>
