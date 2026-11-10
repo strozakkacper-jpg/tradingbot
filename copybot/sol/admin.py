@@ -129,7 +129,13 @@ async def dashboard(s) -> dict:
               "latency_ms": int(day["lat"]) if day["lat"] else None}
     reasons = s.db._q("""SELECT info, COUNT(*) n FROM sol_trades WHERE tg_id > 0 AND status != 'filled' AND ts >= ?
                          GROUP BY substr(info, 1, 30) ORDER BY n DESC LIMIT 5""", (since,))
-    return {"users": users, "totals": totals, "feed": feed, "leaders": top_leaders(s),
+    tms = list(getattr(s.sol, "timings", []) or [])
+
+    def avg(key, rows):
+        return int(sum(r[key] for r in rows) / len(rows)) if rows else None
+    timing = {k: {f: avg(f, rows) for f in ("prep", "quote", "build", "confirm")} | {"n": len(rows)}
+              for k, rows in (("turbo", [r for r in tms if r["turbo"]]), ("normal", [r for r in tms if not r["turbo"]]))}
+    return {"users": users, "totals": totals, "feed": feed, "leaders": top_leaders(s), "timing": timing,
             "watcher": watcher_status(s), "paused": s.db.get_state("paused") == "1",
             "skip_reasons": [{"info": (r["info"] or "")[:90], "n": r["n"]} for r in reasons]}
 

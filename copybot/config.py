@@ -92,6 +92,8 @@ class Config:
     sol_paper_start: float = 5.0  # wirtualne SOL na start w trybie demo
     sol_priority_max_lamports: int = 2_000_000  # maks. 0,002 SOL opłaty priorytetowej (szybsze wejście)
     sol_reserve: float = 0.01  # SOL zostawiane na opłaty sieci
+    # tryb turbo: Jito Block Engine najbliżej serwera (Railway europe-west4 = Holandia → Amsterdam)
+    jito_url: str = "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions"
     sol_rpc_rps: float = 9.0  # limit zapytań RPC na sekundę (darmowy Helius ~10/s; płatny – ustaw więcej)
     sol_max_delay_s: float = 10.0  # kopie spóźnione bardziej niż tyle sekund są pomijane (cena mogła uciec)
     live_seconds: int = 60  # co ile sekund odświeżać przypiętą wiadomość „na żywo”
@@ -172,6 +174,7 @@ class Config:
             sol_max_delay_s=float(os.getenv("SOL_MAX_DELAY_S", "10")),
             sol_rpc_rps=float(os.getenv("SOL_RPC_RPS", "9")),
             sol_priority_max_lamports=int(os.getenv("SOL_PRIORITY_MAX_LAMPORTS", "2000000")),
+            jito_url=os.getenv("JITO_URL", "https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions"),
             live_coins=tuple(c.strip().upper() for c in os.getenv("LIVE_COINS", "BTC,ETH,SOL").split(",") if c.strip()),
             demo_coins=tuple(c.strip().upper() for c in os.getenv("DEMO_COINS", "BTC,ETH,SOL,XRP,DOGE,BNB").split(",")
                              if c.strip()),

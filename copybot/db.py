@@ -126,7 +126,8 @@ MIGRATIONS = {
     "sol_cons_window": "REAL NOT NULL DEFAULT 10",  # okno potwierdzenia w minutach
     "sol_boost": "REAL NOT NULL DEFAULT 1",  # mnożnik stawki przy potwierdzeniu (np. 2 = podwójna)
     "sol_trail": "REAL NOT NULL DEFAULT 0",  # ruchomy stop-loss: % spadku od szczytu (0 = wył.)
-    "sol_auto_rank": "INTEGER NOT NULL DEFAULT 0",  # co 3 dni: zbadaj traderów, wyłącz słabych, włącz najlepszych
+    "sol_auto_rank": "INTEGER NOT NULL DEFAULT 0",
+    "sol_turbo": "INTEGER NOT NULL DEFAULT 0",  # ⚡ turbo: wysyłka przez Jito + bez symulacji + wycena równolegle  # co 3 dni: zbadaj traderów, wyłącz słabych, włącz najlepszych
     # sesja = od włączenia do wyłączenia kopiowania – po niej bot wysyła szczegółowy raport
     "session_start": "INTEGER",
     "session_end": "INTEGER",
@@ -146,7 +147,7 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
                "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "nickname", "chat_notify", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "sol_consensus", "sol_cons_window", "sol_boost", "sol_trail",
-               "sol_auto_rank", "session_start", "session_end", "session_sol0", "session_cex0"}
+               "sol_auto_rank", "sol_turbo", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}
 TRADE_MIGRATIONS = {"pnl": "REAL"}  # zysk/strata sprzedaży (SOL) – do powiadomień i historii
@@ -398,7 +399,9 @@ class DB:
     def chat_add(self, tg_id: int, text: str) -> int:
         with self.lock, self.conn:
             cur = self.conn.execute("INSERT INTO chat_messages (tg_id, text, ts) VALUES (?, ?, ?)", (tg_id, text, now_ms()))
-            return cur.lastrowid
+        from .sol.events import BUS
+        BUS.bump_chat()
+        return cur.lastrowid
 
     def chat_list(self, after: int = 0, limit: int = 100) -> list[sqlite3.Row]:
         if after:
@@ -414,6 +417,8 @@ class DB:
 
     def chat_delete(self, msg_id: int):
         self._q("UPDATE chat_messages SET deleted = 1 WHERE id = ?", (msg_id,))
+        from .sol.events import BUS
+        BUS.bump_chat()
 
     def set_research(self, wallet: str, stats: dict):
         """Wynik badania tradera – zapisujemy u wszystkich, którzy mają go na liście."""

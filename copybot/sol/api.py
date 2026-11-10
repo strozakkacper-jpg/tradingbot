@@ -32,6 +32,7 @@ SETTINGS = {
     "sol_paper_start": (float, 0.01, 1000), "sol_notify": ("notify", None, None),
     "sol_consensus": (int, 0, 5), "sol_cons_window": (float, 1, 120), "sol_boost": (float, 1, 5),
     "sol_trail": (float, 0, 90), "sol_auto_rank": (bool, None, None), "chat_notify": (bool, None, None),
+    "sol_turbo": (bool, None, None),
 }
 
 
@@ -124,6 +125,27 @@ def saved_list(s, uid: int) -> list[dict]:
         x.setdefault("label", None)
     out.sort(key=lambda x: (not x["priority"], x["status"] != "copy", -(x["score"] if x["score"] is not None else -1e9),
                             -(x["last_active"] or 0), x["order"]))
+    return out
+
+
+def ranking(s, uid: int, paper: bool) -> list[dict]:
+    """Tabela traderów: ile zarobiłeś na kopiowaniu każdego (7 dni / od początku) + wynik z badania."""
+    week = now_ms() - 7 * DAY_MS
+    mine = {r["wallet"]: r for r in s.db._q(
+        """SELECT l.wallet, COUNT(*) n, SUM(t.side = 'sell') sells, SUM(t.pnl > 0) wins,
+                  SUM(COALESCE(t.pnl, 0)) pnl_all, SUM(CASE WHEN t.ts >= ? THEN COALESCE(t.pnl, 0) ELSE 0 END) pnl_7d,
+                  SUM(t.side = 'buy') buys
+           FROM sol_trades t JOIN leaders l ON l.id = t.leader_id
+           WHERE t.tg_id = ? AND t.paper = ? AND t.status = 'filled' GROUP BY l.wallet""", (week, uid, int(paper)))}
+    out = []
+    for it in saved_list(s, uid):
+        m = mine.get(it["wallet"])
+        out.append({**{k: it[k] for k in ("wallet", "name", "emoji", "status", "priority", "lid", "label", "score",
+                                           "last_active")},
+                    "research": it["stats"],
+                    "copies": (m["buys"] or 0) if m else 0, "sells": (m["sells"] or 0) if m else 0,
+                    "wins": (m["wins"] or 0) if m else 0,
+                    "pnl_7d": m["pnl_7d"] if m else 0.0, "pnl_all": m["pnl_all"] if m else 0.0})
     return out
 
 
@@ -778,6 +800,22 @@ def routes(s, app: web.Application, auth):
             raise ApiError("Złe zapytanie")
         return await action(s, s.db.get_user(u["tg_id"]), body)
 
+    async def h_live(req, u):
+        """Długie odpytywanie: odpowiada od razu, gdy bot coś kupi/sprzeda albo ktoś napisze na czacie."""
+        from .events import BUS
+        try:
+            v, c = int(req.query.get("v", -1)), int(req.query.get("c", -1))
+        except ValueError:
+            v = c = -1
+        if v < 0:
+            return BUS.snapshot(u["tg_id"])
+        return await BUS.wait(u["tg_id"], v, c, timeout=25)
+
+    async def h_ranking(_, u):
+        uu = s.db.get_user(u["tg_id"])
+        return {"rows": ranking(s, u["tg_id"], not s.sol.is_live(uu)), "live": s.sol.is_live(uu),
+                "copied": copied_count(s, u["tg_id"]), "max_copied": MAX_COPIED}
+
     async def h_chat(req, u):
         after = int(req.query.get("after") or 0)
         return {"messages": [chat_msg(s, r, u["tg_id"]) for r in s.db.chat_list(after)],
@@ -811,5 +849,7 @@ def routes(s, app: web.Application, auth):
     r.add_post("/api/sol/action", handler(h_action))
     r.add_get("/api/sol/saved", handler(h_saved))
     r.add_get("/api/sol/chat", handler(h_chat))
+    r.add_get("/api/sol/ranking", handler(h_ranking))
+    r.add_get("/api/sol/live", handler(h_live))
     r.add_get("/api/sol/admin/users", handler(h_admin_users))
     r.add_get("/api/sol/admin/user/{uid:\\d+}", handler(h_admin_user))

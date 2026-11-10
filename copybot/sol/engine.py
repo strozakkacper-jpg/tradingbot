@@ -91,6 +91,8 @@ class SolEngine:
         self._recent_buys: dict[str, dict[int, float]] = {}  # mint -> {trader: czas zakupu} – sygnał zbiorowy
         self.watcher = None  # SolWatcher (ustawiany w main)
         self.pump = None  # PumpPortal – zapasowa droga dla świeżych tokenów z Pump.fun (ustawiana w main)
+        self.jito = None  # Jito Block Engine – wysyłka w trybie turbo (ustawiana w main)
+        self.timings: list[dict] = []  # ostatnie pomiary etapów transakcji LIVE (do panelu admina)
 
     # ---------- baza ----------
     def wallet(self, tg_id: int, create: bool = True) -> tuple[str, Keypair] | None:
@@ -151,6 +153,8 @@ class SolEngine:
                       sig, latency_ms, ts, pnl) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                    (tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, int(paper), sig, lat, now_ms(),
                     pnl))
+        from .events import BUS
+        BUS.bump_user(tg_id)  # aplikacja odświeży się od razu
 
     @staticmethod
     def sell_pnl(basis, fill: "Fill"):
@@ -345,6 +349,7 @@ class SolEngine:
         try:
             self._fresh(t_recv)
             boost_note = None
+            prequote = None
             if sw.side == "buy":
                 keys = u.keys()
                 need = u["sol_consensus"] if "sol_consensus" in keys else 0
@@ -359,8 +364,21 @@ class SolEngine:
                     raise Skip("już kupione po sygnale zbiorowym – kolejny trader tylko to potwierdza")
                 boosted = cons >= 2 and boost > 1 and not already
                 topup = boosted and holds  # dokładamy do pozycji kupionej za 1. traderem
-                await self.guard_buy(u, sw, lead, allow_add=topup)
-                amount = await self.buy_amount(u, sw)
+                if self.turbo(u):
+                    # turbo: kwotę liczymy od razu i wycenę z Jupitera puszczamy RÓWNOLEGLE z filtrami
+                    amount = await self.buy_amount(u, sw)
+                    if not boosted:
+                        prequote = asyncio.create_task(self.jup.quote(SOL_MINT, sw.mint, amount,
+                                                                      int(u["sol_slippage_bps"])))
+                    try:
+                        await self.guard_buy(u, sw, lead, allow_add=topup)
+                    except Exception:
+                        if prequote:
+                            prequote.cancel()
+                        raise
+                else:
+                    await self.guard_buy(u, sw, lead, allow_add=topup)
+                    amount = await self.buy_amount(u, sw)
                 if boosted:
                     amount = int(amount * ((boost - 1) if topup else boost))
                     bal = await self.sol_lamports(u)
@@ -385,7 +403,8 @@ class SolEngine:
             if sw.side == "sell":
                 fill = await self.sell_with_retry(u, sw.mint, amount, t_recv, sw.decimals, sw)
             else:
-                fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw)
+                fill = await self.execute(u, sw.side, sw.mint, amount, t_recv, decimals=sw.decimals, fallback=sw,
+                                          prequote=prequote)
             if boost_note:
                 fill.note = boost_note + (f" · {fill.note}" if fill.note else "")
             if sw.side == "sell":
@@ -590,7 +609,7 @@ class SolEngine:
         return want
 
     async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,
-                      decimals: int | None = None, fallback: Swap | None = None) -> Fill:
+                      decimals: int | None = None, fallback: Swap | None = None, prequote=None) -> Fill:
         """Kupno: amount_raw = lamporty SOL. Sprzedaż: jednostki tokena."""
         t0 = t_recv or time.monotonic()
         if u["tg_id"] > 0:  # portfel (i saldo demo) musi istnieć PRZED transakcją – inaczej utworzenie go
@@ -599,8 +618,10 @@ class SolEngine:
         if decimals is None:  # bez zapytania do sieci, jeśli znamy token
             cached = self.cached_token(mint)
             decimals = cached[1] if cached else (await self.token_info(mint))[1]
+        t_q = time.monotonic()
         try:
-            quote = await self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]))
+            quote = await (prequote if prequote is not None else
+                           self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"])))
         except ChainError as e:
             if "Too many requests" in str(e) or "429" in str(e):
                 raise Skip("limit zapytań Jupitera – za dużo transakcji naraz (wyższy plan Jupitera to zniesie)") from e
@@ -627,11 +648,16 @@ class SolEngine:
             return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, lat)
         pub, kp = self.wallet(u["tg_id"])
         self._fresh(t_recv)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
-        tx = await self.jup.swap(quote, kp, self.priority(u))
-        lat = int((time.monotonic() - t0) * 1000)  # do momentu wysłania transakcji
+        turbo = self.turbo(u) and self.jito is not None
+        t_s = time.monotonic()
+        tx = await self.jup.swap(quote, kp, self.priority(u), jito_tip=self.priority(u) if turbo else None)
+        t_b = time.monotonic()
+        lat = int((t_b - t0) * 1000)  # do momentu wysłania transakcji
         self._bal.pop(pub, None)
-        sig, confirm_s = await self.rpc.send_and_confirm(tx)
-        return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s)
+        sig, confirm_s = await self.rpc.send_and_confirm(tx, also=[self.jito.send] if turbo else None)
+        self.note_timing(side, turbo, t0, t_q, t_s, t_b, confirm_s)
+        return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s,
+                    note="⚡ turbo" if turbo else None)
 
     async def reclaim_rent(self, u, mint: str | None = None) -> int:
         """Zamyka puste konta tokenów w prawdziwym portfelu – depozyt (~0,002 SOL za konto) wraca."""
@@ -675,6 +701,18 @@ class SolEngine:
                 if amount <= 0:
                     raise
         raise ChainError("sprzedaż nie weszła")
+
+    @staticmethod
+    def turbo(u) -> bool:
+        return bool("sol_turbo" in u.keys() and u["sol_turbo"])
+
+    def note_timing(self, side, turbo, t0, t_q, t_s, t_b, confirm_s):
+        """Pomiar etapów transakcji LIVE: przygotowanie, wycena, budowa, potwierdzenie (ms)."""
+        tm = {"side": side, "turbo": turbo, "prep": int((t_q - t0) * 1000), "quote": int((t_s - t_q) * 1000),
+              "build": int((t_b - t_s) * 1000), "confirm": int((confirm_s or 0) * 1000), "ts": now_ms()}
+        self.timings = (self.timings + [tm])[-50:]
+        log.info("Solana LIVE %s%s: przygotowanie %d ms · wycena %d ms · budowa %d ms · potwierdzenie %d ms",
+                 side, " ⚡turbo" if turbo else "", tm["prep"], tm["quote"], tm["build"], tm["confirm"])
 
     def priority(self, u) -> int:
         """Maks. opłata za szybkość (lamporty) – ustawienie użytkownika albo domyślna z konfiguracji."""

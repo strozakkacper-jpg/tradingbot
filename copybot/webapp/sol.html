@@ -78,6 +78,12 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;bac
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}.dot.g{background:var(--g);box-shadow:0 0 8px var(--g)}.dot.r{background:var(--r)}
 .ucard{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:12px;margin-bottom:8px;cursor:pointer}
 .ucard:active{transform:scale(.99)}
+.rtab{overflow-x:auto;margin:0 -14px;padding:0 14px}
+.rtab table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:520px}
+.rtab th{color:var(--mut);font-weight:600;text-align:right;padding:6px 6px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer}
+.rtab th:first-child,.rtab td:first-child,.rtab th:nth-child(2),.rtab td:nth-child(2){text-align:left}
+.rtab td{padding:9px 6px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+.rtab tr.top td{background:rgba(34,197,94,.06)}.rtab th.on{color:var(--acc2)}
 .chatl{display:flex;flex-direction:column;gap:6px;padding-bottom:70px}
 .msg{max-width:82%;padding:8px 11px;border-radius:14px;background:var(--card);border:1px solid var(--line);word-wrap:break-word;white-space:pre-wrap}
 .msg.me{align-self:flex-end;background:rgba(139,92,246,.22);border-color:rgba(139,92,246,.4)}
@@ -233,19 +239,48 @@ async function act(action, body = {}, {reload = true, quiet = false} = {}) {
     return r;
   } catch (e) { toast('⚠️ ' + e.message, 4000); throw e; }
 }
+let LAST_JSON = '', LOADING = null;
+const typing = () => { const a = document.activeElement; return a && /^(INPUT|TEXTAREA)$/.test(a.tagName); };
 async function load() {
+  if (LOADING) return LOADING;  // jedno zapytanie naraz – kolejne czekają na ten sam wynik
+  LOADING = (async () => {
   try {
-    const s = await api('/api/sol/state');
+    const raw = await fetch('/api/sol/state', {headers: {'X-Init-Data': INIT}});
+    const txt = await raw.text();
+    if (!raw.ok) { let j = {}; try { j = JSON.parse(txt); } catch (e) {} throw new Error(j.error || ('Błąd ' + raw.status)); }
+    if (txt === LAST_JSON && S) return;  // nic się nie zmieniło – bez przerysowania (bez migania)
+    LAST_JSON = txt;
+    const s = JSON.parse(txt);
     if (S && s.feed.length && LAST_FEED && s.feed[0].ts > LAST_FEED) {
       const f = s.feed[0];
-      if (f.status === 'filled') toast(`${f.side === 'buy' ? '🟢 Kupiono' : '🔴 Sprzedano'} ${f.symbol} za ${num(f.sol)} SOL`);
+      if (f.status === 'filled') toast(`${f.side === 'buy' ? '🟢 Kupiono' : '🔴 Sprzedano'} ${f.symbol} za ${num(f.sol)} SOL${f.pnl != null ? ` · ${f.pnl >= 0 ? 'zysk +' : 'strata '}${f.pnl.toFixed(4)}` : ''}`);
     }
     LAST_FEED = s.feed.length ? s.feed[0].ts : 0;
-    S = s; render();
+    S = s;
+    try { localStorage.setItem('state_cache', txt); } catch (e) {}
+    if (typing() && TAB !== 'home') renderTabs(); else render();  // nie przerywamy pisania
   } catch (e) {
+    if (S) return toast('⚠️ ' + e.message);
     $('#view').innerHTML = `<div class="card c" style="margin-top:40px"><div style="font-size:40px">🔒</div><p>${esc(e.message)}</p>
       <p class="mut small">Otwórz aplikację przyciskiem <b>📱 Aplikacja</b> w czacie z botem.</p>
       <button class="btn ghost" onclick="load()">Spróbuj ponownie</button></div>`;
+  } finally { LOADING = null; }
+  })();
+  return LOADING;
+}
+
+// zdarzenia na żywo: serwer odpowiada od razu, gdy bot coś kupi/sprzeda albo ktoś napisze na czacie
+let LIVE = {v: -1, c: -1};
+async function liveLoop() {
+  for (;;) {
+    try {
+      if (document.visibilityState !== 'visible') { await new Promise(r => setTimeout(r, 2000)); continue; }
+      const r = await api(`/api/sol/live?v=${LIVE.v}&c=${LIVE.c}`);
+      const tradeChanged = LIVE.v >= 0 && r.v !== LIVE.v, chatChanged = LIVE.c >= 0 && r.c !== LIVE.c;
+      LIVE = r;
+      if (tradeChanged && !SHEET) load();
+      if (chatChanged) { if (TAB === 'chat') loadChat(false); else if (S) { S.chat_last_id++; renderTabs(); } }
+    } catch (e) { await new Promise(r => setTimeout(r, 3000)); }
   }
 }
 
@@ -350,6 +385,7 @@ function traders() {
     <button class="btn ghost" style="margin-top:8px" onclick="$('#impf').click()">📥 Import listy z Axiom (.json)</button>
     <div class="mut tiny" style="margin-top:8px">Axiom → Wallet Tracker → Export. Zaimportowani są ⚪ wyłączeni – włączasz, kogo chcesz. ⭐ dostają ci z wyskakującymi alertami w Axiom.</div>
   </div>
+  <button class="btn" style="margin:14px 0 4px" onclick="openRanking()">🏆 Tabela najlepszych traderów</button>
   <h2 id="savedh">Traderzy${SAVED ? ' (' + SAVED.items.length + ')' : ''}</h2>
   <div id="saved">${savedHtml()}</div>`;
 }
@@ -732,11 +768,13 @@ function settings() {
     <div class="row" style="margin-top:12px"><div class="sp"><div class="b">💬 Nowe wiadomości na czacie grupowym</div><div class="mut tiny">Krótkie powiadomienie w czacie z botem (maks. raz na 2 min).</div></div>${tgl('chat_notify', st.chat_notify)}</div>
     <div class="mut tiny" style="margin-top:8px">${{all: 'Każde kupno, sprzedaż, pominięcie i ruch obserwowanych traderów.', sells: 'Tylko sprzedaże z wynikiem (zysk / strata) i automatyczne sprzedaże – bez zasypywania czatu.', none: 'Bez powiadomień – wszystko widzisz w aplikacji (📜 Historia). Raport sesji i tak przyjdzie.'}[st.sol_notify || 'all']}</div>
   </div>
-  <h2>⚡ Opłata za szybkość</h2>
-  <div class="card"><div class="mut tiny">Ile maksymalnie dopłacasz sieci Solana, żeby Twoja transakcja weszła szybciej (tylko 💰 prawdziwe SOL). Przy małych zakupach to realny koszt: 0,002 SOL przy zakupie za 0,05 SOL to 4% w jedną stronę.</div>
+  <h2>⚡ Szybkość</h2>
+  <div class="card">
+    <div class="row"><div class="sp"><div class="b">⚡ Tryb turbo</div><div class="mut tiny">Transakcja idzie jednocześnie przez Jito (wprost do walidatorów) i Helius, bez symulacji, a wycena startuje równolegle z filtrami. Opłata za szybkość działa wtedy jako napiwek dla Jito. Zwykle kilkaset ms szybciej i pewniejsze wejście do bloku. Tylko 💰 prawdziwe SOL.</div></div>${tgl('sol_turbo', st.sol_turbo)}</div>
+    <div class="mut tiny" style="margin:12px 0 0">Ile maksymalnie dopłacasz sieci Solana, żeby Twoja transakcja weszła szybciej (tylko 💰 prawdziwe SOL). Przy małych zakupach to realny koszt: 0,002 SOL przy zakupie za 0,05 SOL to 4% w jedną stronę.</div>
     ${slider('prio', 'Maks. opłata na transakcję', {min: 10000, max: 5000000, log: true, round: v => Math.round(v / 1000) * 1000, fmt: v => fSol(v / 1e9), save: v => setS('sol_priority', v)}, st.sol_priority)}
     ${chips('sol_priority', [100000, 500000, 1000000, 2000000], v => (v / 1e9) + ' SOL', st.sol_priority)}
-    <div class="mut tiny" style="margin-top:8px">💡 Polecane: 0,0005 SOL przy zakupach do 0,1 SOL, 0,001–0,002 SOL przy większych. Zwykle zapłacisz mniej niż maksimum.</div></div>
+    <div class="mut tiny" style="margin-top:8px">💡 Polecane: 0,0005 SOL przy zakupach do 0,1 SOL, 0,001–0,002 SOL przy większych. Bez turbo zwykle zapłacisz mniej niż maksimum. ${st.sol_turbo ? '<b>W turbo ta kwota to stały napiwek dla Jito – płacisz całą przy każdej transakcji</b> (0,0001–0,0005 SOL zwykle wystarcza).' : ''}</div></div>
   <h2>💰 Pieniądze</h2>
   <div class="card">
     <div class="row"><div class="sp"><div class="b">${S.live ? '💰 Grasz prawdziwymi SOL' : '🧪 Ćwiczenia (wirtualne SOL)'}</div>
@@ -785,7 +823,7 @@ function secSummary(title) {
   }
   if (title.includes('Tolerancja')) return st.sol_slippage_bps / 100 + '%';
   if (title.includes('Powiadomienia')) return {all: 'wszystkie', sells: 'tylko wyniki sprzedaży', none: 'wyłączone'}[st.sol_notify || 'all'];
-  if (title.includes('Opłata')) return 'maks. ' + fSol(st.sol_priority / 1e9) + ' na transakcję';
+  if (title.includes('Szybkość')) return (st.sol_turbo ? '⚡ turbo · ' : '') + 'opłata maks. ' + fSol(st.sol_priority / 1e9);
   if (title.includes('Twoja nazwa')) return S.user.nickname || (S.user.username ? '@' + S.user.username : 'bez nazwy');
   if (title.includes('Pieniądze')) return S.live ? '💰 prawdziwe SOL' : `🧪 ćwiczenia · start ${S.demo_start} SOL`;
   return '';
@@ -875,6 +913,39 @@ async function withdraw() {
   if (r && r.sig) openDeposit();
 }
 
+// ---------- tabela najlepszych traderów ----------
+let RANK = null, RANK_SORT = 'mine';
+async function openRanking() {
+  loading('🏆 Najlepsi traderzy');
+  try { RANK = await api('/api/sol/ranking'); renderRanking(); }
+  catch (e) { sheet(hdr('🏆 Najlepsi traderzy') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+function renderRanking() {
+  const key = {mine: r => r.pnl_7d, all: r => r.pnl_all, score: r => r.score ?? -1e9, pnl3: r => r.research && r.research.closed ? r.research.pnl : -1e9,
+               win: r => r.research && r.research.win_rate != null ? r.research.win_rate : -1}[RANK_SORT];
+  const rows = RANK.rows.filter(r => r.status || r.copies || (r.research && r.research.swaps)).sort((a, b) => key(b) - key(a));
+  const th = (k, l) => `<th class="${RANK_SORT === k ? 'on' : ''}" onclick="RANK_SORT='${k}';renderRanking()">${l}${RANK_SORT === k ? ' ▾' : ''}</th>`;
+  const sol = x => x ? `<b class="${x > 0 ? 'g' : 'r'}">${x > 0 ? '+' : ''}${x.toFixed(3)}</b>` : '<span class="mut">0</span>';
+  const body = rows.map((r, i) => {
+    const st = r.research || {};
+    return `<tr class="${i < 3 && key(r) > 0 ? 'top' : ''}">
+      <td>${i < 3 && key(r) > 0 ? ['🥇', '🥈', '🥉'][i] : i + 1}</td>
+      <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis" onclick="${r.lid ? `openWallet(${r.lid})` : `openLink('https://gmgn.ai/sol/address/${esc(r.wallet)}')`}">${r.priority ? '⭐' : ''}${esc(r.emoji || '')} <b>${esc(r.name || short(r.wallet))}</b><div class="tiny ${r.label === '🏆 dobry' ? 'g' : r.label === '⚡ flipper' || r.label === '📉 traci' ? 'r' : 'mut'}">${esc(r.label || 'nie badany')}</div></td>
+      <td>${sol(r.pnl_7d)}<div class="tiny mut">${r.copies} kopii · ${r.sells ? Math.round(r.wins / r.sells * 100) + '% z zyskiem' : '—'}</div></td>
+      <td>${sol(r.pnl_all)}</td>
+      <td>${st.closed ? sol(st.pnl) : '<span class="mut">—</span>'}</td>
+      <td>${st.win_rate != null ? Math.round(st.win_rate * 100) + '%' : '—'}</td>
+      <td>${st.hold_s != null ? fSec(st.hold_s) : '—'}</td>
+      <td><label class="toggle" style="transform:scale(.8)"><input type="checkbox" ${r.status === 'copy' ? 'checked' : ''} onchange="setSwitch('${esc(r.wallet)}', this.checked, this).then(openRanking)"><span></span></label></td></tr>`;
+  }).join('');
+  sheet(hdr('🏆 Najlepsi traderzy') + `
+    <div class="mut tiny" style="margin-bottom:8px">${RANK.live ? '💰 Twoje wyniki na prawdziwych SOL' : '🧪 Twoje wyniki na ćwiczeniach'} · kopiujesz ${RANK.copied}/${RANK.max_copied}. Kliknij nagłówek, żeby posortować, a nazwę – żeby otworzyć kartę tradera.</div>
+    <div class="card rtab"><table><thead><tr><th>#</th><th>Trader</th>${th('mine', 'Twój zysk 7 dni')}${th('all', 'Od początku')}${th('pnl3', 'On 3 dni')}${th('win', 'Trafia')}<th>Trzyma</th><th>WŁ</th></tr></thead>
+      <tbody>${body || '<tr><td colspan="8" class="empty">Brak danych – włącz traderów albo kliknij „🏆 Znajdź najlepszych”.</td></tr>'}</tbody></table></div>
+    <div class="mut tiny">„Twój zysk” = zarobek na sprzedanych tokenach skopiowanych od tego tradera. „On 3 dni” = wynik samego tradera z badania (🏆 Znajdź najlepszych).</div>
+    <button class="btn ghost" style="margin-top:10px" onclick="closeSheet();research()">🏆 Zbadaj wszystkich jeszcze raz</button>`);
+}
+
 // ---------- czat grupowy ----------
 let CHAT = {msgs: [], last: 0, admin: false, loaded: false};
 function chatSeen() { try { return +localStorage.getItem('chat_seen') || 0; } catch (e) { return 0; } }
@@ -953,6 +1024,7 @@ function adminTab() {
       <div class="stat"><div class="mut tiny">Wykryte wymiany traderów</div><div class="v">${st.swaps ?? 0}</div><div class="mut tiny">ostatnia: ${W.last_swap ? ago(W.last_swap) : '—'}</div></div>
       <div class="stat"><div class="mut tiny">Odrzucony spam</div><div class="v">${(st.failed ?? 0).toLocaleString('pl-PL')}</div><div class="mut tiny">nieudane tx + ${(st.filtered ?? 0).toLocaleString('pl-PL')} innych</div></div></div>
     ${W.error && !W.connected ? `<div class="warn">Ostatni błąd: ${esc(W.error)}</div>` : ''}
+    ${timingHtml(ADMIN.timing)}
     <button class="btn ${ADMIN.paused ? 'g' : 'r'}" style="margin-top:10px" onclick="adminPause(${!ADMIN.paused})">${ADMIN.paused ? '▶️ Wznów kopiowanie wszystkim' : '⏸ Wstrzymaj kopiowanie wszystkim'}</button>
   </div>
   <div class="kpi" style="margin-bottom:10px">
@@ -969,6 +1041,12 @@ function adminTab() {
   </div>
   <div class="seg" style="margin-bottom:10px">${seg.map(([k, l]) => `<button class="${ADM_T === k ? 'on' : ''}" onclick="ADM_T='${k}';render()">${l}</button>`).join('')}</div>
   ${({users: admUsers, feed: admFeed, leaders: admLeaders, issues: admIssues})[ADM_T]()}`;
+}
+function timingHtml(tm) {
+  if (!tm) return '';
+  const row = (l, x) => x && x.n ? `<div class="note small"><b>${l}</b> <span class="mut">(${x.n} transakcji)</span><br>przygotowanie ${x.prep} ms · wycena ${x.quote} ms · budowa ${x.build} ms · <b>w bloku po ${(x.confirm / 1000).toFixed(2)} s</b></div>` : '';
+  const html = row('⚡ Turbo', tm.turbo) + row('Zwykły tryb', tm.normal);
+  return html ? `<div style="margin-top:10px"><div class="mut tiny">⏱ Szybkość transakcji na prawdziwych SOL (od wykrycia ruchu tradera)</div>${html}</div>` : '';
 }
 function admUsers() {
   const sorts = {active: (a, b) => (b.active - a.active) || ((b.last_ts || 0) - (a.last_ts || 0)), value: (a, b) => (b.total || 0) - (a.total || 0),
@@ -1062,13 +1140,21 @@ async function renameUser(id, cur) {
 async function adminRole(id) { await act('admin_role', {uid: id}, {reload: false}); await loadAdmin(); openUser(id); }
 
 // ---------- start ----------
-load();
+// pierwsze otwarcie: od razu ostatni zapamiętany stan, w tle świeże dane
+try {
+  const c = localStorage.getItem('state_cache');
+  if (c) { S = JSON.parse(c); LAST_JSON = ''; render(); }
+} catch (e) { S = null; }
+load().then(liveLoop);
+// ceny i wartości zmieniają się bez zdarzeń – co 20 s ciche odświeżenie widocznej zakładki
 setInterval(() => {
   if (SHEET || document.visibilityState !== 'visible') return;
-  if (['home', 'history'].includes(TAB)) load();
+  if (['home', 'history', 'tokens'].includes(TAB)) load();
   else if (TAB === 'admin') loadAdmin();
-}, 15000);
-setInterval(() => { if (TAB === 'chat' && !SHEET && document.visibilityState === 'visible') loadChat(false); }, 3000);
+}, 20000);
+// zapas dla czatu (gdy połączenie na żywo chwilowo nie działa)
+setInterval(() => { if (TAB === 'chat' && !SHEET && document.visibilityState === 'visible') loadChat(false); }, 10000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') load(); });
 </script>
 </body>
 </html>

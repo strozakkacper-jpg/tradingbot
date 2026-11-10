@@ -39,9 +39,17 @@ def verify_init_data(init_data: str, bot_token: str, max_age: int = 24 * 3600) -
 
 
 def build_app(s) -> web.Application:
-    async def index(_):
+    async def index(request):
         page = "sol.html" if getattr(s, "sol", None) else "index.html"
-        return web.FileResponse(WEBAPP_DIR / page, headers={"Cache-Control": "no-cache"})
+        body = (WEBAPP_DIR / page).read_bytes()
+        etag = '"' + hashlib.sha1(body).hexdigest()[:16] + '"'
+        if request.headers.get("If-None-Match") == etag:  # strona się nie zmieniła – nic nie wysyłamy
+            return web.Response(status=304, headers={"ETag": etag, "Cache-Control": "no-cache"})
+        resp = web.Response(body=body, content_type="text/html", charset="utf-8",
+                            headers={"ETag": etag, "Cache-Control": "no-cache"})
+        if "gzip" in request.headers.get("Accept-Encoding", ""):
+            resp.enable_compression()
+        return resp
 
     async def index_cex(_):
         return web.FileResponse(WEBAPP_DIR / "index.html", headers={"Cache-Control": "no-cache"})
@@ -109,7 +117,16 @@ def build_app(s) -> web.Application:
     async def health(_):
         return web.Response(text="ok")
 
-    app = web.Application()
+    @web.middleware
+    async def compress(request, handler):
+        """gzip dla JSON i strony aplikacji – na telefonie 3–5× mniej danych, szybsze wczytywanie."""
+        resp = await handler(request)
+        if isinstance(resp, web.Response) and not isinstance(resp, web.FileResponse) and resp.body is not None \
+                and len(resp.body) > 1024 and "gzip" in request.headers.get("Accept-Encoding", ""):
+            resp.enable_compression()
+        return resp
+
+    app = web.Application(middlewares=[compress])
     app.router.add_get("/", root)
     app.router.add_get("/app", index)
     app.router.add_get("/app/cex", index_cex)

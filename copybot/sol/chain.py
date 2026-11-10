@@ -91,11 +91,17 @@ class Rpc:
         return await self.call("sendTransaction", [base64.b64encode(tx_bytes).decode(),
                                                    {"encoding": "base64", "skipPreflight": True, "maxRetries": 0}])
 
-    async def send_and_confirm(self, tx_bytes: bytes, timeout: float = 45) -> tuple[str, float]:
-        """Wysyła i ponawia co 400 ms aż do potwierdzenia. Zwraca (podpis, czas do potwierdzenia w s)."""
+    async def send_and_confirm(self, tx_bytes: bytes, timeout: float = 45, also=None) -> tuple[str, float]:
+        """Wysyła i ponawia co 400 ms aż do potwierdzenia. Zwraca (podpis, czas do potwierdzenia w s).
+        also: dodatkowe drogi wysyłki (np. Jito) – ta sama transakcja idzie nimi równolegle."""
         t0 = time.monotonic()
-        sig = await self.send(tx_bytes)
+        extra = [f(tx_bytes) for f in (also or [])]
+        res = await asyncio.gather(self.send(tx_bytes), *extra, return_exceptions=True)
+        sig = next((r for r in res if isinstance(r, str)), None)
+        if sig is None:
+            raise res[0] if isinstance(res[0], Exception) else ChainError("nie wysłano transakcji")
         last_send = time.monotonic()
+        rounds = 0
         while time.monotonic() - t0 < timeout:
             await asyncio.sleep(0.4)
             st = (await self.call("getSignatureStatuses", [[sig]]))["value"][0]
@@ -104,10 +110,9 @@ class Rpc:
             if st and st.get("confirmationStatus") in ("confirmed", "finalized"):
                 return sig, time.monotonic() - t0
             if time.monotonic() - last_send >= 0.4:  # rebroadcast – zwiększa szansę szybkiego wejścia do bloku
-                try:
-                    await self.send(tx_bytes)
-                except ChainError:
-                    pass
+                rounds += 1
+                again = [self.send(tx_bytes)] + ([f(tx_bytes) for f in also] if also and rounds % 3 == 0 else [])
+                await asyncio.gather(*again, return_exceptions=True)
                 last_send = time.monotonic()
         raise ChainError("brak potwierdzenia w 45 s (blockhash wygasł) – sprawdź saldo")
 
@@ -199,13 +204,16 @@ class Jupiter:
             raise ChainError(f"Jupiter: {data.get('error') or data.get('message') or status}")
         return data
 
-    async def swap(self, quote: dict, kp: Keypair, priority_max_lamports: int) -> bytes:
+    async def swap(self, quote: dict, kp: Keypair, priority_max_lamports: int, jito_tip: int | None = None) -> bytes:
+        """jito_tip: tryb turbo – zamiast opłaty priorytetowej napiwek dla Jito (transakcja idzie wprost do
+        walidatorów) i bez symulacji limitu CU po stronie Jupitera (ok. 0,1 s szybciej; przy napiwku Jito
+        limit CU nie wpływa na koszt)."""
+        fee = ({"jitoTipLamports": int(jito_tip)} if jito_tip else
+               {"priorityLevelWithMaxLamports": {"maxLamports": priority_max_lamports, "priorityLevel": "veryHigh"}})
         body = {"quoteResponse": quote, "userPublicKey": str(kp.pubkey()), "wrapAndUnwrapSol": True,
-                # dokładny limit CU (symulacja po stronie Jupitera, ~0,1 s): opłata za szybkość liczy się od CU,
-                # więc przy stałym, dużym limicie płaciło się maks. opłatę – przy małych kwotach to kilka % zakupu
-                "dynamicComputeUnitLimit": True, "skipUserAccountsRpcCalls": False,
-                "prioritizationFeeLamports": {"priorityLevelWithMaxLamports": {
-                    "maxLamports": priority_max_lamports, "priorityLevel": "veryHigh"}}}
+                # bez turbo: dokładny limit CU (symulacja ~0,1 s) – opłata priorytetowa liczy się od CU
+                "dynamicComputeUnitLimit": not jito_tip, "skipUserAccountsRpcCalls": bool(jito_tip),
+                "prioritizationFeeLamports": fee}
         _, data = await self._request("POST", "/swap/v1/swap", json=body)
         if "swapTransaction" not in data:
             raise ChainError(f"Jupiter swap: {data.get('error') or data}")
@@ -280,3 +288,20 @@ class PumpPortal:
         except Exception as e:  # noqa: BLE001
             raise ChainError(f"PumpPortal: zła odpowiedź ({e})") from e
         return bytes(VersionedTransaction(raw.message, [kp]))
+
+
+class Jito:
+    """Wysyłka transakcji przez Jito Block Engine – trafia bezpośrednio do walidatorów Jito (ok. 90% sieci).
+    Transakcja musi zawierać napiwek dla Jito (dokłada go Jupiter w trybie turbo)."""
+
+    def __init__(self, url: str, session: aiohttp.ClientSession):
+        self.url, self.session = url, session
+
+    async def send(self, tx_bytes: bytes) -> str:
+        body = {"jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
+                "params": [base64.b64encode(tx_bytes).decode(), {"encoding": "base64"}]}
+        async with self.session.post(self.url, json=body, timeout=aiohttp.ClientTimeout(total=5)) as r:
+            data = await r.json(content_type=None)
+        if "error" in data:
+            raise ChainError(f"Jito: {data['error'].get('message', data['error'])}")
+        return data["result"]

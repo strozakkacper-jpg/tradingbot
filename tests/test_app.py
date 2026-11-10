@@ -693,3 +693,100 @@ def test_group_chat(tmp_path):
         await ADM.cmd_czat(upd(FRIEND, text="/czat hej z telegrama"), ctx)
     asyncio.run(chat_cmd())
     assert s.db.chat_list()[-1]["text"] == "hej z telegrama"
+
+
+def test_turbo_jito_prequote_and_timings(tmp_path):
+    from copybot.sol.engine import Fill  # noqa: F401
+    s, _, _ = ready(tmp_path)
+    lid = s.db.create_leader("K", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, active=1, sol_turbo=1, sol_priority=200_000)
+    quotes = []
+    real_quote = s.sol.jup.quote
+
+    async def q(*a, **kw):
+        quotes.append(a)
+        return await real_quote(*a, **kw)
+    s.sol.jup.quote = q
+    # ćwiczenia: turbo puszcza wycenę równolegle – jedna wycena, zakup działa
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic()))
+    assert res["filled"] == 1 and len(quotes) == 1
+    # prawdziwe SOL: napiwek Jito w budowie transakcji i wysyłka także przez Jito
+    s.db.update_user(OWNER, sol_live=1)
+    calls = {}
+
+    async def swap_tx(quote, kp, prio, jito_tip=None):
+        calls["tip"] = jito_tip
+        return b"tx"
+
+    async def send_and_confirm(tx, timeout=45, also=None):
+        calls["also"] = also
+        return "sig", 0.8
+
+    class FakeJito:
+        async def send(self, b):
+            return "sig"
+    s.sol.jup.swap, s.sol.rpc.send_and_confirm, s.sol.jito = swap_tx, send_and_confirm, FakeJito()
+
+    async def bal(pk):
+        return 5 * 10 ** 9
+    s.sol.rpc.balance = bal
+    fill = asyncio.run(s.sol.execute(s.db.get_user(OWNER), "buy", TOKEN, 50_000_000, decimals=6))
+    assert calls["tip"] == 200_000 and calls["also"] and fill.note == "⚡ turbo"
+    assert s.sol.timings[-1]["turbo"] and s.sol.timings[-1]["confirm"] == 800
+
+
+def test_ranking_table(tmp_path):
+    s, _, _ = ready(tmp_path)
+    a, b = _two_leaders(s)
+    s.db.save_wallets(OWNER, [(WALLET, "A", "👻"), (W2, "B", None)], "t")
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "r1"), time.monotonic()))
+    s.sol.jup.token_usd = 0.2
+    asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "r2"), time.monotonic()))
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/ranking")
+        rows = {r["name"]: r for r in j["rows"]}
+        assert st == 200 and rows["A"]["pnl_7d"] > 0 and rows["A"]["copies"] == 1 and rows["A"]["wins"] == 1
+        assert rows["B"]["pnl_all"] == 0 and not j["live"]
+    run(s, steps)
+
+
+def test_live_events_and_gzip(tmp_path):
+    s, _, _ = ready(tmp_path)
+    lid = s.db.create_leader("K", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, active=1)
+
+    async def steps(call):
+        st, snap = await call(OWNER, "/api/sol/live")
+        assert st == 200 and "v" in snap
+
+        async def later():
+            await asyncio.sleep(0.2)
+            await s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic())
+        t0 = time.monotonic()
+        task = asyncio.create_task(later())
+        st, j = await call(OWNER, f"/api/sol/live?v={snap['v']}&c={snap['c']}")
+        await task
+        assert j["v"] > snap["v"] and time.monotonic() - t0 < 5  # obudzony od razu po kupnie
+        s.db.chat_add(FRIEND, "hej")
+        st, j2 = await call(OWNER, f"/api/sol/live?v={j['v']}&c={j['c']}")
+        assert j2["c"] > j["c"]
+    run(s, steps)
+
+    async def gz():
+        from aiohttp.test_utils import TestClient, TestServer
+        from copybot.web import build_app
+        client = TestClient(TestServer(build_app(s)))
+        await client.start_server()
+        try:
+            r = await client.get("/app", headers={"Accept-Encoding": "gzip"})
+            assert r.status == 200 and r.headers.get("Content-Encoding") == "gzip" and r.headers.get("ETag")
+            r2 = await client.get("/app", headers={"If-None-Match": r.headers["ETag"]})
+            assert r2.status == 304
+        finally:
+            await client.close()
+    asyncio.run(gz())
