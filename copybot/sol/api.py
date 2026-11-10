@@ -35,7 +35,7 @@ SETTINGS = {
     "sol_turbo": (bool, None, None),
     "sol_min_buy": (float, 0, 10), "sol_max_pos": (int, 0, 100), "sol_streak": (int, 0, 20),
     "sol_max_mcap": (float, 0, 1e10), "sol_min_age": (float, 0, 100000), "sol_max_age": (float, 0, 100000),
-    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None),
+    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None),
     "sol_report": (bool, None, None),
 }
 
@@ -108,7 +108,8 @@ def last_leader_move(s, uid: int) -> int | None:
 
 def settings_of(u) -> dict:
     return {k: (bool(u[k]) if t is bool else u[k]) for k, (t, *_r) in SETTINGS.items()} | {
-        "summary": buy_txt(u), "presets": [float(x) for x in (u["sol_presets"] or "0.05,0.1,0.5,1").split(",") if x]}
+        "summary": buy_txt(u), "sol_autocfg_at": u["sol_autocfg_at"] if "sol_autocfg_at" in u.keys() else None,
+        "presets": [float(x) for x in (u["sol_presets"] or "0.05,0.1,0.5,1").split(",") if x]}
 
 
 def copied_count(s, uid: int) -> int:
@@ -694,17 +695,27 @@ async def action(s, u, body: dict) -> dict:
         n = await se.reclaim_rent(u)
         return {"msg": f"🧹 Zamknięto {n} pustych kont tokenów – wróciło ok. {n * 0.00204:.4f} SOL" if n
                 else "Nie ma pustych kont tokenów do zamknięcia"}
-    if act == "auto_settings":
+    if act in ("auto_settings", "autocfg_preview"):
+        from . import autocfg
         from .axiom import portfolio
         pf = await portfolio(s, u)
         bal = float(body.get("balance") or pf["total"])
-        typical = typical_trader_buy(s, uid)
-        vals = recommended(bal, typical, se.is_live(u))
-        s.db.update_user(uid, **vals)
-        return {"msg": f"✨ Ustawione pod {bal:.3f} SOL: {vals['sol_pct']:g}% kwoty tradera (on zwykle ~{typical:.2g} SOL "
-                       f"→ Ty ~{typical * vals['sol_pct'] / 100:.3g} SOL), maks. {vals['sol_max']:g} SOL na zakup, "
-                       f"min. {vals['sol_min_buy']:g} SOL, do {vals['sol_max_pos']} pozycji, limit dnia "
-                       f"{vals['sol_day_limit']:g} SOL", "values": vals}
+        if bal <= 0:
+            raise ApiError("Saldo 0 SOL – najpierw wpłać SOL albo zacznij ćwiczenia")
+        if act == "autocfg_preview":
+            tr = autocfg.trader_profiles(s, uid)
+            p = autocfg.plan(bal, tr, se.is_live(u), autocfg.performance(s, u))
+            return {"text": autocfg.describe(p, tr), "values": p["values"], "warn": p["warn"]}
+        p = autocfg.apply(s, u, bal, full=True)
+        auto = body.get("auto", True)
+        s.db.update_user(uid, sol_autocfg=int(bool(auto)))
+        return {"msg": "✨ Ustawione pod Twoje saldo", "text": p["text"], "values": p["values"], "warn": p["warn"],
+                "auto": bool(auto)}
+    if act == "auto_name":
+        from . import leaderboard as LB
+        n = LB.auto_name(s, uid, refresh=True)
+        return {"msg": f"🏷 Nazwano {n} traderów wg rankingu" if n else
+                "Nikogo nie trzeba nazywać (albo nie ma ich w rankingu)"}
     if act == "optimize":
         from .axiom import portfolio
         from .optimizer import optimize
@@ -828,9 +839,32 @@ async def action(s, u, body: dict) -> dict:
         wallet = valid_address(str(body.get("wallet", "")))
         if not wallet:
             raise ApiError("Zły adres portfela")
-        s.db.save_wallets(uid, [(wallet, str(body.get("name") or "")[:48] or f"🌍 {short(wallet)}", None)], "ranking")
+        from . import leaderboard as LB
+        name = None
+        try:
+            rank, period = int(body.get("rank") or 0), int(body.get("period") or 0)
+        except (TypeError, ValueError):
+            rank = period = 0
+        if 1 <= rank <= 500 and period in (1, 7, 30):
+            kol = str(body.get("kol") or "").strip()[:30] or None
+            name = LB.rank_name(str(body.get("sort") or "score"), rank, period, kol)
+        name = name or str(body.get("name") or "")[:48] or f"🌍 {short(wallet)}"
+        old_name = s.db._q("SELECT name FROM sol_saved WHERE tg_id = ? AND wallet = ?", (uid, wallet))
+        if old_name and not LB.is_generic(old_name[0]["name"], wallet):
+            name = None  # własnej nazwy nie nadpisujemy
+        s.db.save_wallets(uid, [(wallet, name, None)], "ranking")
+        if name:
+            s.db._q("UPDATE sol_saved SET name = ? WHERE tg_id = ? AND wallet = ?", (name, uid, wallet))
+            for r in s.db._q("SELECT id, name FROM leaders WHERE source = 'sol' AND wallet = ?", (wallet,)):
+                if LB.is_generic(r["name"], wallet):
+                    s.db.update_leader(r["id"], name=name)
         if body.get("copy"):
-            return {"msg": switch(s, uid, wallet, True)}
+            msg = switch(s, uid, wallet, True)
+            if name:
+                for r in s.db._q("SELECT id, name FROM leaders WHERE source = 'sol' AND wallet = ?", (wallet,)):
+                    if LB.is_generic(r["name"], wallet):
+                        s.db.update_leader(r["id"], name=name)
+            return {"msg": msg + (f" · nazwa: {name}" if name else "")}
         return {"msg": "➕ Dodano do Twojej listy traderów (wyłączony – włączysz, kiedy chcesz)"}
     if act == "chat_send":
         import time as _t

@@ -473,8 +473,9 @@ def test_demo_start_real_costs_and_auto_settings(tmp_path):
         assert j["demo_start"] == 0.6 and abs(j["result"]) < 1e-9
         st, j = await call(OWNER, "/api/sol/action", {"action": "auto_settings"})
         u = s.db.get_user(OWNER)
-        assert st == 200 and u["sol_buy_mode"] == "pct" and u["sol_pct"] == 3.5 and u["sol_max"] == 0.071
-        assert u["sol_min_buy"] == 0.0082 and u["sol_max_pos"] == 15 and u["sol_streak"] == 5 and u["sol_trail"] == 40
+        assert st == 200 and u["sol_buy_mode"] == "pct" and u["sol_pct"] == 4.7 and u["sol_max"] == 0.093
+        assert u["sol_min_buy"] == 0.016 and u["sol_max_pos"] == 4 and u["sol_streak"] == 5 and u["sol_trail"] == 40
+        assert u["sol_autocfg"] == 1 and j["text"].startswith("Saldo 0.600 SOL")
     run(s, steps)
     # depozyt za konto tokena: pobrany przy pierwszym zakupie, wraca po sprzedaży całości
     asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.047))
@@ -1061,4 +1062,69 @@ def test_leaderboard_world(tmp_path, monkeypatch):
         st, j = await call(OWNER, "/api/sol/action", {"action": "lb_keys", "vybe": ""})
         LB.STATE["running"] = False
         assert st == 200 and j["keys"]["vybe"] is None
+    run(s, steps)
+
+
+
+def test_autocfg_plan_and_names(tmp_path):
+    import json as js
+    from copybot.db import ref_id
+    from copybot.sol import autocfg as AC, leaderboard as LB
+    s, _, _ = ready(tmp_path)
+    # dwóch traderów: jeden kupuje po ~0,5 SOL, drugi po ~10 SOL → osobne %, ta sama zwykła pozycja u Ciebie
+    a = s.db.create_leader("Portfel " + WALLET[:4] + "…" + WALLET[-4:], "sol", OWNER, "active", wallet=WALLET)
+    b = s.db.create_leader("Wieloryb", "sol", OWNER, "active", wallet=W2)
+    s.db.follow(OWNER, a, True)
+    s.db.follow(OWNER, b, True)
+    for lid, amt in ((a, 0.5), (b, 10.0)):
+        for i in range(5):
+            s.sol.record(ref_id(lid), lid, None, "buy", f"M{lid}{i}", amt, 1000, "filled", str(amt), True)
+    tr = {t["lid"]: t for t in AC.trader_profiles(s, OWNER)}
+    assert tr[a]["median"] == 0.5 and tr[b]["median"] == 10.0 and tr[a]["src"] == "7 dni jego zakupów"
+    p = AC.plan(5.0, list(tr.values()), live=True)
+    target = p["target"]
+    assert abs(p["per_trader"][a] / 100 * 0.5 - target) / target < 0.06
+    assert abs(p["per_trader"][b] / 100 * 10 - target) / target < 0.06
+    v = p["values"]
+    assert v["sol_max"] == AC.r2(target * 2) and v["sol_max_pos"] >= 4 and v["sol_min_buy"] * 0.025 >= p["fees"] * 0.9
+    assert v["sol_max_pos"] * target <= 5.0 * 0.9  # nie wydaje więcej niż ma
+    # małe saldo: mniej pozycji, ale zakup nie mniejszy niż minimum opłacalności
+    small = AC.plan(0.08, list(tr.values()), live=True)
+    assert small["target"] >= small["values"]["sol_min_buy"] * 0.99 and small["warn"]
+    assert AC.plan(0.005, [], live=True)["values"]["sol_max_pos"] == 0
+    # duże saldo: pojedynczy zakup ograniczony (memecoiny mają małą płynność)
+    assert AC.plan(500, list(tr.values()), live=True)["values"]["sol_buy"] <= AC.MAX_ONE_BUY
+    # zastosowanie: osobne % na kartach traderów, ręczna stała kwota zostaje
+    s.db.set_follow_amount(OWNER, b, sol=0.2)
+    u = s.db.get_user(OWNER)
+    AC.apply(s, u, 5.0)
+    assert s.db.follow_row(OWNER, a)["sol_pct"] == p["per_trader"][a] and s.db.follow_row(OWNER, b)["sol_buy"] == 0.2
+    u = s.db.get_user(OWNER)
+    assert AC.needs_update(u, 5.2, AC.trader_profiles(s, OWNER)) is None
+    assert "saldo" in AC.needs_update(u, 6.0, AC.trader_profiles(s, OWNER))
+    s.db.unfollow(OWNER, b)
+    assert "lista" in AC.needs_update(u, 5.0, AC.trader_profiles(s, OWNER))
+    # nazwy z rankingu
+    assert LB.rank_name("win", 5, 7) == "🎯 Top 5 skuteczność 7d"
+    assert LB.is_generic("🌍 9rXz…B2jJ") and LB.is_generic("Portfel 9rXz…B2jJ") and not LB.is_generic("Kowal")
+    now = int(time.time() * 1000)
+    for w, pnl, wr in ((WALLET, 50000, 0.9), (W2, 90000, 0.5)):
+        st = {"kind": "world", "pnl_usd": pnl, "pnl": pnl / 200, "win_rate": wr, "src": ["X"], "green_days": 3, "active_days": 5}
+        st["score"] = LB.world_score(st, 7)
+        s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, ?, ?, '🌍 X')", (w, js.dumps(st), st["score"], now))
+    s.db.save_wallets(OWNER, [(WALLET, "🌍 " + WALLET[:4] + "…" + WALLET[-4:], None), (W2, "Wieloryb", None)], "t")
+    assert LB.auto_name(s, OWNER) == 1
+    names = {r["wallet"]: r["name"] for r in s.db._q("SELECT wallet, name FROM sol_saved WHERE tg_id = ?", (OWNER,))}
+    assert names[WALLET] == "🏆 Top 1 ocena 7d" and names[W2] == "Wieloryb"  # własnej nazwy nie rusza
+    assert s.db.get_leader(a)["name"] == "🏆 Top 1 ocena 7d"
+
+    async def steps(call):
+        W3 = "So11111111111111111111111111111111111111112"
+        st, j = await call(OWNER, "/api/sol/action", {"action": "lb_add", "wallet": W3, "rank": 20, "sort": "score",
+                                                       "period": 30, "kol": "Cented"})
+        assert st == 200, j
+        n = s.db._q("SELECT name FROM sol_saved WHERE tg_id = ? AND wallet = ?", (OWNER, W3))[0]["name"]
+        assert n == "⭐ Cented · 🏆 Top 20 ocena 30d"
+        st, j = await call(OWNER, "/api/sol/action", {"action": "autocfg_preview", "balance": 2})
+        assert st == 200 and "zwykła pozycja" in j["text"]
     run(s, steps)

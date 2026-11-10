@@ -510,7 +510,8 @@ function savedHtml() {
   // chip „🏆 Najlepsi” – tylko gdy są wyniki badania
   return `<div class="card">
     <div class="row"><div class="sp"><div class="b">Kopiujesz ${SAVED.copied}/${SAVED.max_copied}</div>
-      <div class="mut tiny">🟢 włączony = bot powtarza jego zakupy i sprzedaże · ⭐ = priorytet, zawsze na górze</div></div></div>
+      <div class="mut tiny">🟢 włączony = bot powtarza jego zakupy i sprzedaże · ⭐ = priorytet, zawsze na górze</div></div>
+      <button class="chip" style="padding:6px 11px;font-size:12.5px" onclick="act('auto_name', {}, {reload: false}).then(() => { SAVED = null; load(); render(); })">🏷 Nazwij wg rankingu</button></div>
     <input style="margin-top:10px" placeholder="🔍 Szukaj po nazwie albo adresie" value="${esc(SAVED_Q)}" oninput="SAVED_Q=this.value;SAVED_N=40;$('#savedl').innerHTML=savedRows()">
     <div class="row" style="margin-top:10px;gap:8px"><button class="chip ${SEL ? 'on' : ''}" onclick="toggleSelect()">☑️ ${SEL ? 'Zakończ zaznaczanie' : 'Zaznacz'}</button>
       ${SEL ? `<button class="chip" onclick="selectAll()">Zaznacz widoczne (${savedFiltered().length})</button>` : ''}</div>
@@ -801,8 +802,11 @@ function settings() {
     : m === 'pct' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${sig2(5 * st.sol_pct / 100)} SOL</b>.` : '';
   return `
   <div class="card" style="border-color:var(--acc)"><div class="b">✨ Ustaw najlepsze pod moje saldo</div>
-    <div class="mut tiny" style="margin:4px 0 10px">Bot dobierze wszystko do Twojego salda (ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}) i do tego, za ile zwykle kupują Twoi traderzy: % ich kwoty (mocne wejście = większa pozycja), zwykła pozycja ok. 6% kapitału, maks. 12%, min. kwota (żeby opłaty nie zjadały zysku), limit pozycji, filtr pułapek, zwrot wkładu ×2, ruchomy stop 40% po ×2, stop-loss awaryjny −60%, limit dnia 25%, przerwa po 5 stratach. Najlepiej najpierw włącz traderów i kliknij 🏆 Znajdź najlepszych.</div>
+    <div class="mut tiny" style="margin:4px 0 10px">Bot liczy z prawdziwych danych: Twoje saldo (ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}), opłaty sieci (zakup musi być na tyle duży, żeby zjadały maks. ~2,5%), depozyty kont tokenów i <b>za ile naprawdę kupuje każdy Twój trader</b> – każdy dostaje osobny %, tak żeby jego zwykłe wejście dało u Ciebie zwykłą pozycję (mocne wejście = większa). Do tego liczba pozycji naraz, limit straty dnia, zwrot wkładu ×2, ruchomy stop i filtr pułapek.</div>
     <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button>
+    <div class="row" style="margin-top:12px"><div class="sp"><div class="b">🤖 Auto – dopasowuj samo do salda</div>
+      <div class="mut tiny">Co 30 min sprawdza: gdy saldo zmieni się o 12%+, zmienisz traderów albo minie doba – przelicza kwoty i limity (strategii nie rusza). Dostaniesz krótką wiadomość, co zmienił.${st.sol_autocfg && st.sol_autocfg_at ? ' Ostatnio: ' + ago(st.sol_autocfg_at) + '.' : ''}</div></div>${tgl('sol_autocfg', st.sol_autocfg)}</div>
+    <button class="btn ghost" style="margin-top:10px" onclick="autoPreview()">👀 Podgląd – co by ustawił</button>
     <button class="btn ghost" style="margin-top:8px" onclick="openOptimizer()">🧪 Optymalizator – sprawdź na prawdziwych ruchach traderów</button></div>
   <h2>💵 Ile wydać, gdy trader kupi</h2>
   <div class="card">
@@ -984,10 +988,18 @@ async function setDemoStart(v) {
   await act('settings', {field: 'sol_paper_start', value: v}, {reload: false, quiet: true});
   await act('reset_demo');
 }
+function autoTxt(r) {
+  return esc(r.text || '').replace(/\n/g, '<br>');
+}
 async function autoSettings() {
-  if (!await confirmBox('Ustawić wszystko pod Twoje saldo i traderów? Obecne ustawienia zostaną zastąpione (kwota, limity, filtry, opłaty, strategia).')) return;
+  if (!await confirmBox('Ustawić wszystko pod Twoje saldo i traderów? Obecne kwoty, limity i strategia zostaną zastąpione, a 🤖 Auto będzie je samo poprawiać, gdy saldo się zmieni.')) return;
   const r = await act('auto_settings', {}, {quiet: true});
-  if (r && r.msg) showHtml('✨ Gotowe', esc(r.msg) + '<br><br><span class="mut">Każdą wartość możesz poprawić suwakami w Opcjach.</span>');
+  if (r && r.text) showHtml('✨ Gotowe', autoTxt(r) + `<br><br><span class="mut">${r.auto ? '🤖 Auto włączone – sam przeliczy, gdy saldo zmieni się o 12%+. ' : ''}Każdą wartość możesz poprawić suwakami w Opcjach.</span>`);
+}
+async function autoPreview() {
+  loading('Podgląd');
+  try { const r = await api('/api/sol/action', {action: 'autocfg_preview'}); showHtml('👀 Co by ustawił', autoTxt(r) + '<br><br><button class="btn" onclick="closeSheet();autoSettings()">✨ Ustaw tak</button>'); }
+  catch (e) { closeSheet(); toast('⚠️ ' + e.message); }
 }
 async function resetDemo() {
   if (await confirmBox('Zacząć ćwiczenia od nowa? Wirtualne tokeny znikną, dostaniesz świeże wirtualne SOL.')) await act('reset_demo');
@@ -1104,8 +1116,8 @@ function lbRow(r, i) {
         ${info ? `<div class="tiny">${info}</div>` : ''}
         ${more ? `<div class="tiny mut">${more}</div>` : ''}
         <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
-          ${r.status === 'copy' ? '<span class="pill g">🟢 kopiujesz</span>' : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', true, ${r.bot || flip})">🟢 Kopiuj</button>`}
-          ${r.in_list ? (r.status === 'copy' ? '' : '<span class="pill">na Twojej liście</span>') : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', false)">➕ Do listy</button>`}
+          ${r.status === 'copy' ? '<span class="pill g">🟢 kopiujesz</span>' : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', true, ${r.bot || flip}, ${i + 1})">🟢 Kopiuj</button>`}
+          ${r.in_list ? (r.status === 'copy' ? '' : '<span class="pill">na Twojej liście</span>') : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', false, false, ${i + 1})">➕ Do listy</button>`}
           <button class="chip" style="padding:5px 10px" onclick="openLink('https://gmgn.ai/sol/address/${r.wallet}')">GMGN</button>
           <button class="chip" style="padding:5px 10px" onclick="openLink('https://solscan.io/account/${r.wallet}')">Solscan</button>
           ${tw ? `<button class="chip" style="padding:5px 10px" onclick="openLink('${esc(tw)}')">𝕏</button>` : ''}</div>
@@ -1151,10 +1163,10 @@ function lbHtml() {
     <div class="card">${rows || `<div class="empty">${empty}</div>`}</div>
     <div class="mut tiny c">Wynik z przeszłości nie gwarantuje zysku z kopii – kopia wchodzi chwilę później i po gorszej cenie. Nowego tradera sprawdź najpierw w demo.</div>`;
 }
-async function lbAdd(wallet, copy, risky) {
+async function lbAdd(wallet, copy, risky, rank) {
   if (copy && !await confirmBox(risky ? '⚠️ To bot albo flipper (trzyma sekundy) – kopia zwykle wchodzi za późno i traci. Na pewno włączyć kopiowanie?' : 'Dodać tego tradera i od razu włączyć kopiowanie?')) return;
   const r = ((LB && LB.rows) || []).find(x => x.wallet === wallet);
-  await act('lb_add', {wallet, copy, name: r && r.name ? '🌍 ' + String(r.name).slice(0, 40) : undefined}, {reload: false});
+  await act('lb_add', {wallet, copy, rank, sort: LB_SORT, period: LB_P, kol: r && r.name ? String(r.name).slice(0, 30) : undefined}, {reload: false});
   SAVED = null; loadLB(); load();
 }
 

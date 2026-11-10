@@ -18,6 +18,7 @@ import json
 import logging
 import math
 import os
+import re
 
 import aiohttp
 
@@ -380,6 +381,10 @@ async def rebuild(s, force_chain: bool = False):
             # z kluczami świat jest pełny – bot bada już tylko portfele z Waszych list (oszczędza RPC)
             await rebuild_chain(s, max_wallets=90 if not world else 60, trending=not world)
         s.db._q("DELETE FROM leaderboard WHERE updated < ?", (now_ms() - 3 * 24 * 3600 * 1000,))
+        try:
+            auto_name(s)  # traderzy z nic niemówiącymi nazwami dostają nazwę z rankingu
+        except Exception:  # noqa: BLE001
+            log.exception("Ranking: nazwy")
         log.info("Ranking traderów odświeżony: świat %d wierszy, bot %d portfeli", world, STATE["done"])
     except Exception:  # noqa: BLE001
         log.exception("Ranking traderów")
@@ -436,4 +441,71 @@ def start_rebuild(s, force_chain: bool = False) -> bool:
     return True
 
 
-__all__ = ["rebuild", "top", "leaderboard_job", "start_rebuild", "STATE", "get_key", "set_key", "key_status"]
+__all__ = ["rebuild", "top", "leaderboard_job", "start_rebuild", "STATE", "get_key", "set_key", "key_status",
+           "auto_name", "rank_name", "is_generic"]
+
+
+# ---------- nazwy traderów z rankingu („🎯 Top 5 skuteczność 7d”) ----------
+SORT_NAMES = {"score": ("🏆", "ocena"), "win": ("🎯", "skuteczność"), "green": ("📅", "stabilność"),
+              "pnl": ("💰", "zysk"), "roi": ("📈", "zwrot")}
+_AUTO = re.compile(r"Top \d+ (ocena|skuteczność|stabilność|zysk|zwrot) \d+d")
+_SHORT = re.compile(r"^(🌍 |Portfel )?[1-9A-HJ-NP-Za-km-z]{3,6}(…|\.\.\.)[1-9A-HJ-NP-Za-km-z]{3,6}$")
+
+
+def rank_name(sort: str, rank: int, period: int, name: str | None = None) -> str:
+    emo, word = SORT_NAMES.get(sort, SORT_NAMES["score"])
+    tag = f"{emo} Top {rank} {word} {period}d"
+    return (f"⭐ {name[:14]} · " + tag) if name else tag
+
+
+def is_generic(name: str | None, wallet: str = "") -> bool:
+    """Nazwa nic nie mówi: pusta, sam adres („9rXz…B2jJ”) albo nasza automatyczna z rankingu."""
+    if not name:
+        return True
+    n = name.strip()
+    return bool(_SHORT.match(n)) or n in (wallet, wallet[:4] + "…" + wallet[-4:]) or bool(_AUTO.search(n))
+
+
+def rank_table(s) -> dict[str, tuple]:
+    """{portfel: (miejsce, sortowanie, okres, nazwa KOL)} – najlepsze miejsce w dowolnym rankingu.
+    Pierwszeństwo: świat przed rankingiem bota, potem niższe miejsce, ocena i 7 dni przy remisie."""
+    best: dict[str, tuple] = {}
+    for ki, kind in enumerate(("world", "chain")):
+        for pi, period in enumerate((7, 30, 1)):
+            for si, sort in enumerate(SORT_NAMES):
+                for i, r in enumerate(top(s, period, sort, kind=kind)):
+                    if r.get("bot") or (r.get("score") or 0) <= -100:
+                        continue
+                    key = (ki, i, si, pi)
+                    w = r["wallet"]
+                    if w not in best or key < best[w][0]:
+                        best[w] = (key, i + 1, sort, period, r.get("name"))
+    return {w: v[1:] for w, v in best.items()}
+
+
+def auto_name(s, uid: int | None = None, refresh: bool = False, table: dict | None = None) -> int:
+    """Nadaje nazwy traderom, którzy mają nic niemówiące nazwy (i są w rankingu). refresh=True – także
+    poprawia nasze wcześniejsze automatyczne nazwy na aktualne miejsce. Zwraca, ile zmieniono."""
+    table = table if table is not None else rank_table(s)
+    if not table:
+        return 0
+    n = 0
+    users = [uid] if uid else [r["tg_id"] for r in s.db._q("SELECT DISTINCT tg_id FROM sol_saved")]
+    for u in users:
+        for r in s.db._q("SELECT wallet, name FROM sol_saved WHERE tg_id = ?", (u,)):
+            w, cur = r["wallet"], r["name"]
+            if w not in table or not (is_generic(cur, w) and (refresh or not _AUTO.search(cur or ""))):
+                continue
+            rank, sort, period, kol = table[w]
+            new = rank_name(sort, rank, period, kol)
+            if new != cur:
+                s.db._q("UPDATE sol_saved SET name = ? WHERE tg_id = ? AND wallet = ?", (new, u, w))
+                n += 1
+    for r in s.db._q("SELECT id, wallet, name FROM leaders WHERE source = 'sol' AND status = 'active'"):
+        w = r["wallet"]
+        if w in table and is_generic(r["name"], w) and (refresh or not _AUTO.search(r["name"] or "")):
+            rank, sort, period, kol = table[w]
+            new = rank_name(sort, rank, period, kol)
+            if new != r["name"]:
+                s.db.update_leader(r["id"], name=new)
+    return n

@@ -237,7 +237,7 @@ async def smart_job(ctx):
     s = ctx.application.bot_data["svc"]
     if not getattr(s, "sol", None):
         return
-    for u in s.db._q("SELECT * FROM users WHERE approved = 1 AND sol_smart = 1"):
+    for u in s.db._q("SELECT * FROM users WHERE approved = 1 AND sol_smart = 1 AND sol_autocfg = 0"):  # 🤖 auto liczy to sam
         try:
             ch = smart_allocation(s, u)
             if ch:
