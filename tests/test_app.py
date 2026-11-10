@@ -790,3 +790,24 @@ def test_live_events_and_gzip(tmp_path):
         finally:
             await client.close()
     asyncio.run(gz())
+
+
+def test_bulk_select_actions(tmp_path):
+    s, _, _ = ready(tmp_path)
+    w3 = "Wa11et3333333333333333333333333333333333333"
+    s.db.save_wallets(OWNER, [(WALLET, "A", None), (W2, "B", None), (w3, "C", None)], "t")
+    s.sol.wallet(OWNER)
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "bulk", "op": "on", "wallets": [WALLET, W2]})
+        assert st == 200 and j["done"] == 2 and s.sol.watched_wallets() == {WALLET, W2}
+        st, j = await call(OWNER, "/api/sol/action", {"action": "bulk", "op": "star", "wallets": [w3]})
+        st, j = await call(OWNER, "/api/sol/action", {"action": "bulk", "op": "delete", "wallets": [WALLET, w3]})
+        assert j["done"] == 2
+        st, j = await call(OWNER, "/api/sol/saved")
+        assert [i["name"] for i in j["items"]] == ["B"] and s.sol.watched_wallets() == {W2}
+        st, j = await call(OWNER, "/api/sol/action", {"action": "bulk", "op": "off", "wallets": [W2]})
+        assert s.sol.watched_wallets() == set()
+        st, j = await call(OWNER, "/api/sol/action", {"action": "bulk", "op": "zle", "wallets": [W2]})
+        assert st == 400
+    run(s, steps)

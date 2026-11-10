@@ -78,6 +78,11 @@ input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;bac
 .dot{width:10px;height:10px;border-radius:50%;display:inline-block;margin-right:6px}.dot.g{background:var(--g);box-shadow:0 0 8px var(--g)}.dot.r{background:var(--r)}
 .ucard{background:var(--card);border:1px solid var(--line);border-radius:var(--rad);padding:12px;margin-bottom:8px;cursor:pointer}
 .ucard:active{transform:scale(.99)}
+body.sel{padding-bottom:200px}
+.selbar{position:fixed;left:0;right:0;bottom:calc(58px + env(safe-area-inset-bottom));z-index:6;background:rgba(21,25,37,.98);border-top:1px solid var(--line);padding:8px 10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.selbar .chip{padding:7px 11px;font-size:13px}
+.ck{width:22px;height:22px;border-radius:7px;border:2px solid var(--mut2);flex:none;display:flex;align-items:center;justify-content:center;font-size:14px}
+.ck.on{background:var(--acc);border-color:var(--acc);color:#fff}
 .rtab{overflow-x:auto;margin:0 -14px;padding:0 14px}
 .rtab table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:520px}
 .rtab th{color:var(--mut);font-weight:600;text-align:right;padding:6px 6px;border-bottom:1px solid var(--line);white-space:nowrap;cursor:pointer}
@@ -292,7 +297,7 @@ function renderTabs() {
   const unread = k => k === 'chat' && TAB !== 'chat' && S && S.chat_last_id > chatSeen();
   $('#tabs').innerHTML = tabs.map(([k, i, l]) => `<button class="${TAB === k ? 'on' : ''}" onclick="go('${k}')"><span class="i">${i}</span>${l}${unread(k) ? '<span class="badge"></span>' : ''}</button>`).join('');
 }
-function go(t) { TAB = t; haptic(); window.scrollTo(0, 0); render(); if (t === 'tokens' && !TREND) loadTrend(); if (t === 'admin') loadAdmin(); if (t === 'chat') loadChat(true); }
+function go(t) { if (t !== 'traders') { SEL = null; document.getElementById('selbar')?.remove(); document.body.classList.remove('sel'); } TAB = t; haptic(); window.scrollTo(0, 0); render(); if (t === 'tokens' && !TREND) loadTrend(); if (t === 'admin') loadAdmin(); if (t === 'chat') loadChat(true); }
 function render() {
   if (!S) return;
   renderTabs();
@@ -373,7 +378,7 @@ function feedItem(f) {
 }
 
 // ---------- traderzy ----------
-let SAVED = null, SAVED_Q = '', SAVED_N = 40, SAVED_F = 'all', SCAN_T = null;
+let SAVED = null, SAVED_Q = '', SAVED_N = 40, SAVED_F = 'all', SCAN_T = null, SEL = null;  // SEL: zaznaczeni (Set) albo null
 function traders() {
   if (!SAVED) loadSaved();
   return `
@@ -414,6 +419,7 @@ async function loadSaved() {
   if (TAB === 'traders') {
     const el = $('#saved'); if (el) el.innerHTML = savedHtml();
     const h = $('#savedh'); if (h) h.textContent = 'Traderzy (' + SAVED.items.length + ')';
+    if (SEL) renderSel();
   }
   clearTimeout(SCAN_T);
   if ((SAVED.scan && SAVED.scan.running) || (SAVED.research && SAVED.research.running)) SCAN_T = setTimeout(() => { if (TAB === 'traders' && !SHEET) loadSaved(); }, 8000);
@@ -443,6 +449,8 @@ function savedHtml() {
     <div class="row"><div class="sp"><div class="b">Kopiujesz ${SAVED.copied}/${SAVED.max_copied}</div>
       <div class="mut tiny">🟢 włączony = bot powtarza jego zakupy i sprzedaże · ⭐ = priorytet, zawsze na górze</div></div></div>
     <input style="margin-top:10px" placeholder="🔍 Szukaj po nazwie albo adresie" value="${esc(SAVED_Q)}" oninput="SAVED_Q=this.value;SAVED_N=40;$('#savedl').innerHTML=savedRows()">
+    <div class="row" style="margin-top:10px;gap:8px"><button class="chip ${SEL ? 'on' : ''}" onclick="toggleSelect()">☑️ ${SEL ? 'Zakończ zaznaczanie' : 'Zaznacz'}</button>
+      ${SEL ? `<button class="chip" onclick="selectAll()">Zaznacz widoczne (${savedFiltered().length})</button>` : ''}</div>
     <div class="chips" style="margin-top:10px">${chip('all', 'Wszyscy')}${chip('on', '🟢 Włączeni')}${chip('star', '⭐ Priorytet')}${chip('active', '🔥 Aktywni 24 h')}${chip('best', '🏆 Najlepsi')}</div>
     <button class="btn" style="margin-top:10px" ${rs && rs.running ? 'disabled' : ''} onclick="research()">${rs && rs.running
       ? `🏆 Badam traderów… ${rs.done}/${rs.total}` : '🏆 Znajdź najlepszych (zbadaj zysk i skuteczność)'}</button>
@@ -459,8 +467,9 @@ function savedRows() {
   const list = savedFiltered();
   const rows = list.slice(0, SAVED_N).map(it => {
     const on = it.status === 'copy', w = esc(it.wallet);
-    const open = it.lid ? `openWallet(${it.lid})` : `openLink('https://gmgn.ai/sol/address/${w}')`;
+    const open = SEL ? `toggleSel('${w}')` : it.lid ? `openWallet(${it.lid})` : `openLink('https://gmgn.ai/sol/address/${w}')`;
     return `<div class="item" style="cursor:default">
+      ${SEL ? `<div class="ck ${SEL.has(it.wallet) ? 'on' : ''}" onclick="toggleSel('${w}')">${SEL.has(it.wallet) ? '✓' : ''}</div>` : ''}
       <div class="av" onclick="${open}">${esc(it.emoji || (it.name || '?').slice(0, 2).toUpperCase())}</div>
       <div class="sp" onclick="${open}" style="cursor:pointer"><div class="b">${esc(it.name || short(it.wallet))}</div>
         <div class="mut tiny">${short(it.wallet)}${it.status === 'watch' ? ' · 👁 obserwujesz' : ''}${agoTxt(it) ? ' · ' + agoTxt(it) : ''}${holdTxt(it.hold) ? ' · ' + holdTxt(it.hold) : ''}</div>
@@ -487,6 +496,31 @@ async function enableBest() {
 async function removeInactive() {
   if (!await confirmBox('Usunąć z listy traderów, którzy od 7 dni nic nie kupili? Włączonych, obserwowanych i ⭐ nie ruszam.')) return;
   await act('remove_inactive', {days: 7}, {reload: false}); await loadSaved();
+}
+function toggleSelect() { SEL = SEL ? null : new Set(); renderSel(); }
+function toggleSel(w) { SEL.has(w) ? SEL.delete(w) : SEL.add(w); haptic(); renderSel(); }
+function selectAll() { savedFiltered().forEach(it => SEL.add(it.wallet)); renderSel(); }
+function renderSel() {
+  const el = $('#saved'); if (el) el.innerHTML = savedHtml();
+  let bar = document.getElementById('selbar');
+  document.body.classList.toggle('sel', !!SEL && TAB === 'traders');
+  if (!SEL || TAB !== 'traders') { if (bar) bar.remove(); return; }
+  if (!bar) { bar = document.createElement('div'); bar.id = 'selbar'; bar.className = 'selbar'; document.body.appendChild(bar); }
+  const n = SEL.size;
+  bar.innerHTML = `<b style="margin-right:4px">${n} zazn.</b>
+    <button class="chip red" ${n ? '' : 'disabled'} onclick="bulk('delete')">🗑 Usuń</button>
+    <button class="chip" ${n ? '' : 'disabled'} onclick="bulk('off')">⚪ Wyłącz</button>
+    <button class="chip" ${n ? '' : 'disabled'} onclick="bulk('on')">🟢 Włącz</button>
+    <button class="chip" ${n ? '' : 'disabled'} onclick="bulk('star')">⭐</button>
+    <button class="chip" onclick="SEL.clear();renderSel()">Odznacz</button>`;
+}
+async function bulk(op) {
+  const n = SEL.size;
+  const ask = {delete: `Usunąć ${n} traderów z listy? Przestaniesz ich kopiować i obserwować. Tokeny, które masz, zostają.`,
+               off: `Wyłączyć kopiowanie ${n} traderów?`, on: `Włączyć kopiowanie ${n} traderów?`}[op];
+  if (ask && !await confirmBox(ask)) return;
+  const r = await act('bulk', {op, wallets: [...SEL]}, {reload: false});
+  if (r) { SEL = op === 'delete' ? new Set() : SEL; await loadSaved(); renderSel(); load(); }
 }
 async function setSwitch(wallet, on, el) {
   try { await act('switch', {wallet, on}, {reload: false}); } catch (e) { if (el) el.checked = !on; return; }

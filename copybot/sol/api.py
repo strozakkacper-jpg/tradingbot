@@ -557,6 +557,30 @@ async def action(s, u, body: dict) -> dict:
         lid = follow_saved(s, uid, wallet, mode == "copy")
         return {"msg": ("🟢 Kopiujesz" if mode == "copy" else "👁 Obserwujesz") +
                 ("" if u["active"] or mode != "copy" else " – włącz kopiowanie ▶️ na pulpicie"), "lid": lid}
+    if act == "bulk":  # zaznaczeni traderzy: usuń / wyłącz / włącz / ⭐
+        op = body.get("op")
+        wallets = [w for w in (valid_address(str(x)) for x in (body.get("wallets") or [])[:500]) if w]
+        if op not in ("delete", "off", "on", "star", "unstar") or not wallets:
+            raise ApiError("Nic nie zaznaczono")
+        done, errors = 0, []
+        for w in wallets:
+            try:
+                if op == "delete":
+                    for r in s.db._q("SELECT id FROM leaders WHERE source = 'sol' AND wallet = ?", (w,)):
+                        s.db.unfollow(uid, r["id"])
+                    s.db.unsave_wallet(uid, w)
+                elif op in ("off", "on"):
+                    switch(s, uid, w, op == "on")
+                else:
+                    ensure_saved(s, uid, w)
+                    s.db.set_priority(uid, w, op == "star")
+                done += 1
+            except ApiError as e:
+                errors.append(str(e))
+                break  # np. limit kopiowanych – dalej nie ma sensu
+        names = {"delete": "Usunięto", "off": "Wyłączono", "on": "Włączono", "star": "⭐ Priorytet dla",
+                 "unstar": "Bez priorytetu"}
+        return {"msg": f"{names[op]}: {done}" + (f" · {errors[0]}" if errors else ""), "done": done}
     if act in ("switch", "priority"):
         wallet = valid_address(str(body.get("wallet", "")))
         if not wallet:
