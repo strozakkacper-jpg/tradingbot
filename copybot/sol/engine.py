@@ -19,6 +19,19 @@ log = logging.getLogger(__name__)
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
+def token_age_min(info: dict) -> float | None:
+    """Wiek tokena w minutach (od pierwszej puli wymiany)."""
+    from datetime import datetime, timezone
+    ts = (info.get("firstPool") or {}).get("createdAt") or info.get("createdAt")
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - dt).total_seconds() / 60
+
+
 def friendly_error(e: Exception, u=None) -> str:
     """Błąd sieci / Jupitera / Pump.fun zwykłymi słowami."""
     s = str(e)
@@ -566,15 +579,31 @@ class SolEngine:
             if len(last) >= streak and all(r["pnl"] < 0 for r in last) and now_ms() - last[0]["ts"] < 30 * 60_000:
                 left = 30 - (now_ms() - last[0]["ts"]) // 60_000
                 raise Skip(f"☕ przerwa po {streak} stratach z rzędu – bot wraca do kupowania za ok. {left} min")
-        if "sol_safe" in keys and u["sol_safe"]:
-            from .risk import trap_reason
-            try:
+        g = lambda k: u[k] if k in keys and u[k] else 0  # noqa: E731
+        if g("sol_safe") or g("sol_max_mcap") or g("sol_min_age") or g("sol_max_age") or g("sol_dev_exit"):
+            try:  # jedno zapytanie (z pamięci 15 s) dla wszystkich filtrów tokena
                 info = await asyncio.wait_for(self.jup.token_full(sw.mint), 3)
             except Exception:  # noqa: BLE001
                 info = None
-            why = trap_reason(info)
-            if why:
-                raise Skip(f"🛡 pułapka – {why}")
+            if g("sol_safe"):
+                from .risk import trap_reason
+                why = trap_reason(info)
+                if why:
+                    raise Skip(f"🛡 pułapka – {why}")
+            if info:
+                mc = info.get("mcap")
+                if g("sol_max_mcap") and mc and mc > g("sol_max_mcap"):
+                    raise Skip(f"token wart już ${mc / 1e3:,.0f}K (Twój limit ${g('sol_max_mcap') / 1e3:,.0f}K) – "
+                               "mało miejsca na duży wzrost".replace(",", " "))
+                age = token_age_min(info)
+                if age is not None and g("sol_min_age") and age < g("sol_min_age"):
+                    raise Skip(f"token ma dopiero {age:.0f} min (Twoje minimum {g('sol_min_age'):g} min) – "
+                               "pierwsze minuty to najwięcej pułapek")
+                if age is not None and g("sol_max_age") and age > g("sol_max_age") * 60:
+                    raise Skip(f"token ma już {age / 60:.0f} h (Twój limit {g('sol_max_age'):g} h)")
+                dev = (info.get("audit") or {}).get("devBalancePercentage")
+                if g("sol_dev_exit") and dev is not None:  # zapamiętujemy, ile trzymał twórca przy zakupie
+                    self.db.set_state(f"devpct:{u['tg_id']}:{sw.mint}", f"{dev:.4f}")
 
     async def usd_txt(self, sol: float) -> str:
         """„ (≈ $12.30)” – kurs SOL z pamięci podręcznej (10 s), bez czekania dłużej niż 2 s."""
@@ -892,7 +921,9 @@ class SolEngine:
                 ref = {"tg_id": rid, "sol_live": 0, "sol_slippage_bps": 1000}
                 fill = await self.execute(ref, sw.side, sw.mint, amount)
                 sol, tok = fill.sol, fill.tokens
-            self.record(rid, lead["id"], sw.signature, sw.side, sw.mint, sol, tok, "filled", None, True)
+            # info = za ile handlował sam trader (SOL) – optymalizator odtwarza z tego różne strategie
+            self.record(rid, lead["id"], sw.signature, sw.side, sw.mint, sol, tok, "filled",
+                        f"{sw.quote_amount:.6g}" if sw.quote_symbol == "SOL" else None, True)
         except Exception:  # noqa: BLE001
             log.debug("Portfel wzorcowy Solany %s", lead["id"], exc_info=True)
 

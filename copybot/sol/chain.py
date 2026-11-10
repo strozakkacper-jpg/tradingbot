@@ -45,6 +45,7 @@ class Rpc:
         self.url, self.session = url, session
         self._id = 0
         self.limit = RateLimiter(rps)
+        self.auth_error: str | None = None
 
     async def call(self, method: str, params: list | None = None):
         for attempt in range(4):
@@ -52,6 +53,8 @@ class Rpc:
             self._id += 1
             async with self.session.post(self.url, json={"jsonrpc": "2.0", "id": self._id, "method": method,
                                                          "params": params or []}) as r:
+                if r.status in (401, 403):
+                    self.auth_error = f"HTTP {r.status}"
                 if r.status == 429:
                     await asyncio.sleep(0.5 * (attempt + 1))
                     continue
@@ -158,6 +161,8 @@ class Jupiter:
     def __init__(self, base: str, api_key: str, session: aiohttp.ClientSession):
         self.base, self.session = base.rstrip("/"), session
         self.headers = {"x-api-key": api_key} if api_key else {}
+        self.auth_error: str | None = None  # 401/403 – klucz nieprawidłowy albo wygasł (alert dla admina)
+        self.limit_hits: list[float] = []  # kiedy trafiliśmy w limit zapytań
         self._quotes: dict[tuple, tuple[float, asyncio.Future]] = {}  # wspólna wycena dla tych samych parametrów
 
     async def _request(self, method: str, path: str, **kw) -> tuple[int, dict]:
@@ -169,6 +174,11 @@ class Jupiter:
                 status = r.status
                 reset = r.headers.get("x-ratelimit-reset")
             limited = status == 429 or "Too many requests" in str(data)
+            if status in (401, 403):
+                self.auth_error = f"{status}: {str(data)[:120]}"
+            if limited:
+                self.limit_hits.append(time.time())
+                self.limit_hits = self.limit_hits[-500:]
             if not limited or attempt == 4:
                 return status, data
             wait = 0.2 * (attempt + 1)

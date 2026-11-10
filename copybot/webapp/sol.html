@@ -703,7 +703,8 @@ function history() {
       <div class="stat"><div class="mut tiny">🟢 Kupna</div><div class="v">${d.buys || 0}</div></div>
       <div class="stat"><div class="mut tiny">🔴 Sprzedaże</div><div class="v">${d.sells || 0}</div><div class="mut tiny">z zyskiem ${d.wins || 0}</div></div>
       <div class="stat"><div class="mut tiny">⚠️ Pominięte</div><div class="v">${d.skipped || 0}</div></div></div></div>
-  <button class="btn" style="margin:4px 0 6px" onclick="openReport()">📊 Raport sesji – ile zarobiłem</button>
+  <div class="row" style="gap:8px;margin:4px 0 6px"><button class="btn" onclick="openReport()">📊 Raport sesji</button>
+    <button class="btn ghost" style="width:auto" onclick="act('export_csv', {}, {reload: false})">📄 CSV</button></div>
   <div class="mut tiny c">Sesja = od włączenia ▶️ do wyłączenia ⏸ kopiowania</div>
   <h2>Wszystkie ruchy</h2>
   <div class="card">${S.feed.length ? S.feed.map(feedItem).join('') : '<div class="empty">Jeszcze nic.</div>'}</div>`;
@@ -738,7 +739,8 @@ function settings() {
   return `
   <div class="card" style="border-color:var(--acc)"><div class="b">✨ Ustaw najlepsze pod moje saldo</div>
     <div class="mut tiny" style="margin:4px 0 10px">Bot dobierze wszystko do Twojego salda (ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}) i do tego, za ile zwykle kupują Twoi traderzy: % ich kwoty (mocne wejście = większa pozycja), zwykła pozycja ok. 6% kapitału, maks. 12%, min. kwota (żeby opłaty nie zjadały zysku), limit pozycji, filtr pułapek, zwrot wkładu ×2, ruchomy stop 40% po ×2, stop-loss awaryjny −60%, limit dnia 25%, przerwa po 5 stratach. Najlepiej najpierw włącz traderów i kliknij 🏆 Znajdź najlepszych.</div>
-    <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button></div>
+    <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button>
+    <button class="btn ghost" style="margin-top:8px" onclick="openOptimizer()">🧪 Optymalizator – sprawdź na prawdziwych ruchach traderów</button></div>
   <h2>💵 Ile wydać, gdy trader kupi</h2>
   <div class="card">
     <div class="seg">${[['fixed', 'Stała kwota'], ['pct', '% jego kwoty'], ['ratio', '% portfela']].map(([k, l]) => `<button class="${m === k ? 'on' : ''}" onclick="setS('sol_buy_mode','${k}')">${l}</button>`).join('')}</div>
@@ -761,6 +763,8 @@ function settings() {
     ${chips('sol_trail', [0, 20, 30, 40], v => v ? v + '%' : 'wył.', st.sol_trail)}
     <div class="row" style="margin-top:16px"><div class="sp"><div class="b">🤖 Automatyczna ocena traderów</div>
       <div class="mut tiny">Co 3 dni bot bada wszystkich z listy, wyłącza tracących, nieaktywnych i flipperów (oprócz ⭐) i włącza najlepszych na ich miejsce. Dostaniesz podsumowanie w czacie.</div></div>${tgl('sol_auto_rank', st.sol_auto_rank)}</div>
+    <div class="row" style="margin-top:14px"><div class="sp"><div class="b">🧠 Inteligentne kwoty</div>
+      <div class="mut tiny">Codziennie rano: traderzy, którzy w 7 dni dali Ci najwięcej, dostają ×1,5 kwoty, a tracący ×0,5 (tryb „% jego kwoty”). Więcej pieniędzy idzie tam, gdzie zarabiasz.</div></div>${tgl('sol_smart', st.sol_smart)}</div>
   </div>
   <h2>🎯 Co kopiować</h2>
   <div class="card">
@@ -771,6 +775,13 @@ function settings() {
     ${slider('minhold', 'Pomijaj flipperów (trzymają krócej niż)', {min: 1, max: 600, log: true, round: R.int, fmt: fSec, off: 'wył.', save: v => setS('sol_min_hold', v)}, st.sol_min_hold)}
     <div class="mut tiny" style="margin:2px 0 8px">Trader, który zwykle sprzedaje po kilku sekundach, jest nieopłacalny do kopiowania. Bot ocenia to po co najmniej 5 jego zamkniętych pozycjach.</div>
     ${chips('sol_min_hold', [0, 10, 20, 60], v => v ? '< ' + v + ' s' : 'wył.', st.sol_min_hold)}
+    <div class="b" style="margin-top:16px">🪙 Filtry tokenów</div>
+    ${slider('mcap', 'Kupuj tylko tokeny warte mniej niż', {min: 5000, max: 100000000, log: true, round: v => sig2(v), fmt: usd, off: 'bez limitu', save: v => setS('sol_max_mcap', v)}, st.sol_max_mcap)}
+    <div class="mut tiny" style="margin:2px 0 8px">Np. $500K: tokeny już warte miliony rzadko robią ×10 – mniejsze mają więcej miejsca na wzrost (i ryzyka).</div>
+    ${chips('sol_max_mcap', [0, 100000, 500000, 2000000], v => v ? '< ' + usd(v) : 'bez limitu', st.sol_max_mcap)}
+    ${slider('minage', 'Token musi istnieć co najmniej', {min: 1, max: 1440, log: true, round: R.int, fmt: v => v < 60 ? v + ' min' : (v / 60).toFixed(1) + ' h', off: 'wył.', save: v => setS('sol_min_age', v)}, st.sol_min_age)}
+    <div class="mut tiny" style="margin:2px 0 8px">Pierwsze minuty po starcie tokena to najwięcej pułapek i botów.</div>
+    ${slider('maxage', 'Token nie starszy niż', {min: 1, max: 720, log: true, round: R.int, fmt: v => v + ' h', off: 'wył.', save: v => setS('sol_max_age', v)}, st.sol_max_age)}
   </div>
   <h2>🛡 Bezpieczniki</h2>
   <div class="card">
@@ -797,6 +808,10 @@ function settings() {
     ${slider('sl', 'Sprzedaj wszystko przy stracie', {min: 1, max: 95, round: R.int, fmt: v => '−' + v + '%', off: 'wył.', save: v => setS('sol_sl', v)}, st.sol_sl)}
     <div class="mut tiny" style="margin:2px 0 8px">Stop-loss, np. −30% = ucina stratę, zanim urośnie.</div>
     ${chips('sol_sl', [0, 20, 30, 50], v => v ? '−' + v + '%' : 'wył.', st.sol_sl)}
+    ${slider('texit', '⏰ Wyjście po czasie (bez ruchu)', {min: 10, max: 1440, log: true, round: v => Math.round(v / 5) * 5, fmt: v => v < 60 ? v + ' min' : (v / 60).toFixed(1) + ' h', off: 'wył.', save: v => setS('sol_time_exit', v)}, st.sol_time_exit)}
+    <div class="mut tiny" style="margin:2px 0 8px">Gdy token tyle czasu stoi w miejscu (±15%) i nikt nic nie robi, bot sprzedaje i odzyskuje SOL na nowe okazje. Martwe memecoiny zwykle powoli spadają.</div>
+    ${chips('sol_time_exit', [0, 60, 120, 360], v => v ? (v < 60 ? v + ' min' : v / 60 + ' h') : 'wył.', st.sol_time_exit)}
+    <div class="row" style="margin-top:14px"><div class="sp"><div class="b">🏃 Sprzedaj, gdy twórca ucieka</div><div class="mut tiny">Jeśli twórca tokena wyprzeda większość swoich tokenów (sprawdzane co 3 min), bot sprzedaje od razu – nie czekając na tradera.</div></div>${tgl('sol_dev_exit', st.sol_dev_exit)}</div>
   </div>
   <h2>🎚 Tolerancja ceny</h2>
   <div class="card"><div class="mut tiny">O ile cena może się zmienić, zanim zakup dojdzie do skutku. Memecoiny skaczą – 10–30% to norma; za mało = zakupy często nie wejdą, za dużo = możesz przepłacić.</div>
@@ -805,6 +820,7 @@ function settings() {
   <h2>🔔 Powiadomienia w czacie</h2>
   <div class="card">
     <div class="seg">${[['all', 'Wszystkie'], ['sells', 'Tylko wyniki'], ['none', 'Wyłączone']].map(([k, l]) => `<button class="${(st.sol_notify || 'all') === k ? 'on' : ''}" onclick="setS('sol_notify','${k}')">${l}</button>`).join('')}</div>
+    <div class="row" style="margin-top:12px"><div class="sp"><div class="b">📅 Raport dzienny i tygodniowy</div><div class="mut tiny">Codziennie o 21:00 (w niedzielę też tygodniowy): wynik, najlepsi i najsłabsi traderzy.</div></div>${tgl('sol_report', st.sol_report)}</div>
     <div class="row" style="margin-top:12px"><div class="sp"><div class="b">💬 Nowe wiadomości na czacie grupowym</div><div class="mut tiny">Krótkie powiadomienie w czacie z botem (maks. raz na 2 min).</div></div>${tgl('chat_notify', st.chat_notify)}</div>
     <div class="mut tiny" style="margin-top:8px">${{all: 'Każde kupno, sprzedaż, pominięcie i ruch obserwowanych traderów.', sells: 'Tylko sprzedaże z wynikiem (zysk / strata) i automatyczne sprzedaże – bez zasypywania czatu.', none: 'Bez powiadomień – wszystko widzisz w aplikacji (📜 Historia). Raport sesji i tak przyjdzie.'}[st.sol_notify || 'all']}</div>
   </div>
@@ -827,6 +843,16 @@ function settings() {
       <div class="mut tiny" style="margin:2px 0 8px">Ustaw tyle, ile naprawdę chcesz wpłacić (np. 200 zł ≈ ${S.sol_usd ? (200 / 3.7 / S.sol_usd).toFixed(2) : '0.6'} SOL) – ćwiczenia pokażą realny wynik. Zmiana zaczyna ćwiczenia od nowa.</div>
       <button class="btn ghost" style="margin-top:8px" onclick="resetDemo()">🔄 Zacznij ćwiczenia od nowa</button>
       <div class="mut tiny" style="margin-top:6px">Ćwiczenia liczą prawdziwe koszty: opłatę sieci, opłatę za szybkość i depozyt za konto tokena (wraca po sprzedaży całości).</div>`}
+  </div>
+  <h2>🔐 Bezpieczeństwo</h2>
+  <div class="card">
+    <div class="row"><div class="sp"><div class="b">PIN do wypłat ${S.has_pin ? '<span class="pill g">ustawiony</span>' : '<span class="pill y">brak</span>'}</div>
+      <div class="mut tiny">Wypłata, podłączenie innego portfela i powrót do poprzedniego wymagają PIN-u. W czacie z botem: /pin 1234 odblokowuje na 5 min. Nawet ktoś z dostępem do Twojego Telegrama nie wypłaci pieniędzy.</div></div></div>
+    <div class="row" style="gap:8px;margin-top:10px"><button class="btn ghost" onclick="setPin()">${S.has_pin ? '🔁 Zmień PIN' : '🔐 Ustaw PIN'}</button>
+      ${S.has_pin ? '<button class="btn ghost" style="width:auto" onclick="removePin()">Usuń</button>' : ''}</div>
+    <button class="btn ghost" style="margin-top:8px" onclick="act('export_csv', {}, {reload: false})">📄 Eksport historii (CSV, do PIT-38)</button>
+    ${S.user.role === 'owner' ? `<button class="btn ghost" style="margin-top:8px" onclick="act('backup', {}, {reload: false})">🗄 Kopia zapasowa bazy teraz</button>
+      <div class="mut tiny" style="margin-top:6px">Kopia przychodzi też sama codziennie o 4:00 w czacie z botem. Do odczytu kluczy potrzebny jest ENCRYPTION_KEY z Railway – zapisz go osobno w bezpiecznym miejscu.</div>` : ''}
   </div>
   <h2>👤 Twoja nazwa</h2>
   <div class="card"><div class="row"><div class="sp"><div class="b">${esc(S.user.nickname || (S.user.username ? '@' + S.user.username : 'bez nazwy'))}</div>
@@ -864,6 +890,7 @@ function secSummary(title) {
   if (title.includes('Tolerancja')) return st.sol_slippage_bps / 100 + '%';
   if (title.includes('Powiadomienia')) return {all: 'wszystkie', sells: 'tylko wyniki sprzedaży', none: 'wyłączone'}[st.sol_notify || 'all'];
   if (title.includes('Szybkość')) return (st.sol_turbo ? '⚡ turbo · ' : '') + 'opłata maks. ' + fSol(st.sol_priority / 1e9);
+  if (title.includes('Bezpieczeństwo')) return S.has_pin ? '🔐 PIN ustawiony' : '⚠️ bez PIN-u – ustaw, chroni wypłaty';
   if (title.includes('Twoja nazwa')) return S.user.nickname || (S.user.username ? '@' + S.user.username : 'bez nazwy');
   if (title.includes('Pieniądze')) return S.live ? '💰 prawdziwe SOL' : `🧪 ćwiczenia · start ${S.demo_start} SOL`;
   return '';
@@ -932,26 +959,72 @@ async function openDeposit() {
       <div class="mut tiny c">Klucz portfela bota (do Phantoma/Axiom) wyeksportujesz w czacie z botem – ze względów bezpieczeństwa nie pokazujemy go w aplikacji.</div>`);
   } catch (e) { sheet(hdr('Portfel') + `<div class="empty">${esc(e.message)}</div>`); }
 }
+function askPin() {
+  if (!S.has_pin) return null;
+  const p = prompt('🔐 Podaj PIN:');
+  return p === null ? false : p.trim();
+}
+async function setPin() {
+  let old = null;
+  if (S.has_pin) { old = prompt('Obecny PIN:'); if (old === null) return; }
+  const p = prompt('Nowy PIN (4–8 cyfr):'); if (p === null) return;
+  if (prompt('Powtórz nowy PIN:') !== p) return toast('PIN-y się różnią');
+  await act('set_pin', {pin: p.trim(), old_pin: old});
+}
+async function removePin() {
+  const old = prompt('Obecny PIN:'); if (old === null) return;
+  await act('set_pin', {pin: '', old_pin: old});
+}
 async function importWallet() {
   const el = $('#impk'), secret = (el.value || '').trim();
   if (!secret) return toast('Wklej klucz prywatny z Axiom');
   let r;
   try { r = await api('/api/sol/action', {action: 'import_wallet', secret}); } catch (e) { return toast('⚠️ ' + e.message, 4000); }
   if (!await confirmBox(`Podłączyć portfel ${short(r.address)}${r.balance != null ? ' (saldo ' + num(r.balance) + ' SOL)' : ''}?\n\nSprawdź, że to ten sam adres co w Axiom. Poprzedni portfel bota zostanie zapisany – możesz do niego wrócić.`)) return;
+  const pin = askPin(); if (pin === false) return;
   el.value = '';
-  await act('import_wallet', {secret, address: r.address, confirm: true});
+  await act('import_wallet', {secret, address: r.address, confirm: true, pin});
   openDeposit();
 }
 async function restoreWallet() {
   if (!await confirmBox('Wrócić do poprzedniego portfela? Obecny zostanie zapisany i też możesz do niego wrócić.')) return;
-  await act('restore_wallet'); openDeposit();
+  const pin = askPin(); if (pin === false) return;
+  await act('restore_wallet', {pin}); openDeposit();
 }
 async function withdraw() {
   const a = $('#wda').value.trim(), n = $('#wdn').value.trim();
   if (!a || !n) return toast('Podaj adres i kwotę');
   if (!await confirmBox(`Wypłacić ${n} SOL na ${short(a)}? Tego nie da się cofnąć.`)) return;
-  const r = await act('withdraw', {address: a, amount: n, confirm: true}, {reload: false});
+  const pin = askPin(); if (pin === false) return;
+  const r = await act('withdraw', {address: a, amount: n, confirm: true, pin}, {reload: false});
   if (r && r.sig) openDeposit();
+}
+
+// ---------- optymalizator ----------
+async function openOptimizer(days = 7) {
+  loading('🧪 Optymalizator');
+  try {
+    const r = await act('optimize', {days}, {reload: false, quiet: true});
+    if (!r) return closeSheet();
+    if (!r.events) return sheet(hdr('🧪 Optymalizator') + '<div class="empty">Za mało danych – bot zbiera ruchy włączonych traderów od momentu ich włączenia. Wróć za dzień–dwa.</div>');
+    const pct = x => `<b class="${x >= 0 ? 'g' : 'r'}">${x >= 0 ? '+' : ''}${x.toFixed(1)}%</b>`;
+    const rows = r.results.map((x, i) => `<div class="note"><div class="row"><div class="sp"><b>${i === 0 ? '🥇 ' : ''}${esc(x.desc)}</b>
+        <div class="mut tiny">${x.trades} sprzedaży · z zyskiem ${x.win_rate != null ? Math.round(x.win_rate * 100) + '%' : '—'}</div></div><div>${pct(x.pnl_pct)}</div></div>
+        <button class="chip" style="margin-top:6px" onclick='applyOpt(${JSON.stringify(x.settings).replace(/'/g, "")})'>✅ Zastosuj</button></div>`).join('');
+    const leads = r.leaders.map(l => `<div class="note small row"><div class="sp">${esc(l.name)}</div><b class="${l.pnl >= 0 ? 'g' : 'r'}">${l.pnl >= 0 ? '+' : ''}${l.pnl.toFixed(3)} SOL</b></div>`).join('');
+    sheet(hdr('🧪 Optymalizator') + `
+      <div class="mut tiny" style="margin-bottom:8px">Odtworzyłem <b>${r.events}</b> prawdziwych ruchów Twoich włączonych traderów z ${r.days} dni z różnymi ustawieniami (z karą 2% za opóźnienie kopii w każdą stronę i z opłatami). Stop-loss i ruchomy stop zostają jak masz – tego nie da się odtworzyć bez pełnego wykresu ceny.</div>
+      <div class="card"><div class="mut small">Twoje obecne ustawienia</div><div class="row"><div class="sp b">${esc(r.current.desc)}</div><div>${pct(r.current.pnl_pct)}</div></div></div>
+      ${r.enough ? '' : `<div class="warn">⚠️ Mało danych: ${r.events} ruchów (${r.sells} sprzedaży). Wyniki są mało wiarygodne – poczekaj, aż bot zbierze co najmniej ~30 ruchów i 10 sprzedaży Twoich traderów.</div>`}
+      <h2>Lepsze warianty</h2><div class="card">${rows || '<div class="empty">👍 Żaden wariant nie byłby wyraźnie lepszy od Twoich obecnych ustawień.</div>'}</div>
+      ${leads ? `<h2>Kto zarobiłby najwięcej (najlepszy wariant)</h2><div class="card">${leads}</div>` : ''}
+      <div class="row" style="gap:8px"><button class="btn ghost" onclick="openOptimizer(3)">Ostatnie 3 dni</button><button class="btn ghost" onclick="openOptimizer(14)">14 dni</button></div>
+      <div class="mut tiny" style="margin-top:8px">Wynik z przeszłości nie gwarantuje przyszłego – ale to najlepsza wskazówka, jaką mamy. Sprawdzaj co kilka dni.</div>`);
+  } catch (e) { sheet(hdr('🧪 Optymalizator') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+async function applyOpt(settings) {
+  if (!await confirmBox('Zastosować ten wariant? Zmieni kwotę zakupu i filtry (reszta zostaje).')) return;
+  await act('apply_settings', {settings}); closeSheet();
 }
 
 // ---------- tabela najlepszych traderów ----------

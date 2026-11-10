@@ -861,7 +861,8 @@ async def tpsl_job(ctx):
     if not getattr(s, "sol", None):
         return
     users = s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id "
-                    "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0 OR u.sol_x2 > 0 OR u.sol_trail > 0)")
+                    "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0 OR u.sol_x2 > 0 OR u.sol_trail > 0 "
+                    "OR u.sol_time_exit > 0 OR u.sol_dev_exit > 0)")
     for u in users:
         try:
             pf = await portfolio(s, u)
@@ -880,10 +881,34 @@ async def tpsl_job(ctx):
                 s.db.set_state(pkey, f"{peak:.4f}")
                 arm = 2.0 if u["sol_x2"] else 1.5  # wcześniej memecoin zwykle po prostu się waha
                 trail_hit = peak >= arm and ratio <= peak * (1 - u["sol_trail"] / 100)
+            # wyjście po czasie: token od X min bez ruchu (ani kupna, ani sprzedaży) i stoi w miejscu (±15%)
+            time_hit = False
+            if u["sol_time_exit"] and -15 < pnl < 15:
+                last = s.db._q("SELECT MAX(ts) t FROM sol_trades WHERE tg_id = ? AND mint = ? AND paper = ? "
+                               "AND status = 'filled'", (u["tg_id"], pos["mint"], int(not s.sol.is_live(u))))[0]["t"]
+                time_hit = bool(last) and now_ms() - last > u["sol_time_exit"] * 60_000
+            # ucieczka twórcy: trzymał ≥1% przy naszym zakupie, a teraz wyprzedał większość (sprawdzane co 3 min)
+            dev_hit = None
+            if u["sol_dev_exit"]:
+                dkey = f"devpct:{u['tg_id']}:{pos['mint']}"
+                start_dev = float(s.db.get_state(dkey) or 0)
+                ckey = f"devchk:{u['tg_id']}:{pos['mint']}"
+                if start_dev >= 1 and now_ms() - int(s.db.get_state(ckey) or 0) > 180_000:
+                    s.db.set_state(ckey, str(now_ms()))
+                    try:
+                        info = await asyncio.wait_for(s.sol.jup.token_full(pos["mint"]), 5)
+                    except Exception:  # noqa: BLE001
+                        info = None
+                    now_dev = ((info or {}).get("audit") or {}).get("devBalancePercentage")
+                    if now_dev is not None and now_dev < start_dev * 0.3:
+                        dev_hit = (start_dev, now_dev)
             hit = ("🎯 <b>TAKE-PROFIT</b> – zysk osiągnięty" if u["sol_tp"] and pnl >= u["sol_tp"] else
+                   f"🏃 <b>TWÓRCA UCIEKA</b> – miał {dev_hit[0]:.1f}% tokenów, teraz {dev_hit[1]:.1f}%" if dev_hit else
                    "🛑 <b>STOP-LOSS</b> – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else
                    f"📉 <b>RUCHOMY STOP</b> – spadek o {u['sol_trail']:g}% od szczytu (było ×{peak:.2f})"
-                   if trail_hit else None)
+                   if trail_hit else
+                   f"⏰ <b>WYJŚCIE PO CZASIE</b> – {u['sol_time_exit']:g} min bez ruchu, odzyskuję SOL na nowe okazje"
+                   if time_hit else None)
             sym = html.escape(pos["symbol"])
             try:
                 if hit:

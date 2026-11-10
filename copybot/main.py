@@ -11,7 +11,7 @@ from telegram.warnings import PTBUserWarning
 import aiohttp
 
 from . import demo, mirror, traders
-from .sol import admin as sol_admin, axiom, ui as sol_ui
+from .sol import admin as sol_admin, axiom, extras as sol_extras, ui as sol_ui
 from .sol.chain import Jito, Jupiter, PumpPortal, Rpc
 from .sol.engine import SolEngine
 from .sol.watcher import SolWatcher
@@ -106,6 +106,11 @@ async def post_init(app: Application):
         app.job_queue.run_repeating(axiom.tpsl_job, interval=60, first=45)
         app.job_queue.run_repeating(axiom.sol_equity_job, interval=15 * 60, first=120)
         app.job_queue.run_repeating(axiom.auto_rank_job, interval=6 * 3600, first=600)
+        tz = ZoneInfo(cfg.timezone)
+        app.job_queue.run_repeating(sol_extras.health_job, interval=300, first=240)
+        app.job_queue.run_daily(sol_extras.backup_job, dt.time(4, 7, tzinfo=tz))
+        app.job_queue.run_daily(sol_extras.report_job, dt.time(21, 3, tzinfo=tz))
+        app.job_queue.run_daily(sol_extras.smart_job, dt.time(6, 11, tzinfo=tz))
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("📱 Aplikacja", WebAppInfo(f"{cfg.webapp_url}/app")))
@@ -117,7 +122,9 @@ async def post_init(app: Application):
         BotCommand("sygnal", "Wyślij sygnał"), BotCommand("kup", "Kup (demo)"),
         BotCommand("sprzedaj", "Sprzedaj (demo)"), BotCommand("polacz", "Podłącz giełdę"),
         BotCommand("axiom", "Podłącz portfel z Axiom"), BotCommand("nazwa", "Ustaw swoją nazwę"),
-        BotCommand("czat", "Czat grupowy"),
+        BotCommand("czat", "Czat grupowy"), BotCommand("eksport", "Historia transakcji (CSV)"),
+        BotCommand("ustawpin", "Ustaw PIN do wypłat"), BotCommand("pin", "Odblokuj wypłatę PIN-em"),
+        BotCommand("backup", "Kopia zapasowa (właściciel)"),
         BotCommand("pomoc", "Jak to działa"),
     ])
 
@@ -163,6 +170,7 @@ def main():
     sol_ui.register(app)
     axiom.register(app)
     sol_admin.register(app)
+    sol_extras.register(app)
     register(app)
     axiom.register_paste(app)  # wklejony adres portfela/tokena – po wszystkich rozmowach
     app.run_polling(drop_pending_updates=False, bootstrap_retries=-1)

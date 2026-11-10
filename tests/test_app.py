@@ -849,3 +849,124 @@ def test_sensible_safeguards(tmp_path):
     s.sol.jup.token_usd = 0.1  # spadek o 44% od szczytu, ale szczyt < ×2 → trzymamy
     asyncio.run(AX.tpsl_job(jctx))
     assert TOKEN in s.sol.paper(OWNER)
+
+
+def test_optimizer_on_reference_moves(tmp_path):
+    from copybot.db import ref_id
+    from copybot.sol import optimizer as OPT
+    s, _, _ = ready(tmp_path)
+    a, b = _two_leaders(s)
+    t0 = int(time.time() * 1000) - 3600_000
+
+    def ref(lid, side, mint, sol, tok, trader, dt):
+        s.db._q("INSERT INTO sol_trades (tg_id, leader_id, side, mint, sol, tokens, status, info, paper, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'filled', ?, 1, ?)", (ref_id(lid), lid, side, mint, sol, tok, trader, t0 + dt))
+    # A: kupuje dużo i trzyma minutami → zysk ×2;  B: flipper (5 s) ze stratą
+    for i in range(4):
+        ref(a, "buy", f"A{i}", 0.5, 100, "2", i * 600_000)
+        ref(a, "sell", f"A{i}", 1.0, 100, "4", i * 600_000 + 300_000)
+        ref(b, "buy", f"B{i}", 0.5, 100, "0.2", i * 600_000)
+        ref(b, "sell", f"B{i}", 0.4, 100, "0.16", i * 600_000 + 5_000)
+    res = OPT.optimize(s, s.db.get_user(OWNER), 5.0, [a, b], 1.0)
+    assert res["events"] == 16 and res["results"][0]["pnl_pct"] > res["current"]["pnl_pct"]
+    assert res["leaders"][0]["id"] == a and res["leaders"][0]["pnl"] > 0
+    best = res["results"][0]["settings"]
+    assert "sol_buy_mode" in best and best.get("sol_min_hold", 0) >= 0
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "optimize"})
+        assert st == 200 and j["events"] == 16
+        st, j = await call(OWNER, "/api/sol/action", {"action": "apply_settings", "settings": best})
+        assert st == 200 and s.db.get_user(OWNER)["sol_buy_mode"] == best["sol_buy_mode"]
+    run(s, steps)
+
+
+def test_backup_csv_pin_health_report(tmp_path):
+    import gzip as gz
+    import sqlite3 as sq
+    from copybot.sol import extras as EX
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.05))
+    asyncio.run(s.sol.sell_manual(s.db.get_user(OWNER), TOKEN, 100))
+    # kopia zapasowa: poprawna baza SQLite z portfelami
+    raw = gz.decompress(EX.make_backup(s.db))
+    p = tmp_path / "kopia.db"
+    p.write_bytes(raw)
+    assert sq.connect(p).execute("SELECT COUNT(*) FROM sol_wallets").fetchone()[0] == 1
+    # CSV
+    txt = EX.history_csv(s, OWNER).decode("utf-8-sig")
+    assert "kupno" in txt and "sprzedaż" in txt and "ćwiczenia" in txt
+    # raport dnia
+    rep = EX.period_report(s, s.db.get_user(OWNER), 1)
+    assert "RAPORT DNIA" in rep and "sprzedaże 1" in rep
+    # alerty: zły klucz Jupitera
+    s.sol.jup.auth_error = "401: bad key"
+    assert any(k == "jup" for k, _ in EX.health_problems(s))
+
+    # PIN: wypłata wymaga PIN-u
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "set_pin", "pin": "12a"})
+        assert st == 400
+        st, j = await call(OWNER, "/api/sol/action", {"action": "set_pin", "pin": "4821"})
+        assert st == 200 and s.db.get_user(OWNER)["pin_hash"]
+        st, j = await call(OWNER, "/api/sol/action", {"action": "withdraw", "address": WALLET, "amount": "0.1",
+                                                      "confirm": True, "pin": "0000"})
+        assert st == 400 and "PIN" in j["error"]
+        st, j = await call(OWNER, "/api/sol/action", {"action": "set_pin", "pin": "", "old_pin": "4821"})
+        assert s.db.get_user(OWNER)["pin_hash"] is None
+    run(s, steps)
+    u = s.db.get_user(OWNER)
+    s.db.update_user(OWNER, pin_hash=EX.hash_pin("1234"))
+    u = s.db.get_user(OWNER)
+    assert not EX.unlocked(u) and EX.pin_ok(u, "1234") and not EX.pin_ok(u, "9999")
+
+
+def test_token_filters_time_and_dev_exit_and_smart(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from copybot.sol import extras as EX
+    s, ctx, sent = ready(tmp_path)
+    a, b = _two_leaders(s)
+    good = s.sol.jup.token_full
+
+    async def fresh(mint):
+        d = await good(mint)
+        d["firstPool"] = {"createdAt": (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()}
+        d["audit"] = dict(d["audit"], devBalancePercentage=10.0)
+        return d
+    s.sol.jup.token_full = fresh
+    s.db.update_user(OWNER, sol_max_mcap=1_000_000)  # MEME ma $1,2M
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "f1"), time.monotonic()))
+    assert res["skipped"] == 1 and any("wart już" in t for _, t in sent)
+    s.db.update_user(OWNER, sol_max_mcap=0, sol_min_age=10)
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "f2"), time.monotonic()))
+    assert res["skipped"] == 1 and any("ma dopiero" in t for _, t in sent)
+    # zakup z zapamiętaniem udziału twórcy, potem twórca wyprzedaje → sprzedaż
+    s.db.update_user(OWNER, sol_min_age=0, sol_dev_exit=1)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "f3"), time.monotonic()))
+    assert TOKEN in s.sol.paper(OWNER)
+
+    async def dumped(mint):
+        d = await fresh(mint)
+        d["audit"]["devBalancePercentage"] = 0.5
+        return d
+    s.sol.jup.token_full = dumped
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    asyncio.run(AX.tpsl_job(jctx))
+    assert TOKEN not in s.sol.paper(OWNER) and any("TWÓRCA UCIEKA" in t for _, t in sent)
+    # wyjście po czasie: pozycja bez ruchu od 2 h
+    s.sol.jup.token_full = good
+    s.db.update_user(OWNER, sol_dev_exit=0, sol_time_exit=60)
+    asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.05))
+    s.db._q("UPDATE sol_trades SET ts = ts - 7200000 WHERE tg_id = ? AND mint = ?", (OWNER, TOKEN))
+    asyncio.run(AX.tpsl_job(jctx))
+    assert TOKEN not in s.sol.paper(OWNER) and any("WYJŚCIE PO CZASIE" in t for _, t in sent)
+    # inteligentne kwoty: A zarabia, B traci
+    s.db.update_user(OWNER, sol_buy_mode="pct", sol_pct=10)
+    for lid, p in ((a, 0.05), (b, -0.05)):
+        for i in range(3):
+            s.sol.record(OWNER, lid, None, "sell", f"S{lid}{i}", 0.1, 1, "filled", "x", True, pnl=p)
+    s.db.save_wallets(OWNER, [(WALLET, "A", None), (W2, "B", None)], "t")
+    ch = EX.smart_allocation(s, s.db.get_user(OWNER))
+    assert any("⬆️ A" in c for c in ch) and any("⬇️ B" in c for c in ch)
+    assert s.db.follow_row(OWNER, a)["sol_pct"] == 15 and s.db.follow_row(OWNER, b)["sol_pct"] == 5

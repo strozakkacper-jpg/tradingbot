@@ -159,6 +159,10 @@ async def on_sol_button(update: Update, ctx):
             await _ack(update, "⏳")
             return await show(update, *await asyncio.wait_for(home_view(s, u), UI_TIMEOUT))
         act = parts[1]
+        if act in ("expok", "wdok", "impok", "restore"):
+            from .extras import unlocked
+            if not unlocked(u):
+                return await _ack(update, "🔐 Najpierw odblokuj PIN-em: napisz /pin TWÓJ_PIN (działa 5 min)", True)
         if act == "set":
             from .axiom import settings_view as ax_settings
             await _ack(update)

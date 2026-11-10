@@ -131,7 +131,15 @@ MIGRATIONS = {
     # bezpieczniki: min. kwota zakupu (opłaty), limit otwartych pozycji, przerwa po serii strat
     "sol_min_buy": "REAL NOT NULL DEFAULT 0",
     "sol_max_pos": "INTEGER NOT NULL DEFAULT 0",
-    "sol_streak": "INTEGER NOT NULL DEFAULT 0",  # ⚡ turbo: wysyłka przez Jito + bez symulacji + wycena równolegle  # co 3 dni: zbadaj traderów, wyłącz słabych, włącz najlepszych
+    "sol_streak": "INTEGER NOT NULL DEFAULT 0",
+    "sol_max_mcap": "REAL NOT NULL DEFAULT 0",  # kupuj tylko tokeny warte mniej niż X $ (0 = wył.)
+    "sol_min_age": "REAL NOT NULL DEFAULT 0",  # token musi istnieć co najmniej X min (0 = wył.)
+    "sol_max_age": "REAL NOT NULL DEFAULT 0",  # token nie starszy niż X h (0 = wył.)
+    "sol_time_exit": "REAL NOT NULL DEFAULT 0",  # sprzedaj „martwy” token po X min bez ruchu (0 = wył.)
+    "sol_dev_exit": "INTEGER NOT NULL DEFAULT 0",  # sprzedaj, gdy twórca tokena wyprzeda swoje tokeny
+    "sol_smart": "INTEGER NOT NULL DEFAULT 0",  # inteligentne kwoty: więcej na traderów, którzy dają Ci zysk
+    "sol_report": "INTEGER NOT NULL DEFAULT 1",  # raport dzienny i tygodniowy w czacie
+    "pin_hash": "TEXT",  # PIN do wypłat i eksportu klucza (sha256 z solą)  # ⚡ turbo: wysyłka przez Jito + bez symulacji + wycena równolegle  # co 3 dni: zbadaj traderów, wyłącz słabych, włącz najlepszych
     # sesja = od włączenia do wyłączenia kopiowania – po niej bot wysyła szczegółowy raport
     "session_start": "INTEGER",
     "session_end": "INTEGER",
@@ -151,7 +159,9 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
                "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "nickname", "chat_notify", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "sol_consensus", "sol_cons_window", "sol_boost", "sol_trail",
-               "sol_auto_rank", "sol_turbo", "sol_min_buy", "sol_max_pos", "sol_streak", "session_start", "session_end", "session_sol0", "session_cex0"}
+               "sol_auto_rank", "sol_turbo", "sol_min_buy", "sol_max_pos", "sol_streak",
+               "sol_max_mcap", "sol_min_age", "sol_max_age", "sol_time_exit", "sol_dev_exit", "sol_smart", "sol_report",
+               "pin_hash", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}
 TRADE_MIGRATIONS = {"pnl": "REAL"}  # zysk/strata sprzedaży (SOL) – do powiadomień i historii

@@ -34,6 +34,9 @@ SETTINGS = {
     "sol_trail": (float, 0, 90), "sol_auto_rank": (bool, None, None), "chat_notify": (bool, None, None),
     "sol_turbo": (bool, None, None),
     "sol_min_buy": (float, 0, 10), "sol_max_pos": (int, 0, 100), "sol_streak": (int, 0, 20),
+    "sol_max_mcap": (float, 0, 1e10), "sol_min_age": (float, 0, 100000), "sol_max_age": (float, 0, 100000),
+    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None),
+    "sol_report": (bool, None, None),
 }
 
 
@@ -411,6 +414,7 @@ async def state(s, u) -> dict:
     last = s.db._q("SELECT latency_ms FROM sol_trades WHERE tg_id = ? AND latency_ms IS NOT NULL ORDER BY id DESC "
                    "LIMIT 1", (uid,))
     return {
+        "has_pin": bool(u["pin_hash"]),
         "user": {"id": uid, "admin": uid in admin_ids(s), "role": adm.role_of(s, uid),
                  "nickname": u["nickname"] if "nickname" in u.keys() else None, "username": u["username"]},
         "live": live, "active": bool(u["active"]), "paused": s.db.get_state("paused") == "1",
@@ -701,6 +705,33 @@ async def action(s, u, body: dict) -> dict:
                        f"→ Ty ~{typical * vals['sol_pct'] / 100:.3g} SOL), maks. {vals['sol_max']:g} SOL na zakup, "
                        f"min. {vals['sol_min_buy']:g} SOL, do {vals['sol_max_pos']} pozycji, limit dnia "
                        f"{vals['sol_day_limit']:g} SOL", "values": vals}
+    if act == "optimize":
+        from .axiom import portfolio
+        from .optimizer import optimize
+        pf = await portfolio(s, u)
+        lids = [it["lid"] for it in saved_list(s, uid) if it["status"] == "copy" and it["lid"]]
+        if not lids:
+            raise ApiError("Najpierw włącz traderów – optymalizator sprawdza ich ruchy z ostatnich 7 dni")
+        days = float(body.get("days") or 7)
+        return await asyncio.to_thread(optimize, s, u, pf["total"], lids, typical_trader_buy(s, uid), days)
+    if act == "apply_settings":
+        vals = body.get("settings") or {}
+        clean = {}
+        for k, v in vals.items():
+            if k not in SETTINGS:
+                continue
+            typ, lo, hi = SETTINGS[k]
+            if typ == "mode":
+                if v in ("fixed", "pct", "ratio"):
+                    clean[k] = v
+            elif typ is bool:
+                clean[k] = int(bool(v))
+            elif isinstance(v, (int, float)) and lo <= v <= hi:
+                clean[k] = typ(v)
+        if not clean:
+            raise ApiError("Brak ustawień do zapisania")
+        s.db.update_user(uid, **clean)
+        return {"msg": "✅ Zastosowano najlepsze ustawienia z optymalizatora"}
     if act == "reset_demo":
         se.paper_reset(uid)
         return {"msg": f"Ćwiczenia od nowa: {se.paper_start(uid):g} wirtualnych SOL"}
@@ -720,6 +751,34 @@ async def action(s, u, body: dict) -> dict:
         except Skip as e:
             raise ApiError(str(e)) from None
         return {"msg": f"✅ Sprzedano za {fill.sol:.4f} SOL{await se.usd_txt(fill.sol)}"}
+    if act in ("withdraw", "restore_wallet") or (act == "import_wallet" and body.get("confirm")):
+        from .extras import pin_locked, pin_ok
+        if not pin_ok(u, body.get("pin")):
+            raise ApiError("Za dużo prób – PIN zablokowany na 15 min" if pin_locked(uid) else "❌ Zły PIN")
+    if act == "set_pin":
+        from .extras import hash_pin, pin_ok
+        if u["pin_hash"] and not pin_ok(u, body.get("old_pin")):
+            raise ApiError("❌ Zły obecny PIN")
+        new = str(body.get("pin") or "")
+        if not new:
+            s.db.update_user(uid, pin_hash=None)
+            return {"msg": "PIN usunięty"}
+        if not (new.isdigit() and 4 <= len(new) <= 8):
+            raise ApiError("PIN to 4–8 cyfr")
+        s.db.update_user(uid, pin_hash=hash_pin(new))
+        return {"msg": "🔐 PIN ustawiony – wypłata, podłączenie i zmiana portfela będą go wymagały"}
+    if act == "export_csv":
+        from .extras import send_csv
+        if not getattr(s, "bot", None):
+            raise ApiError("Bot niedostępny")
+        await send_csv(s, s.bot, uid)
+        return {"msg": "📄 Wysłałem plik CSV w czacie z botem"}
+    if act == "backup":
+        from .extras import send_backup
+        if adm.role_of(s, uid) != "owner" or not getattr(s, "bot", None):
+            raise ApiError("Kopię zapasową dostaje tylko właściciel 👑")
+        await send_backup(s, s.bot, uid)
+        return {"msg": "🗄 Wysłałem kopię zapasową w czacie z botem"}
     if act == "withdraw":
         dest = valid_address(str(body.get("address", "")))
         if not dest:
