@@ -351,17 +351,19 @@ function home() {
   </div>
   ${statusBox()}
   <h2>Kopiowani traderzy</h2>
-  <div class="card">${S.wallets.length ? S.wallets.slice(0, 4).map(walletItem).join('') : '<div class="empty">Brak – dodaj kogoś w zakładce 👥 Traderzy</div>'}
-    ${S.wallets.length > 4 ? `<div class="c small" style="padding-top:10px"><a class="g" onclick="go('traders')">Wszyscy (${S.wallets.length}) →</a></div>` : ''}</div>
+  <div class="card">${S.wallets.length ? S.wallets.slice(0, DASH_ALL ? S.wallets.length : 4).map(walletItem).join('') : '<div class="empty">Brak – dodaj kogoś w zakładce 👥 Traderzy</div>'}
+    ${S.wallets.length > 4 ? `<div class="row" style="justify-content:center;gap:18px;padding-top:10px"><a class="g small" style="cursor:pointer" onclick="DASH_ALL=!DASH_ALL;render()">${DASH_ALL ? 'Zwiń ▴' : `Pokaż wszystkich (${S.wallets.length}) ▾`}</a>
+      <a class="mut small" style="cursor:pointer" onclick="go('traders')">Zarządzaj →</a></div>` : ''}</div>
   <h2>Ostatnie ruchy</h2>
   <div class="card">${S.feed.length ? S.feed.slice(0, 5).map(feedItem).join('') : '<div class="empty">Jeszcze nic – ruchy pojawią się, gdy trader coś kupi.</div>'}</div>
   <div class="c mut small" style="margin:14px 0">SOL ${usd(S.sol_usd)} ${S.sol_change != null ? '· ' + pct(S.sol_change) + ' w 24 h' : ''}</div>`;
 }
 
+let DASH_ALL = false;
 function ownTxt(o) { return o.sol ? o.sol + ' SOL' : o.pct ? o.pct + '% jego kwoty' : ''; }
 function walletItem(w) {
   return `<div class="item" onclick="openWallet(${w.id})">${avatar(w.name)}
-    <div class="sp"><div class="b">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
+    <div class="sp" style="min-width:0"><div class="b" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
       <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}${holdTxt(w.hold) ? ' · ' + holdTxt(w.hold) : ''}</div></div>
     <div style="width:64px">${chart(w.spark, 28, true)}</div><div style="min-width:58px;text-align:right">${pct(w.result)}</div></div>`;
 }
