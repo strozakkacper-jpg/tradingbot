@@ -473,7 +473,11 @@ def rank_table(s) -> dict[str, tuple]:
     for ki, kind in enumerate(("world", "chain")):
         for pi, period in enumerate((7, 30, 1)):
             for si, sort in enumerate(SORT_NAMES):
-                for i, r in enumerate(top(s, period, sort, kind=kind)):
+                need = {"roi": "roi", "win": "win_rate", "pnl": "pnl"}.get(sort)
+                rows = [r for r in top(s, period, sort, kind=kind)
+                        if not (need and r.get(need) is None)
+                        and not (sort == "green" and r.get("green_days") is None and r.get("green7") is None)]
+                for i, r in enumerate(rows):  # miejsce liczone tylko wśród tych, którzy mają tę miarę
                     if r.get("bot") or (r.get("score") or 0) <= -100:
                         continue
                     key = (ki, i, si, pi)
@@ -483,29 +487,62 @@ def rank_table(s) -> dict[str, tuple]:
     return {w: v[1:] for w, v in best.items()}
 
 
-def auto_name(s, uid: int | None = None, refresh: bool = False, table: dict | None = None) -> int:
-    """Nadaje nazwy traderom, którzy mają nic niemówiące nazwy (i są w rankingu). refresh=True – także
-    poprawia nasze wcześniejsze automatyczne nazwy na aktualne miejsce. Zwraca, ile zmieniono."""
+def custom_part(name: str | None, wallet: str = "") -> str | None:
+    """Własna część nazwy (np. „Cupsey” z „🏆 Top 3 ocena 7d · Cupsey”) – bez naszego dopisku i adresu."""
+    if not name:
+        return None
+    parts = [x.strip() for x in name.split(" · ")]
+    keep = [x for x in parts if not _AUTO.search(x) and not (x.startswith("⭐ ") and len(parts) > 1 and parts.index(x) == 0)]
+    out = " · ".join(keep).strip()
+    return None if not out or is_generic(out, wallet) else out
+
+
+def auto_name(s, uid: int | None = None, refresh: bool = False, table: dict | None = None,
+              everyone: bool = False) -> int:
+    """Nadaje nazwy z rankingu. Domyślnie tylko nic niemówiącym („9rXz…B2jJ”); refresh=True – także odświeża
+    nasze wcześniejsze nazwy na aktualne miejsce; everyone=True – każdemu z rankingu, a własną nazwę
+    zostawia na końcu („🏆 Top 3 ocena 7d · Cupsey”). Zwraca, ile zmieniono."""
     table = table if table is not None else rank_table(s)
     if not table:
         return 0
+
+    def new_name(w: str, cur: str | None) -> str | None:
+        if w not in table:
+            return None
+        auto = bool(_AUTO.search(cur or ""))
+        if not everyone and not (is_generic(cur, w) and (refresh or not auto)):
+            return None
+        rank, sort, period, kol = table[w]
+        tag = rank_name(sort, rank, period, kol)
+        own = custom_part(cur, w)
+        if own and kol and own.lower().startswith(kol.lower()[:10]):
+            own = None
+        return f"{tag} · {own[:16]}" if own else tag
+
     n = 0
     users = [uid] if uid else [r["tg_id"] for r in s.db._q("SELECT DISTINCT tg_id FROM sol_saved")]
     for u in users:
         for r in s.db._q("SELECT wallet, name FROM sol_saved WHERE tg_id = ?", (u,)):
-            w, cur = r["wallet"], r["name"]
-            if w not in table or not (is_generic(cur, w) and (refresh or not _AUTO.search(cur or ""))):
-                continue
-            rank, sort, period, kol = table[w]
-            new = rank_name(sort, rank, period, kol)
-            if new != cur:
-                s.db._q("UPDATE sol_saved SET name = ? WHERE tg_id = ? AND wallet = ?", (new, u, w))
+            new = new_name(r["wallet"], r["name"])
+            if new and new != r["name"]:
+                s.db._q("UPDATE sol_saved SET name = ? WHERE tg_id = ? AND wallet = ?", (new, u, r["wallet"]))
                 n += 1
     for r in s.db._q("SELECT id, wallet, name FROM leaders WHERE source = 'sol' AND status = 'active'"):
-        w = r["wallet"]
-        if w in table and is_generic(r["name"], w) and (refresh or not _AUTO.search(r["name"] or "")):
-            rank, sort, period, kol = table[w]
-            new = rank_name(sort, rank, period, kol)
-            if new != r["name"]:
-                s.db.update_leader(r["id"], name=new)
+        new = new_name(r["wallet"], r["name"])
+        if new and new != r["name"]:
+            s.db.update_leader(r["id"], name=new)
+            n += 0 if uid else 1
     return n
+
+
+async def name_everyone_once(ctx):
+    """Jednorazowo po wdrożeniu: każdy trader z rankingu u każdej osoby dostaje nazwę z rankingu."""
+    s = ctx.application.bot_data["svc"]
+    if s.db.get_state("auto_name_all_v1"):
+        return
+    try:
+        n = auto_name(s, everyone=True)
+        s.db.set_state("auto_name_all_v1", str(now_ms()))
+        log.info("Ranking: nazwano traderów wg rankingu u wszystkich – zmian: %d", n)
+    except Exception:  # noqa: BLE001
+        log.exception("Ranking: nazwy dla wszystkich")

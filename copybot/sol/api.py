@@ -750,7 +750,7 @@ async def action(s, u, body: dict) -> dict:
         return {"msg": msg, "added": len(new), "turned": turned}
     if act == "auto_name":
         from . import leaderboard as LB
-        n = LB.auto_name(s, uid, refresh=True)
+        n = LB.auto_name(s, uid, refresh=True, everyone=bool(body.get("everyone")))
         return {"msg": f"🏷 Nazwano {n} traderów wg rankingu" if n else
                 "Nikogo nie trzeba nazywać (albo nie ma ich w rankingu)"}
     if act == "optimize":

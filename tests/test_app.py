@@ -1151,3 +1151,29 @@ def test_admin_copy_traders(tmp_path):
         names = {r["wallet"]: r["name"] for r in s.db.saved_wallets(OWNER)}
         assert names[W2] == "Wieloryb"
     run(s, steps)
+
+
+def test_name_everyone(tmp_path):
+    import json as js
+    from copybot.sol import leaderboard as LB
+    s, _, _ = ready(tmp_path)
+    now = int(time.time() * 1000)
+    for w, pnl in ((WALLET, 50000), (W2, 90000)):
+        st = {"kind": "world", "pnl_usd": pnl, "pnl": pnl / 200, "win_rate": .6, "src": ["X"], "name": "Cented" if w == W2 else None}
+        st["score"] = LB.world_score(st, 7)
+        s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, ?, ?, '🌍 X')", (w, js.dumps(st), st["score"], now))
+    s.db.save_wallets(OWNER, [(WALLET, "Cupsey", None), (W2, "🌍 " + W2[:4] + "…" + W2[-4:], None)], "t")
+    s.db.save_wallets(FRIEND, [(WALLET, "kumpel", None)], "t")
+    lid = s.db.create_leader("Kowal", "sol", OWNER, "active", wallet=WALLET)
+    assert LB.auto_name(s, everyone=True) >= 3
+    names = {(r["tg_id"], r["wallet"]): r["name"] for r in s.db._q("SELECT tg_id, wallet, name FROM sol_saved")}
+    assert names[(OWNER, W2)] == "⭐ Cented · 🏆 Top 1 ocena 7d"
+    assert names[(OWNER, WALLET)].endswith(" · Cupsey") and "Top 2" in names[(OWNER, WALLET)]
+    assert names[(FRIEND, WALLET)].endswith(" · kumpel")
+    assert s.db.get_leader(lid)["name"].endswith(" · Kowal")
+    # drugi raz nie dokleja kolejnych dopisków
+    before = dict(names)
+    LB.auto_name(s, everyone=True)
+    after = {(r["tg_id"], r["wallet"]): r["name"] for r in s.db._q("SELECT tg_id, wallet, name FROM sol_saved")}
+    assert after == before
+    assert LB.custom_part("⭐ Cented · 🏆 Top 1 ocena 7d") is None
