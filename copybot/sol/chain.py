@@ -1,5 +1,6 @@
 """Solana RPC (Helius) i Jupiter – nastawione na minimalne opóźnienie."""
 import asyncio
+import os
 import base64
 import logging
 import time
@@ -81,8 +82,13 @@ class Rpc:
         return out
 
     async def token_balance(self, owner: str, mint: str) -> int:
-        res = await self.call("getTokenAccountsByOwner", [owner, {"mint": mint},
-                                                          {"encoding": "jsonParsed", "commitment": "processed"}])
+        try:
+            res = await self.call("getTokenAccountsByOwner", [owner, {"mint": mint},
+                                                              {"encoding": "jsonParsed", "commitment": "processed"}])
+        except ChainError as e:
+            if "could not find mint" in str(e):
+                return 0  # świeży token, którego RPC jeszcze nie widzi – na pewno go nie mamy
+            raise
         return sum(int(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]) for a in res["value"])
 
     async def transaction(self, sig: str) -> dict | None:
@@ -164,11 +170,32 @@ class Jupiter:
         self.auth_error: str | None = None  # 401/403 – klucz nieprawidłowy albo wygasł (alert dla admina)
         self.limit_hits: list[float] = []  # kiedy trafiliśmy w limit zapytań
         self._quotes: dict[tuple, tuple[float, asyncio.Future]] = {}  # wspólna wycena dla tych samych parametrów
+        # własny licznik zapytań (okno 10 s): zakupy/sprzedaże mają pierwszeństwo, ceny do wyświetlania czekają
+        # albo biorą ostatnią znaną wartość – żeby odświeżanie aplikacji nie blokowało transakcji
+        self.window_limit = int(os.getenv("JUP_LIMIT_PER_10S", "10"))
+        self._stamps: list[float] = []
+        self._no_route: dict[tuple, float] = {}  # token „not tradable” / bez trasy – nie pytamy co chwilę
 
-    async def _request(self, method: str, path: str, **kw) -> tuple[int, dict]:
+    def _budget(self) -> int:
+        now = time.monotonic()
+        self._stamps = [t for t in self._stamps if now - t < 10]
+        return self.window_limit - len(self._stamps)
+
+    async def _slot(self, bg: bool):
+        """Czeka na wolne miejsce w oknie 10 s. Tło (ceny) zostawia ~40% okna dla transakcji."""
+        reserve = max(int(self.window_limit * 0.4), 2) if bg else 0
+        for _ in range(30 if bg else 40):  # transakcja czeka maks. ~10 s, tło ~15 s – potem i tak próbujemy
+            if self._budget() > reserve:
+                self._stamps.append(time.monotonic())
+                return
+            await asyncio.sleep(0.25 if not bg else 0.5)
+        self._stamps.append(time.monotonic())
+
+    async def _request(self, method: str, path: str, bg: bool = False, **kw) -> tuple[int, dict]:
         """Zapytanie z obsługą limitu Jupitera: przy 429 czekamy do odnowienia okna (nagłówek x-ratelimit-reset)
         zamiast tracić transakcję. Darmowy klucz: 10 zapytań / 10 s."""
         for attempt in range(5):
+            await self._slot(bg)
             async with self.session.request(method, f"{self.base}{path}", headers=self.headers, **kw) as r:
                 data = await r.json(content_type=None)
                 status = r.status
@@ -192,10 +219,15 @@ class Jupiter:
         """Ta sama wycena w ciągu 2 s (np. Ty i kumpel kupujecie za 0,05 SOL) = jedno zapytanie do Jupitera."""
         key = (in_mint, out_mint, amount, slippage_bps, restrict)
         now = time.monotonic()
+        dead = self._no_route.get((in_mint, out_mint))
+        if dead and now - dead[0] < 15:
+            raise ChainError(dead[1])
         hit = self._quotes.get(key)
         if hit and now - hit[0] < 2.0:
             return await asyncio.shield(hit[1])
         fut = asyncio.ensure_future(self._quote(in_mint, out_mint, amount, slippage_bps, restrict))
+        # gdy nikt już nie czeka (np. zakup odrzucony przez filtr), błąd wyceny nie może „wisieć” w logach
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())
         self._quotes[key] = (now, fut)
         if len(self._quotes) > 500:
             for k in [k for k, (t, _) in self._quotes.items() if now - t > 5]:
@@ -211,7 +243,13 @@ class Jupiter:
                   "slippageBps": str(slippage_bps), "restrictIntermediateTokens": "true" if restrict else "false"}
         status, data = await self._request("GET", "/swap/v1/quote", params=params)
         if status != 200 or "outAmount" not in data:
-            raise ChainError(f"Jupiter: {data.get('error') or data.get('message') or status}")
+            msg = f"Jupiter: {data.get('error') or data.get('message') or status}"
+            if any(x in msg for x in ("not tradable", "No routes", "COULD_NOT_FIND_ANY_ROUTE", "TOKEN_NOT_TRADABLE")):
+                self._no_route[(in_mint, out_mint)] = (time.monotonic(), msg)
+                if len(self._no_route) > 2000:
+                    self._no_route.clear()
+            raise ChainError(msg)
+        self._no_route.pop((in_mint, out_mint), None)
         return data
 
     async def swap(self, quote: dict, kp: Keypair, priority_max_lamports: int, jito_tip: int | None = None) -> bytes:
@@ -255,14 +293,20 @@ class Jupiter:
         if not mints:
             return {}
 
+        cache = self.__dict__.setdefault("_cache", {})
+        key = ("px", tuple(mints))
+        hit = cache.get(key)
+        if hit and time.monotonic() - hit[0] < 120 and self._budget() <= max(int(self.window_limit * 0.4), 2):
+            return hit[1]  # okno prawie pełne – ceny sprzed chwili wystarczą, miejsce zostaje dla transakcji
+
         async def fetch():
-            _, data = await self._request("GET", "/price/v3", params={"ids": ",".join(mints)})
+            _, data = await self._request("GET", "/price/v3", bg=True, params={"ids": ",".join(mints)})
             return {m: float(v["usdPrice"]) for m, v in (data or {}).items() if isinstance(v, dict) and v.get("usdPrice")}
-        return await self._cached(("px", tuple(mints)), 10, fetch)
+        return await self._cached(key, 10, fetch)
 
     async def trending(self, interval: str = "1h", limit: int = 10) -> list[dict]:
         async def fetch():
-            _, data = await self._request("GET", f"/tokens/v2/toptrending/{interval}", params={"limit": str(limit)})
+            _, data = await self._request("GET", f"/tokens/v2/toptrending/{interval}", bg=True, params={"limit": str(limit)})
             return data if isinstance(data, list) else []
         return await self._cached(("trend", interval, limit), 60, fetch)
 

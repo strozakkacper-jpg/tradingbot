@@ -172,6 +172,10 @@ def apply(s, u, balance: float, full: bool = False) -> dict:
     live = s.sol.is_live(u)
     p = plan(balance, traders, live, performance(s, u))
     vals = dict(p["values"])
+    old_limit = u["sol_day_limit"] or 0
+    same_day = u["sol_autocfg_at"] and (now_ms() - u["sol_autocfg_at"]) < DAY_MS
+    if not full and same_day and old_limit > vals["sol_day_limit"]:
+        vals["sol_day_limit"] = old_limit  # w trakcie dnia limit straty nie maleje (strata nie może go „zjadać”)
     if full:
         base = recommended(balance, p["typical"], live)
         vals = {**base, **vals}

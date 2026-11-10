@@ -1177,3 +1177,18 @@ def test_name_everyone(tmp_path):
     after = {(r["tg_id"], r["wallet"]): r["name"] for r in s.db._q("SELECT tg_id, wallet, name FROM sol_saved")}
     assert after == before
     assert LB.custom_part("⭐ Cented · 🏆 Top 1 ocena 7d") is None
+
+
+def test_late_sell_still_runs_and_day_limit_not_shrinking(tmp_path):
+    import pytest
+    from copybot.sol import autocfg as AC
+    from copybot.sol.engine import Skip
+    s, _, _ = ready(tmp_path)
+    s.sol._fresh(time.monotonic() - 60, "sell")  # sprzedaż spóźniona o minutę – nie odrzucamy
+    with pytest.raises(Skip):
+        s.sol._fresh(time.monotonic() - 60, "buy")
+    u = s.db.get_user(OWNER)
+    AC.apply(s, u, 1.0)
+    lim = s.db.get_user(OWNER)["sol_day_limit"]
+    AC.apply(s, s.db.get_user(OWNER), 0.6)  # saldo spadło w ciągu dnia
+    assert s.db.get_user(OWNER)["sol_day_limit"] == lim

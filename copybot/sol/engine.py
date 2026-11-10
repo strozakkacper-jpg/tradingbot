@@ -255,10 +255,15 @@ class SolEngine:
         return {m: raw for m, (raw, _) in accs.items() if m != SOL_MINT}
 
     async def value_in_sol(self, mint: str, raw: int) -> float | None:
+        dead = self.__dict__.setdefault("_unvaluable", {})
+        if time.monotonic() - dead.get(mint, -1e9) < 600:
+            return None  # martwy / niewymienialny token – nie pytamy Jupitera co odświeżenie
         try:
             q = await asyncio.wait_for(self.jup.quote(mint, SOL_MINT, raw, 1000), 5)
             return int(q["outAmount"]) / LAMPORTS
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
+            if any(x in str(e) for x in ("not tradable", "No routes", "ROUTE", "TRADABLE")):
+                dead[mint] = time.monotonic()
             return None
 
     async def values_sol(self, holdings: dict[str, int], max_quotes: int = 3) -> dict[str, float]:
@@ -360,7 +365,7 @@ class SolEngine:
         live = self.is_live(u)
         err: Exception | None = None
         try:
-            self._fresh(t_recv)
+            self._fresh(t_recv, sw.side)
             boost_note = None
             prequote = None
             if sw.side == "buy":
@@ -466,9 +471,10 @@ class SolEngine:
         await self.say(u, sw.side, text, buttons)
         return "filled"
 
-    def _fresh(self, t_recv: float | None):
-        """Kopia spóźniona o więcej niż SOL_MAX_DELAY_S nie ma sensu – cena memecoina mogła już uciec."""
-        if t_recv is None:
+    def _fresh(self, t_recv: float | None, side: str = "buy"):
+        """Spóźniony ZAKUP (> SOL_MAX_DELAY_S) nie ma sensu – cena memecoina mogła już uciec.
+        Spóźnioną SPRZEDAŻ robimy zawsze: trader wyszedł, więc trzymanie tokena to czyste ryzyko."""
+        if t_recv is None or side == "sell":
             return
         late = time.monotonic() - t_recv
         if late > self.cfg.sol_max_delay_s:
@@ -698,7 +704,7 @@ class SolEngine:
                 self.paper_apply(u["tg_id"], {mint: -amount_raw, SOL_MINT: out - PAPER_TX_FEE})
             return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, lat)
         pub, kp = self.wallet(u["tg_id"])
-        self._fresh(t_recv)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
+        self._fresh(t_recv, side)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
         turbo = self.turbo(u) and self.jito is not None
         t_s = time.monotonic()
         tx = await self.jup.swap(quote, kp, self.priority(u), jito_tip=self.priority(u) if turbo else None)
@@ -778,7 +784,7 @@ class SolEngine:
             amount, in_sol = round(amount_raw / LAMPORTS, 9), True
         else:
             amount, in_sol = ("100%" if amount_raw >= pre_tok else amount_raw / 10 ** decimals), False
-        self._fresh(t_recv)
+        self._fresh(t_recv, side)
         try:
             tx = await self.pump.tx(kp, side, mint, amount, in_sol, u["sol_slippage_bps"] / 100,
                                     self.priority(u) / LAMPORTS)

@@ -65,6 +65,8 @@ class SolWatcher:
         self.last_swap: float | None = None  # time.time() ostatniej wykrytej wymiany
         self.since = time.time()
         self._fetch_sem = asyncio.Semaphore(10)  # nie zalewamy RPC przy portfelach z setkami transakcji
+        self.disconnected_at: float | None = None  # kiedy zerwało połączenie – po powrocie nadrabiamy ruchy
+        self.backfilled = 0
 
     async def run(self):
         backoff = 1
@@ -91,18 +93,27 @@ class SolWatcher:
             except Exception as e:  # noqa: BLE001
                 self.last_error = str(e)[:200]
                 log.warning("Solana WebSocket (%s) rozłączony: %s – ponawiam za %ss", self.mode, e, backoff)
+            if self.connected or not self.disconnected_at:
+                self.disconnected_at = self.disconnected_at or time.time()
             self.connected = False
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 20)
+            backoff = min(backoff * 2, 10)
 
     async def _session(self, url: str, enhanced: bool):
         if not self.get_wallets():
             await asyncio.sleep(5)  # nikogo nie śledzimy – nie trzymamy połączenia
             return
         proxy = os.getenv("WSS_PROXY") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or None
-        async with self.session.ws_connect(url, heartbeat=20, max_msg_size=0, proxy=proxy) as ws:
+        # krótki limit na samo połączenie – zawieszona próba nie może trzymać bota bez podglądu traderów
+        ws = await asyncio.wait_for(self.session.ws_connect(url, heartbeat=20, max_msg_size=0, proxy=proxy), 10)
+        async with ws:
             self.connected = True
             log.info("Solana: połączono (%s)", "Helius Enhanced – pełne transakcje" if enhanced else "logsSubscribe")
+            if self.disconnected_at:
+                gap, since = time.time() - self.disconnected_at, self.disconnected_at - 5
+                self.disconnected_at = None
+                if gap < 1800:
+                    asyncio.create_task(self._backfill(since))
             subs: dict[int, str] = {}
             pending: dict[int, str] = {}
             req_id = 0
@@ -177,6 +188,26 @@ class SolWatcher:
                             asyncio.create_task(self._handle_sig(w, value["signature"], t_recv))
                         else:
                             self.stats["filtered"] += 1
+
+    async def _backfill(self, since: float):
+        """Po zerwaniu połączenia: ruchy traderów z czasu przerwy. Spóźnione zakupy silnik i tak odrzuci
+        (cena uciekła), ale SPRZEDAŻE wykona – nie zostaniesz z tokenem, z którego trader już wyszedł."""
+        n = 0
+        for w in list(self.get_wallets()):
+            try:
+                sigs = await self.rpc.call("getSignaturesForAddress", [w, {"limit": 15, "commitment": "confirmed"}])
+            except Exception:  # noqa: BLE001
+                continue
+            for x in reversed(sigs or []):
+                bt = x.get("blockTime")
+                if x.get("err") is None and bt and bt >= since and (w, x["signature"]) not in self._seen:
+                    # t_recv „cofnięty” do chwili ruchu tradera – silnik wie, jak bardzo jesteśmy spóźnieni
+                    asyncio.create_task(self._handle_sig(w, x["signature"], time.monotonic() - max(time.time() - bt, 0)))
+                    n += 1
+            await asyncio.sleep(0.05)
+        self.backfilled += n
+        if n:
+            log.info("Solana: po przerwie w połączeniu nadrabiam %d ruchów traderów", n)
 
     def _first(self, wallet: str, sig: str) -> bool:
         key = (wallet, sig)

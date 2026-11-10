@@ -208,6 +208,11 @@ class FakeWS:
     async def __aexit__(self, *a):
         return False
 
+    def __await__(self):  # jak w aiohttp: ws_connect() można też „await”
+        async def me():
+            return self
+        return me().__await__()
+
 
 def test_enhanced_websocket_full_tx_and_fallback(tmp_path):
     tx0 = json.load(open(FIX / "tx0.json"))
@@ -313,3 +318,27 @@ def test_stale_copy_skipped_and_ratio_message(tmp_path):
     sent.clear()
     asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.0001, "s9"), time.monotonic()))
     assert any("poniżej minimum" in t and "stałą kwotę" in t for _, t in sent)
+
+
+def test_backfill_after_disconnect_and_late_sell(tmp_path):
+    """Po zerwaniu połączenia bot nadrabia ruchy z przerwy; spóźniona sprzedaż i tak się wykonuje."""
+    handled = []
+    w = SolWatcher("wss://x", "", None, MagicMock(), lambda: {"W1"}, None)
+
+    async def fake_call(method, params):
+        assert method == "getSignaturesForAddress"
+        now = time.time()
+        return [{"signature": "NEW", "err": None, "blockTime": now - 20},
+                {"signature": "FAIL", "err": {"x": 1}, "blockTime": now - 20},
+                {"signature": "OLD", "err": None, "blockTime": now - 4000}]
+
+    async def fake_handle(wallet, sig, t_recv):
+        handled.append((wallet, sig, time.monotonic() - t_recv))
+    w.rpc = SimpleNamespace(call=fake_call)
+    w._handle_sig = fake_handle
+
+    async def go():
+        await w._backfill(time.time() - 60)
+        await asyncio.sleep(0.05)
+    asyncio.run(go())
+    assert [h[1] for h in handled] == ["NEW"] and 15 < handled[0][2] < 30
