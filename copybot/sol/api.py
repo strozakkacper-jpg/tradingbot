@@ -711,6 +711,43 @@ async def action(s, u, body: dict) -> dict:
         s.db.update_user(uid, sol_autocfg=int(bool(auto)))
         return {"msg": "✨ Ustawione pod Twoje saldo", "text": p["text"], "values": p["values"], "warn": p["warn"],
                 "auto": bool(auto)}
+    if act == "admin_copy_traders":
+        if uid not in admin_ids(s):
+            raise ApiError("Tylko dla administratora")
+        src = int(_num(body, "uid", 1, 10 ** 15, int))
+        if src == uid:
+            raise ApiError("To Twoi traderzy 🙂")
+        theirs = s.db._q("""SELECT l.wallet, l.name, f.copy FROM follows f JOIN leaders l ON l.id = f.leader_id
+                            WHERE f.tg_id = ? AND l.source = 'sol' AND l.status = 'active'""", (src,))
+        want = body.get("wallets")
+        if want:
+            want = {str(w) for w in want}
+            theirs = [r for r in theirs if r["wallet"] in want]
+        elif body.get("only_copied", True):
+            theirs = [r for r in theirs if r["copy"]]
+        if not theirs:
+            raise ApiError("Ta osoba nie ma traderów do skopiowania")
+        mine = {it["wallet"]: it["status"] for it in saved_list(s, uid)}
+        new = [r for r in theirs if r["wallet"] not in mine]
+        if new:
+            s.db.save_wallets(uid, [(r["wallet"], r["name"], None) for r in new], "admin")
+        turned, full = 0, False
+        if body.get("copy"):
+            for r in theirs:
+                if mine.get(r["wallet"]) == "copy":
+                    continue
+                try:
+                    switch(s, uid, r["wallet"], True)
+                    turned += 1
+                except ApiError:
+                    full = True
+                    break
+        msg = f"📋 Skopiowano {len(theirs)} traderów (nowych na Twojej liście: {len(new)})"
+        if body.get("copy"):
+            msg += f" · włączono kopiowanie: {turned}"
+            if full:
+                msg += f" – reszta czeka na liście (limit {MAX_COPIED} kopiowanych naraz)"
+        return {"msg": msg, "added": len(new), "turned": turned}
     if act == "auto_name":
         from . import leaderboard as LB
         n = LB.auto_name(s, uid, refresh=True)

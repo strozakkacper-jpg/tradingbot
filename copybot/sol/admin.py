@@ -46,7 +46,7 @@ async def user_summary(s, u) -> dict:
            "nickname": u["nickname"] if "nickname" in u.keys() else None, "role": role_of(s, uid), "active": bool(u["active"]), "live": live,
            "has_wallet": se.has_wallet(uid), "total": None, "sol": None, "positions": 0, "result": None,
            "sol_usd": None}
-    out["wallets"] = [{"id": ld["id"], "name": ld["name"], "copy": c} for ld, c in sol_leaders(s, uid)]
+    out["wallets"] = [{"id": ld["id"], "name": ld["name"], "copy": c, "wallet": ld["wallet"]} for ld, c in sol_leaders(s, uid)]
     if out["has_wallet"]:
         try:
             pf = await asyncio.wait_for(portfolio(s, u), 10)

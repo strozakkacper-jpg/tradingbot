@@ -1128,3 +1128,26 @@ def test_autocfg_plan_and_names(tmp_path):
         st, j = await call(OWNER, "/api/sol/action", {"action": "autocfg_preview", "balance": 2})
         assert st == 200 and "zwykła pozycja" in j["text"]
     run(s, steps)
+
+
+def test_admin_copy_traders(tmp_path):
+    s, _, _ = ready(tmp_path)
+    a = s.db.create_leader("Kowal", "sol", FRIEND, "active", wallet=WALLET)
+    b = s.db.create_leader("Wieloryb", "sol", FRIEND, "active", wallet=W2)
+    s.db.follow(FRIEND, a, True)
+    s.db.follow(FRIEND, b, False)
+
+    async def steps(call):
+        st, j = await call(FRIEND, "/api/sol/action", {"action": "admin_copy_traders", "uid": OWNER})
+        assert st == 400  # tylko admin
+        st, j = await call(OWNER, "/api/sol/admin/user/%d" % FRIEND)
+        assert {w["wallet"] for w in j["wallets"]} == {WALLET, W2}
+        st, j = await call(OWNER, "/api/sol/action", {"action": "admin_copy_traders", "uid": FRIEND, "copy": True})
+        assert st == 200 and j["turned"] == 1 and s.sol.watched_wallets() >= {WALLET}
+        assert s.db.follow_row(OWNER, a)["copy"] == 1 and not s.db.follow_row(OWNER, b)  # obserwowany nie skopiowany
+        st, j = await call(OWNER, "/api/sol/action", {"action": "admin_copy_traders", "uid": FRIEND,
+                                                       "only_copied": False})
+        assert st == 200 and j["added"] == 1
+        names = {r["wallet"]: r["name"] for r in s.db.saved_wallets(OWNER)}
+        assert names[W2] == "Wieloryb"
+    run(s, steps)

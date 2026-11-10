@@ -1402,7 +1402,13 @@ async function openUser(id) {
           <div class="stat"><div class="mut tiny">Kopie 24 h</div><div class="v small">${ds.filled || 0}</div></div>
           <div class="stat"><div class="mut tiny">Pominięte</div><div class="v small ${(ds.skipped || 0) + (ds.error || 0) ? 'y' : ''}">${(ds.skipped || 0) + (ds.error || 0)}</div></div></div>
         <div class="mut tiny" style="margin-top:8px">⚙️ ${esc(d.settings)}</div></div>
-      <h2>Traderzy (${d.wallets.length})</h2><div class="card">${d.wallets.length ? d.wallets.map(w => `<div class="note">${w.copy ? '🟢' : '👁'} ${esc(w.name)}</div>`).join('') : '<div class="empty">nikogo</div>'}</div>
+      <h2>Traderzy (${d.wallets.length})</h2><div class="card">${d.wallets.length ? d.wallets.map(w => `<div class="item" style="cursor:default;padding:9px 2px">
+          <div class="sp" style="min-width:0"><div class="b" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${w.copy ? '🟢' : '👁'} ${esc(w.name)}</div>
+            <div class="mut tiny" style="font-family:ui-monospace,monospace">${short(w.wallet)}</div></div>
+          ${d.id === S.user.id ? '' : `<button class="chip" style="padding:5px 10px;font-size:12.5px" onclick="admCopy(${d.id}, ['${w.wallet}'], true)">🟢 Kopiuj</button>
+          <button class="chip" style="padding:5px 10px;font-size:12.5px" onclick="admCopy(${d.id}, ['${w.wallet}'], false)">➕</button>`}</div>`).join('') : '<div class="empty">nikogo</div>'}
+        ${d.wallets.length && d.id !== S.user.id ? `<button class="btn" style="margin-top:10px" onclick="admCopy(${d.id}, null, true)">📋 Kopiuj wszystkich, których kopiuje (${d.wallets.filter(w => w.copy).length})</button>
+          <button class="btn ghost" style="margin-top:8px" onclick="admCopy(${d.id}, null, false, true)">➕ Tylko dodaj wszystkich do mojej listy (${d.wallets.length})</button>` : ''}</div>
       <h2>Tokeny (${d.positions_list.length})</h2><div class="card">${d.positions_list.length ? d.positions_list.map(p => `<div class="item" onclick="openToken('${esc(p.mint)}')">${avatar(p.symbol)}<div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
         <div style="text-align:right"><div class="b">${p.value != null ? num(p.value, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(p.pnl)}</div></div></div>`).join('') : '<div class="empty">brak</div>'}</div>
       <h2>Ostatnie ruchy</h2><div class="card">${d.history.length ? d.history.map(feedItem).join('') : '<div class="empty">brak</div>'}</div>
@@ -1410,6 +1416,12 @@ async function openUser(id) {
       ${d.active ? `<button class="btn r" onclick="adminStop(${d.id})">⏸ Zatrzymaj mu kopiowanie</button>` : ''}
       ${own && d.role !== 'owner' ? `<button class="btn ghost" style="margin-top:8px" onclick="adminRole(${d.id})">${d.role === 'admin' ? 'Zabierz rangę admina' : '⭐ Daj rangę admina'}</button>` : ''}`);
   } catch (e) { sheet(hdr('Podgląd') + `<div class="empty">${esc(e.message)}</div>`); }
+}
+async function admCopy(id, wallets, copy, all) {
+  const n = wallets ? wallets.length : null;
+  if (!await confirmBox(copy ? `Dodać ${n === 1 ? 'tego tradera' : 'tych traderów'} do Twojej listy i od razu włączyć kopiowanie?` : `Dodać ${n === 1 ? 'tego tradera' : 'traderów tej osoby'} do Twojej listy (wyłączonych – włączysz, kogo chcesz)?`)) return;
+  await act('admin_copy_traders', {uid: id, wallets: wallets || undefined, copy, only_copied: !all}, {reload: false});
+  SAVED = null; load();
 }
 async function adminStop(id) {
   if (!await confirmBox('Zatrzymać tej osobie kopiowanie? Dostanie powiadomienie i raport sesji.')) return;
