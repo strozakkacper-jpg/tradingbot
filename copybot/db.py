@@ -105,6 +105,7 @@ MIGRATIONS = {
     "sol_tp": "REAL NOT NULL DEFAULT 0",  # auto take-profit w % (0 = wył.)
     "sol_sl": "REAL NOT NULL DEFAULT 0",  # auto stop-loss w % (0 = wył.)
     "role": "TEXT NOT NULL DEFAULT 'user'",  # user | admin (właściciel 👑 zawsze jest adminem)
+    "nickname": "TEXT",  # nazwa nadana przez admina albo samego użytkownika (zamiast @nicku / numeru)
     "sol_safe": "INTEGER NOT NULL DEFAULT 0",  # 🛡 nie kopiuj zakupów tokenów z ryzykiem 🔴
     "sol_day_limit": "REAL NOT NULL DEFAULT 0",  # dzienny limit straty w SOL – po nim bot przestaje kupować (0 = wył.)
     "sol_x2": "INTEGER NOT NULL DEFAULT 0",  # zwrot wkładu: przy +100% sprzedaj połowę
@@ -139,7 +140,7 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "leader_id", "max_price_move", "daily_report", "exchange", "approved", "requested",
                "copy_mode", "mirror_tolerance", "mirror_trades", "live_pin", "pin_msg_id",
                "sol_live", "sol_buy_mode", "sol_buy", "sol_mult", "sol_pct", "sol_max", "sol_slippage_bps",
-               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "sol_consensus", "sol_cons_window", "sol_boost", "sol_trail",
+               "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "nickname", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "sol_consensus", "sol_cons_window", "sol_boost", "sol_trail",
                "sol_auto_rank", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}

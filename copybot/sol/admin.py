@@ -6,7 +6,8 @@ import logging
 from telegram import InlineKeyboardButton as B
 from telegram import InlineKeyboardMarkup as KB
 from telegram import Update
-from telegram.ext import Application, CallbackQueryHandler
+from telegram.constants import ParseMode
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ConversationHandler, MessageHandler, filters
 
 from ..bot import S, UI_TIMEOUT, admin_ids, owner_ids, show
 from ..db import now_ms
@@ -17,7 +18,15 @@ DAY_MS = 24 * 3600 * 1000
 
 
 def display_name(u) -> str:
+    """Nadana nazwa → @nick z Telegrama → numer."""
+    if "nickname" in u.keys() and u["nickname"]:
+        return u["nickname"]
     return f"@{u['username']}" if u["username"] else str(u["tg_id"])
+
+
+def clean_nickname(name: str) -> str | None:
+    name = " ".join(str(name or "").split())[:32]
+    return name or None
 
 
 def role_of(s, uid: int) -> str:
@@ -33,7 +42,8 @@ async def user_summary(s, u) -> dict:
     se = s.sol
     uid = u["tg_id"]
     live = se.is_live(u)
-    out = {"id": uid, "name": display_name(u), "role": role_of(s, uid), "active": bool(u["active"]), "live": live,
+    out = {"id": uid, "name": display_name(u), "username": u["username"],
+           "nickname": u["nickname"] if "nickname" in u.keys() else None, "role": role_of(s, uid), "active": bool(u["active"]), "live": live,
            "has_wallet": se.has_wallet(uid), "total": None, "sol": None, "positions": 0, "result": None,
            "sol_usd": None}
     out["wallets"] = [{"id": ld["id"], "name": ld["name"], "copy": c} for ld, c in sol_leaders(s, uid)]
@@ -221,6 +231,7 @@ async def user_view(s, viewer: int, uid: int) -> tuple[str, KB]:
     kb = []
     if d["active"]:
         kb.append([B("⏸ Zatrzymaj mu kopiowanie", callback_data=f"adm:stop:{uid}")])
+    kb.append([B("✏️ Zmień nazwę", callback_data=f"adm:ren:{uid}")])
     if viewer in owner_ids(s) and d["role"] != "owner":
         kb.append([B("⭐ Daj rangę admina" if d["role"] == "user" else "Zabierz rangę admina",
                      callback_data=f"adm:role:{uid}")])
@@ -291,5 +302,62 @@ async def on_button(update: Update, ctx):
                           KB([[B("« Admin", callback_data="admin")]]))
 
 
+REN = 60
+
+
+async def ren_start(update: Update, ctx):
+    s = S(ctx)
+    q = update.callback_query
+    if update.effective_user.id not in admin_ids(s):
+        await q.answer("Tylko dla administratora", show_alert=True)
+        return ConversationHandler.END
+    uid = int(q.data.split(":")[2])
+    target = s.db.get_user(uid)
+    if not target:
+        await q.answer("Nie ma takiej osoby", show_alert=True)
+        return ConversationHandler.END
+    await q.answer()
+    ctx.user_data["ren_uid"] = uid
+    await update.effective_chat.send_message(f"✏️ Nowa nazwa dla <b>{html.escape(display_name(target))}</b>?\n"
+                                             "Napisz ją (maks. 32 znaki), „-” usuwa nazwę.\n/anuluj – przerwij",
+                                             parse_mode=ParseMode.HTML)
+    return REN
+
+
+async def ren_text(update: Update, ctx):
+    s = S(ctx)
+    uid = ctx.user_data.pop("ren_uid", None)
+    if uid is None:
+        return ConversationHandler.END
+    text = (update.message.text or "").strip()
+    s.db.update_user(uid, nickname=None if text == "-" else clean_nickname(text))
+    text_, kb = await user_view(s, update.effective_user.id, uid)
+    await update.effective_chat.send_message("✅ Zapisano nazwę\n\n" + text_, parse_mode=ParseMode.HTML, reply_markup=kb,
+                                             disable_web_page_preview=True)
+    return ConversationHandler.END
+
+
+async def ren_cancel(update: Update, ctx):
+    ctx.user_data.pop("ren_uid", None)
+    await update.message.reply_text("Anulowano.")
+    return ConversationHandler.END
+
+
+async def cmd_nazwa(update: Update, ctx):
+    """/nazwa Twoja nazwa – ustawia własną nazwę widoczną w panelu admina."""
+    s = S(ctx)
+    name = clean_nickname(" ".join(ctx.args or []))
+    if not s.db.get_user(update.effective_user.id):
+        return
+    s.db.update_user(update.effective_user.id, nickname=name)
+    await update.message.reply_text(f"✅ Twoja nazwa: {name}" if name else "Usunięto nazwę. Ustaw: /nazwa Kacper")
+
+
 def register(app: Application):
+    text = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
+    app.add_handler(ConversationHandler(entry_points=[CallbackQueryHandler(ren_start, pattern=r"^adm:ren:\d+$")],
+                                        states={REN: [MessageHandler(text, ren_text)]},
+                                        fallbacks=[CommandHandler("anuluj", ren_cancel)], allow_reentry=True,
+                                        conversation_timeout=300))
+    app.add_handler(CommandHandler("nazwa", cmd_nazwa))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^adm:(users|u:\d+|stop:\d+|role:\d+)$"))

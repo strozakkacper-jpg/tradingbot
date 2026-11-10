@@ -115,7 +115,7 @@ async def post_init(app: Application):
         BotCommand("traderzy", "Traderzy"), BotCommand("dodaj", "Dodaj tradera"),
         BotCommand("sygnal", "Wyślij sygnał"), BotCommand("kup", "Kup (demo)"),
         BotCommand("sprzedaj", "Sprzedaj (demo)"), BotCommand("polacz", "Podłącz giełdę"),
-        BotCommand("axiom", "Podłącz portfel z Axiom"),
+        BotCommand("axiom", "Podłącz portfel z Axiom"), BotCommand("nazwa", "Ustaw swoją nazwę"),
         BotCommand("pomoc", "Jak to działa"),
     ])
 

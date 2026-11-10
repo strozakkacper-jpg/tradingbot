@@ -61,6 +61,14 @@ def S(ctx: ContextTypes.DEFAULT_TYPE) -> Services:
     return ctx.application.bot_data["svc"]
 
 
+def user_label(u) -> str:
+    """Jak pokazujemy osobę: nadana nazwa → @nick z Telegrama → numer."""
+    keys = u.keys()
+    if "nickname" in keys and u["nickname"]:
+        return u["nickname"] + (f" (@{u['username']})" if u["username"] else "")
+    return f"@{u['username']}" if u["username"] else str(u["tg_id"])
+
+
 def owner_ids(s: "Services") -> set[int]:
     """Właściciel 👑: admini z .env albo pierwsza osoba, która napisała /start. Tylko on nadaje rangi."""
     owner = s.db.get_state("owner")
@@ -296,7 +304,7 @@ def admin_view(s: Services) -> tuple[str, KB]:
              "", "<b>Osoby z dostępem</b>"]
     rows = []
     for u in s.db.approved_users():
-        name = f"@{u['username']}" if u["username"] else str(u["tg_id"])
+        name = user_label(u)
         role = " 👑 właściciel" if u["tg_id"] in owners else " ⭐ admin" if u["tg_id"] in admins else ""
         lines.append(f"• {html.escape(name)}{role} – {'▶️ kopiuje' if u['active'] else '⏸'} "
                      f"{'🧪' if u['paper'] else '💰'}")
@@ -622,7 +630,7 @@ async def on_admin_button(update: Update, ctx, ack):
         target = s.db.get_user(tid)
         if not target:
             return await ack("Nie ma takiej osoby")
-        name = f"@{target['username']}" if target["username"] else str(tid)
+        name = user_label(target)
         if action == "usr_ok":
             s.db.update_user(tid, approved=1)
             await ack("Wpuszczono ✅")

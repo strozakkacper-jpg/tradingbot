@@ -634,3 +634,27 @@ def test_sell_retry_and_friendly_errors(tmp_path):
     assert "cena uciekła" in friendly_error(ChainError("{'InstructionError': [3, {'Custom': 6001}]}"), u)
     assert "przeszedł z Pump.fun" in friendly_error(ChainError("{'InstructionError': [3, {'Custom': 6005}]}"), u)
     assert "limit zapytań" in friendly_error(ChainError("Jupiter swap: {'code': 429}"), u)
+
+
+def test_nicknames(tmp_path):
+    s, ctx, _ = ready(tmp_path)
+
+    async def steps(call):
+        st, j = await call(FRIEND, "/api/sol/action", {"action": "nickname", "uid": OWNER, "name": "Szef"})
+        assert st == 400  # zwykły użytkownik nie zmienia nazw innym
+        st, j = await call(FRIEND, "/api/sol/action", {"action": "nickname", "name": "  Ziomek   z   bloku "})
+        assert st == 200 and s.db.get_user(FRIEND)["nickname"] == "Ziomek z bloku"
+        st, j = await call(OWNER, "/api/sol/action", {"action": "nickname", "uid": FRIEND, "name": "Kumpel"})
+        assert st == 200
+        st, j = await call(OWNER, "/api/sol/admin/users")
+        assert any(x["name"] == "Kumpel" for x in j["users"])
+    run(s, steps)
+    # w bocie: admin zmienia nazwę przez przycisk, każdy sobie przez /nazwa
+    async def chat():
+        u = upd(OWNER, data=f"adm:ren:{FRIEND}")
+        assert await ADM.ren_start(u, ctx) == ADM.REN
+        await ADM.ren_text(upd(OWNER, text="Bratan"), ctx)
+        ctx.args = ["Kacper"]
+        await ADM.cmd_nazwa(upd(OWNER, text="/nazwa Kacper"), ctx)
+    asyncio.run(chat())
+    assert s.db.get_user(FRIEND)["nickname"] == "Bratan" and s.db.get_user(OWNER)["nickname"] == "Kacper"

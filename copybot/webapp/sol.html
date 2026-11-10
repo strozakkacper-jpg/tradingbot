@@ -733,6 +733,10 @@ function settings() {
       <button class="btn ghost" style="margin-top:8px" onclick="resetDemo()">🔄 Zacznij ćwiczenia od nowa</button>
       <div class="mut tiny" style="margin-top:6px">Ćwiczenia liczą prawdziwe koszty: opłatę sieci, opłatę za szybkość i depozyt za konto tokena (wraca po sprzedaży całości).</div>`}
   </div>
+  <h2>👤 Twoja nazwa</h2>
+  <div class="card"><div class="row"><div class="sp"><div class="b">${esc(S.user.nickname || (S.user.username ? '@' + S.user.username : 'bez nazwy'))}</div>
+    <div class="mut tiny">Tak widzą Cię admini w panelu (zamiast numeru).</div></div>
+    <button class="chip" onclick="renameUser(${S.user.id}, '${esc((S.user.nickname || '').replace(/'/g, ''))}')">✏️ Zmień</button></div></div>
   <h2>❓ Pomoc</h2>
   <div class="card"><div class="row" style="gap:8px"><button class="btn ghost" onclick="showHtml('Jak to działa', S.help)">❓ Jak to działa</button>
     <button class="btn ghost" onclick="showHtml('Słowniczek', S.glossary)">📖 Słowniczek</button></div></div>`;
@@ -765,6 +769,7 @@ function secSummary(title) {
   if (title.includes('Tolerancja')) return st.sol_slippage_bps / 100 + '%';
   if (title.includes('Powiadomienia')) return {all: 'wszystkie', sells: 'tylko wyniki sprzedaży', none: 'wyłączone'}[st.sol_notify || 'all'];
   if (title.includes('Opłata')) return 'maks. ' + fSol(st.sol_priority / 1e9) + ' na transakcję';
+  if (title.includes('Twoja nazwa')) return S.user.nickname || (S.user.username ? '@' + S.user.username : 'bez nazwy');
   if (title.includes('Pieniądze')) return S.live ? '💰 prawdziwe SOL' : `🧪 ćwiczenia · start ${S.demo_start} SOL`;
   return '';
 }
@@ -895,7 +900,7 @@ function admUsers() {
   const chip = (k, l) => `<button class="chip ${ADM_SORT === k ? 'on' : ''}" onclick="ADM_SORT='${k}';render()">${l}</button>`;
   return `<div class="chips" style="margin-bottom:10px">${chip('active', 'Aktywni')}${chip('value', 'Wartość')}${chip('result', 'Wynik')}${chip('trades', 'Ruchy 24 h')}</div>` +
     (list.map(x => `<div class="ucard" onclick="openUser(${x.id})">
-      <div class="row">${avatar(x.name.replace('@', ''))}<div class="sp"><div class="b">${esc(x.name)} <span class="tiny">${x.role === 'owner' ? '👑' : x.role === 'admin' ? '⭐' : ''}</span></div>
+      <div class="row">${avatar(x.name.replace('@', ''))}<div class="sp"><div class="b">${esc(x.name)} <span class="tiny">${x.role === 'owner' ? '👑' : x.role === 'admin' ? '⭐' : ''}</span>${x.nickname && x.username ? ` <span class="mut tiny">@${esc(x.username)}</span>` : ''}</div>
         <div class="row" style="gap:4px;flex-wrap:wrap;margin-top:3px"><span class="pill ${x.active ? 'g' : ''}">${x.active ? '▶️ kopiuje' : '⏸ stoi'}</span>
           ${x.live ? '<span class="pill y">💰</span>' : '<span class="pill a">🧪</span>'}<span class="pill">👥 ${x.wallets.filter(w => w.copy).length}</span></div></div>
         <div style="text-align:right"><div class="b">${x.total != null ? num(x.total, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(x.result)}</div></div></div>
@@ -962,6 +967,7 @@ async function openUser(id) {
       <h2>Tokeny (${d.positions_list.length})</h2><div class="card">${d.positions_list.length ? d.positions_list.map(p => `<div class="item" onclick="openToken('${esc(p.mint)}')">${avatar(p.symbol)}<div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
         <div style="text-align:right"><div class="b">${p.value != null ? num(p.value, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(p.pnl)}</div></div></div>`).join('') : '<div class="empty">brak</div>'}</div>
       <h2>Ostatnie ruchy</h2><div class="card">${d.history.length ? d.history.map(feedItem).join('') : '<div class="empty">brak</div>'}</div>
+      <button class="btn ghost" style="margin-bottom:8px" onclick="renameUser(${d.id}, '${esc((d.nickname || '').replace(/'/g, ''))}')">✏️ Zmień nazwę${d.username ? ` <span class="mut tiny">(@${esc(d.username)})</span>` : ''}</button>
       ${d.active ? `<button class="btn r" onclick="adminStop(${d.id})">⏸ Zatrzymaj mu kopiowanie</button>` : ''}
       ${own && d.role !== 'owner' ? `<button class="btn ghost" style="margin-top:8px" onclick="adminRole(${d.id})">${d.role === 'admin' ? 'Zabierz rangę admina' : '⭐ Daj rangę admina'}</button>` : ''}`);
   } catch (e) { sheet(hdr('Podgląd') + `<div class="empty">${esc(e.message)}</div>`); }
@@ -969,6 +975,12 @@ async function openUser(id) {
 async function adminStop(id) {
   if (!await confirmBox('Zatrzymać tej osobie kopiowanie? Dostanie powiadomienie i raport sesji.')) return;
   await act('admin_stop', {uid: id}, {reload: false}); await loadAdmin(); openUser(id);
+}
+async function renameUser(id, cur) {
+  const n = prompt('Nowa nazwa (puste = usuń):', cur || '');
+  if (n === null) return;
+  await act('nickname', {uid: id, name: n}, {reload: id === S.user.id, quiet: false});
+  await loadAdmin(); if (SHEET) openUser(id);
 }
 async function adminRole(id) { await act('admin_role', {uid: id}, {reload: false}); await loadAdmin(); openUser(id); }
 

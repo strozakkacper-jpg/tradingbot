@@ -338,7 +338,8 @@ async def state(s, u) -> dict:
     last = s.db._q("SELECT latency_ms FROM sol_trades WHERE tg_id = ? AND latency_ms IS NOT NULL ORDER BY id DESC "
                    "LIMIT 1", (uid,))
     return {
-        "user": {"id": uid, "admin": uid in admin_ids(s), "role": adm.role_of(s, uid)},
+        "user": {"id": uid, "admin": uid in admin_ids(s), "role": adm.role_of(s, uid),
+                 "nickname": u["nickname"] if "nickname" in u.keys() else None, "username": u["username"]},
         "live": live, "active": bool(u["active"]), "paused": s.db.get_state("paused") == "1",
         "sol_usd": pf["sol_usd"], "sol_change": sol_ch, "sol": pf["sol"], "total": pf["total"],
         "demo_start": start, "result": (pf["total"] / start - 1) * 100 if not live else None,
@@ -640,6 +641,15 @@ async def action(s, u, body: dict) -> dict:
             raise ApiError("Tylko dla administratora")
         s.db.set_state("paused", "1" if body.get("on") else "0")
         return {"msg": "⏸ Kopiowanie wstrzymane wszystkim" if body.get("on") else "▶️ Kopiowanie wznowione"}
+    if act == "nickname":  # admin: dowolnej osobie; każdy: sobie
+        target = int(body.get("uid") or uid)
+        if target != uid and uid not in admin_ids(s):
+            raise ApiError("Nazwy innym nadaje tylko administrator")
+        if not s.db.get_user(target):
+            raise ApiError("Nie ma takiej osoby")
+        name = adm.clean_nickname(body.get("name", ""))
+        s.db.update_user(target, nickname=name)
+        return {"msg": f"✏️ Nazwa: {name}" if name else "Usunięto nazwę"}
     if act in ("admin_stop", "admin_role"):
         if uid not in admin_ids(s):
             raise ApiError("Tylko dla administratora")
