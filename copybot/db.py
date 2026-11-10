@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS follows (
 CREATE TABLE IF NOT EXISTS sol_wallets (
     tg_id INTEGER PRIMARY KEY, pubkey TEXT NOT NULL, secret TEXT NOT NULL, created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS leaderboard (  -- ranking traderów liczony przez bota z łańcucha (1 / 7 / 30 dni)
+    wallet TEXT NOT NULL, period INTEGER NOT NULL, stats TEXT NOT NULL, score REAL NOT NULL, updated INTEGER NOT NULL,
+    source TEXT, PRIMARY KEY (wallet, period)
+);
 CREATE TABLE IF NOT EXISTS chat_messages (  -- czat grupowy w aplikacji
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL,
     deleted INTEGER NOT NULL DEFAULT 0

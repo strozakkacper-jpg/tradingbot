@@ -970,3 +970,28 @@ def test_token_filters_time_and_dev_exit_and_smart(tmp_path):
     ch = EX.smart_allocation(s, s.db.get_user(OWNER))
     assert any("⬆️ A" in c for c in ch) and any("⬇️ B" in c for c in ch)
     assert s.db.follow_row(OWNER, a)["sol_pct"] == 15 and s.db.follow_row(OWNER, b)["sol_pct"] == 5
+
+
+def test_leaderboard(tmp_path):
+    import json as js
+    from copybot.sol import leaderboard as LB
+    s, _, _ = ready(tmp_path)
+    good = {"pnl": 12.5, "roi": 80, "win_rate": 0.6, "closed": 10, "swaps": 25, "hold_s": 300, "green_days": 5,
+            "active_days": 6, "avg_buy": 1.2, "partial": False, "last": time.time()}
+    flip = dict(good, pnl=3, roi=20, hold_s=8)
+    for w, a, sc in ((WALLET, good, 90.0), (W2, flip, 10.0)):
+        s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, ?, ?, 'kupował MEME')", (w, js.dumps(a), sc, int(time.time() * 1000)))
+    assert [r["wallet"] for r in LB.top(s, 7)] == [WALLET, W2]
+    assert LB.top(s, 7, "roi")[0]["roi"] == 80
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/leaderboard?period=7")
+        assert st == 200 and j["rows"][0]["wallet"] == WALLET and not j["rows"][0]["in_list"]
+        st, j = await call(OWNER, "/api/sol/action", {"action": "lb_add", "wallet": W2})
+        st, j = await call(OWNER, "/api/sol/action", {"action": "lb_add", "wallet": WALLET, "copy": True})
+        assert s.sol.watched_wallets() == {WALLET}
+        st, j = await call(OWNER, "/api/sol/leaderboard?period=7")
+        assert j["rows"][0]["status"] == "copy" and j["rows"][1]["in_list"]
+        st, j = await call(FRIEND, "/api/sol/action", {"action": "lb_refresh"})
+        assert st == 400  # tylko admin
+    run(s, steps)

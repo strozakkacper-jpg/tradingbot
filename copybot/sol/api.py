@@ -801,6 +801,20 @@ async def action(s, u, body: dict) -> dict:
             raise ApiError("Tylko dla administratora")
         s.db.set_state("paused", "1" if body.get("on") else "0")
         return {"msg": "⏸ Kopiowanie wstrzymane wszystkim" if body.get("on") else "▶️ Kopiowanie wznowione"}
+    if act in ("lb_add", "lb_refresh"):
+        if act == "lb_refresh":
+            from . import leaderboard as LB
+            if uid not in admin_ids(s):
+                raise ApiError("Odświeżyć ranking może administrator (i tak odświeża się sam co 12 h)")
+            started = LB.start_rebuild(s)
+            return {"msg": "🔄 Liczę ranking od nowa – potrwa ok. 10–20 min" if started else "Już liczę ranking…"}
+        wallet = valid_address(str(body.get("wallet", "")))
+        if not wallet:
+            raise ApiError("Zły adres portfela")
+        s.db.save_wallets(uid, [(wallet, body.get("name") or f"🌍 {short(wallet)}", None)], "ranking")
+        if body.get("copy"):
+            return {"msg": switch(s, uid, wallet, True)}
+        return {"msg": "➕ Dodano do Twojej listy traderów (wyłączony – włączysz, kiedy chcesz)"}
     if act == "chat_send":
         import time as _t
         text = str(body.get("text", "")).strip()[:1000]
@@ -920,6 +934,20 @@ def routes(s, app: web.Application, auth):
             return BUS.snapshot(u["tg_id"])
         return await BUS.wait(u["tg_id"], v, c, timeout=25)
 
+    async def h_leaderboard(req, u):
+        from . import leaderboard as LB
+        try:
+            period = int(req.query.get("period") or 7)
+        except ValueError:
+            period = 7
+        period = period if period in (1, 7, 30) else 7
+        mine = {it["wallet"]: it["status"] for it in saved_list(s, u["tg_id"])}
+        rows = LB.top(s, period, req.query.get("sort") or "score")
+        for r in rows:
+            r["in_list"] = r["wallet"] in mine
+            r["status"] = mine.get(r["wallet"])
+        return {"rows": rows, "period": period, "state": LB.STATE, "admin": u["tg_id"] in admin_ids(s)}
+
     async def h_ranking(_, u):
         uu = s.db.get_user(u["tg_id"])
         return {"rows": ranking(s, u["tg_id"], not s.sol.is_live(uu)), "live": s.sol.is_live(uu),
@@ -960,5 +988,6 @@ def routes(s, app: web.Application, auth):
     r.add_get("/api/sol/chat", handler(h_chat))
     r.add_get("/api/sol/ranking", handler(h_ranking))
     r.add_get("/api/sol/live", handler(h_live))
+    r.add_get("/api/sol/leaderboard", handler(h_leaderboard))
     r.add_get("/api/sol/admin/users", handler(h_admin_users))
     r.add_get("/api/sol/admin/user/{uid:\\d+}", handler(h_admin_user))

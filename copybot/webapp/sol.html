@@ -379,9 +379,12 @@ function feedItem(f) {
 
 // ---------- traderzy ----------
 let SAVED = null, SAVED_Q = '', SAVED_N = 40, SAVED_F = 'all', SCAN_T = null, SEL = null;  // SEL: zaznaczeni (Set) albo null
+let TR_VIEW = 'mine', LB = null, LB_P = 7, LB_SORT = 'score';
 function traders() {
+  const seg = `<div class="seg" style="margin:4px 0 12px">${[['mine', '👥 Moi traderzy'], ['lb', '🌍 Ranking top 100']].map(([k, l]) => `<button class="${TR_VIEW === k ? 'on' : ''}" onclick="TR_VIEW='${k}';render();${k === 'lb' ? 'loadLB()' : ''}">${l}</button>`).join('')}</div>`;
+  if (TR_VIEW === 'lb') return seg + lbHtml();
   if (!SAVED) loadSaved();
-  return `
+  return seg + `
   <h2 style="margin-top:4px">Dodaj tradera</h2>
   <div class="card">
     <textarea id="addw" placeholder="Wklej adres portfela, np. 7xKX…AsU Kowal&#10;Kilku naraz? Każdy w nowej linii."></textarea>
@@ -998,6 +1001,46 @@ async function withdraw() {
   const pin = askPin(); if (pin === false) return;
   const r = await act('withdraw', {address: a, amount: n, confirm: true, pin}, {reload: false});
   if (r && r.sig) openDeposit();
+}
+
+// ---------- ranking top 100 ----------
+async function loadLB() {
+  try { LB = await api(`/api/sol/leaderboard?period=${LB_P}&sort=${LB_SORT}`); } catch (e) { toast('⚠️ ' + e.message); }
+  if (TAB === 'traders' && TR_VIEW === 'lb' && !SHEET) render();
+  clearTimeout(loadLB.t);
+  if (LB && LB.state && LB.state.running) loadLB.t = setTimeout(loadLB, 10000);
+}
+function lbHtml() {
+  if (!LB) { loadLB(); return '<div class="card"><div class="loader"></div></div>'; }
+  const stt = LB.state || {};
+  const per = `<div class="seg">${[[1, '1 dzień'], [7, '7 dni'], [30, '30 dni']].map(([k, l]) => `<button class="${LB_P === k ? 'on' : ''}" onclick="LB_P=${k};LB=null;render()">${l}</button>`).join('')}</div>`;
+  const sc = (k, l) => `<button class="chip ${LB_SORT === k ? 'on' : ''}" onclick="LB_SORT='${k}';LB=null;render()">${l}</button>`;
+  const sol = x => `<b class="${x >= 0 ? 'g' : 'r'}">${x >= 0 ? '+' : ''}${(x || 0).toFixed(2)} SOL</b>`;
+  const rows = LB.rows.map((r, i) => `<div class="item" style="cursor:default;align-items:flex-start">
+      <div class="av" style="font-size:${i < 3 ? 20 : 14}px">${i < 3 ? ['🥇', '🥈', '🥉'][i] : i + 1}</div>
+      <div class="sp">
+        <div class="row" style="gap:6px"><b style="font-family:ui-monospace,monospace">${short(r.wallet)}</b>
+          <button class="chip" style="padding:3px 8px;font-size:12px" onclick="copyText('${r.wallet}')">📋 Kopiuj adres</button></div>
+        <div class="tiny" style="margin-top:3px">${sol(r.pnl)} · zwrot <b>${r.roi != null ? (r.roi >= 0 ? '+' : '') + r.roi.toFixed(0) + '%' : '—'}</b> · trafia ${r.win_rate != null ? Math.round(r.win_rate * 100) + '%' : '—'} (${r.closed})</div>
+        <div class="tiny mut">${r.active_days ? `📅 dni na plusie ${r.green_days}/${r.active_days} · ` : ''}${r.hold_s != null ? 'trzyma ~' + fSec(r.hold_s) + ' · ' : ''}${r.avg_buy ? 'kupuje ~' + r.avg_buy.toFixed(2) + ' SOL · ' : ''}${esc(r.source || '')}${r.partial ? ' · ⚠️ dane z krótszego okresu' : ''}</div>
+        <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
+          ${r.status === 'copy' ? '<span class="pill g">🟢 kopiujesz</span>' : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', true)">🟢 Kopiuj</button>`}
+          ${r.in_list ? (r.status === 'copy' ? '' : '<span class="pill">na Twojej liście</span>') : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', false)">➕ Do listy</button>`}
+          <button class="chip" style="padding:5px 10px" onclick="openLink('https://gmgn.ai/sol/address/${r.wallet}')">GMGN</button>
+          <button class="chip" style="padding:5px 10px" onclick="openLink('https://solscan.io/account/${r.wallet}')">Solscan</button></div>
+      </div></div>`).join('');
+  return `<div class="card">${per}
+      <div class="chips" style="margin-top:10px">${sc('score', '⭐ Najlepsza ocena')}${sc('pnl', '💰 Zysk SOL')}${sc('roi', '📈 % zwrotu')}${sc('green', '📅 Dni na plusie')}</div>
+      <div class="mut tiny" style="margin-top:8px">Bot sam liczy ten ranking prosto z sieci Solana: bada aktywnych kupujących popularne tokeny i portfele z Waszych list (zysk, % zwrotu, skuteczność, stabilność, czas trzymania). Odświeża co 12 h. ${stt.finished ? 'Ostatnio: ' + ago(stt.finished) + '.' : ''}
+        ${stt.running ? `<b>Liczę… ${stt.done}/${stt.total}</b>` : ''}</div>
+      ${LB.admin ? `<button class="btn ghost" style="margin-top:8px" ${stt.running ? 'disabled' : ''} onclick="act('lb_refresh', {}, {reload: false}).then(loadLB)">🔄 Policz ranking teraz</button>` : ''}</div>
+    <div class="card">${rows || `<div class="empty">${stt.running ? 'Liczę ranking – pierwsze wyniki za kilka minut…' : 'Ranking jeszcze pusty – bot liczy go co 12 h (pierwszy raz ok. 15 min po starcie).'}</div>`}</div>
+    <div class="mut tiny c">To nie jest cała sieć Solana (to wymagałoby płatnego serwisu danych), tylko aktywni traderzy, których bot znalazł. Zanim włączysz kopiowanie, zajrzyj na GMGN.</div>`;
+}
+async function lbAdd(wallet, copy) {
+  if (copy && !await confirmBox('Dodać tego tradera i od razu włączyć kopiowanie?')) return;
+  await act('lb_add', {wallet, copy}, {reload: false});
+  SAVED = null; loadLB(); load();
 }
 
 // ---------- optymalizator ----------
