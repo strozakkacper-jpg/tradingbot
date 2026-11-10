@@ -111,7 +111,7 @@ async def post_init(app: Application):
         app.job_queue.run_daily(sol_extras.backup_job, dt.time(4, 7, tzinfo=tz))
         app.job_queue.run_daily(sol_extras.report_job, dt.time(21, 3, tzinfo=tz))
         app.job_queue.run_daily(sol_extras.smart_job, dt.time(6, 11, tzinfo=tz))
-        app.job_queue.run_repeating(sol_leaderboard.leaderboard_job, interval=12 * 3600, first=900)
+        app.job_queue.run_repeating(sol_leaderboard.leaderboard_job, interval=6 * 3600, first=600)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("📱 Aplikacja", WebAppInfo(f"{cfg.webapp_url}/app")))

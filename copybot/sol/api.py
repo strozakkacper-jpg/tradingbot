@@ -801,17 +801,34 @@ async def action(s, u, body: dict) -> dict:
             raise ApiError("Tylko dla administratora")
         s.db.set_state("paused", "1" if body.get("on") else "0")
         return {"msg": "⏸ Kopiowanie wstrzymane wszystkim" if body.get("on") else "▶️ Kopiowanie wznowione"}
+    if act == "lb_keys":
+        from . import leaderboard as LB
+        if uid not in admin_ids(s):
+            raise ApiError("Klucze rankingu ustawia administrator")
+        changed = []
+        for which in ("st", "vybe"):
+            if which in body:
+                val = str(body.get(which) or "").strip()
+                if val and (len(val) < 16 or len(val) > 200 or any(c.isspace() for c in val)):
+                    raise ApiError("To nie wygląda na klucz API – skopiuj go w całości")
+                LB.set_key(s, which, val)
+                changed.append(which)
+        if changed:
+            LB.start_rebuild(s)
+        return {"msg": "🔑 Zapisano – liczę ranking światowy (ok. 1–3 min)" if changed else "Nic nie zmieniono",
+                "keys": LB.key_status(s)}
     if act in ("lb_add", "lb_refresh"):
         if act == "lb_refresh":
             from . import leaderboard as LB
             if uid not in admin_ids(s):
-                raise ApiError("Odświeżyć ranking może administrator (i tak odświeża się sam co 12 h)")
-            started = LB.start_rebuild(s)
-            return {"msg": "🔄 Liczę ranking od nowa – potrwa ok. 10–20 min" if started else "Już liczę ranking…"}
+                raise ApiError("Odświeżyć ranking może administrator (i tak odświeża się sam co 6 h)")
+            started = LB.start_rebuild(s, force_chain=bool(body.get("chain")))
+            return {"msg": "🔄 Liczę ranking od nowa – świat ok. 1–3 min, portfele bota do 20 min" if started
+                    else "Już liczę ranking…"}
         wallet = valid_address(str(body.get("wallet", "")))
         if not wallet:
             raise ApiError("Zły adres portfela")
-        s.db.save_wallets(uid, [(wallet, body.get("name") or f"🌍 {short(wallet)}", None)], "ranking")
+        s.db.save_wallets(uid, [(wallet, str(body.get("name") or "")[:48] or f"🌍 {short(wallet)}", None)], "ranking")
         if body.get("copy"):
             return {"msg": switch(s, uid, wallet, True)}
         return {"msg": "➕ Dodano do Twojej listy traderów (wyłączony – włączysz, kiedy chcesz)"}
@@ -942,11 +959,18 @@ def routes(s, app: web.Application, auth):
             period = 7
         period = period if period in (1, 7, 30) else 7
         mine = {it["wallet"]: it["status"] for it in saved_list(s, u["tg_id"])}
-        rows = LB.top(s, period, req.query.get("sort") or "score")
+        cnt = LB.counts(s, period)
+        kind = req.query.get("kind")
+        kind = kind if kind in ("world", "chain") else ("world" if cnt["world"] else "chain")
+        rows = LB.top(s, period, req.query.get("sort") or "score", kind=kind)
         for r in rows:
             r["in_list"] = r["wallet"] in mine
             r["status"] = mine.get(r["wallet"])
-        return {"rows": rows, "period": period, "state": LB.STATE, "admin": u["tg_id"] in admin_ids(s)}
+        admin = u["tg_id"] in admin_ids(s)
+        return {"rows": rows, "period": period, "kind": kind, "counts": cnt, "admin": admin,
+                "state": {k: LB.STATE.get(k) for k in ("running", "done", "total", "started", "finished", "step",
+                                                       "errors", "world", "chain")},
+                "keys": LB.key_status(s) if admin else None, "has_world": any(LB.key_status(s).values())}
 
     async def h_ranking(_, u):
         uu = s.db.get_user(u["tg_id"])

@@ -995,3 +995,70 @@ def test_leaderboard(tmp_path):
         st, j = await call(FRIEND, "/api/sol/action", {"action": "lb_refresh"})
         assert st == 400  # tylko admin
     run(s, steps)
+
+
+def test_leaderboard_world(tmp_path, monkeypatch):
+    from copybot.sol import leaderboard as LB
+    s, _, _ = ready(tmp_path)
+    W3 = "So11111111111111111111111111111111111111112"
+    st_top = {"traders": [
+        {"wallet": WALLET, "period": {"realized": 52000, "roi": 140, "tradingDays": 6,
+                                      "days": {"profitable": 5, "losing": 1, "maxSinglePnl": 9000}},
+         "counts": {"trades": 400, "tokensTraded": 60}, "tokens": {"closed": 55}, "winRate": 61,
+         "averages": {"buy": 300}, "timing": {"lastTrade": 1_776_000_000_000}, "identity": {"name": None}},
+        {"wallet": W2, "period": {"realized": 90000, "roi": 30, "tradingDays": 5, "days": {"profitable": 2, "losing": 3}},
+         "counts": {"trades": 20000}, "winRate": 50}]}  # 4000 transakcji / dzień → bot
+    st_kols = {"traders": [{"wallet": W3, "period": {"realized": 8000, "tradingDays": 4},
+                            "identity": {"name": "Ziomek", "twitter": "ziomek"}}]}
+    vybe = {"data": [{"accountAddress": WALLET, "accountLabels": ["KOL"], "accountName": "Mistrz",
+                      "metrics": {"realizedPnlUsd": 50000, "unrealizedPnlUsd": 10, "winRate": 60, "tradesVolumeUsd": 1,
+                                  "tradesCount": 380, "sevenDayPnl": [[1, 5], [2, -1], [3, 7], [4, 2]]}}]}
+    calls = []
+
+    async def fake_get(session, url, params, headers):
+        calls.append((url, params, headers))
+        if "kols" in url:
+            return st_kols
+        return vybe if "vybenetwork" in url else st_top
+
+    async def fake_prices(mints):
+        return {LB.SOL_MINT: 200.0}
+
+    async def no_holds(s_, wallets):
+        return None
+    monkeypatch.setattr(LB, "_get", fake_get)
+    monkeypatch.setattr(LB, "check_holds", no_holds)
+    s.sol.jup.prices = fake_prices
+    s.sol.jup.session = None
+    # bez kluczy – nic nie pobiera
+    assert asyncio.run(LB.rebuild_world(s)) == 0 and not calls
+    LB.set_key(s, "st", "st-key-123456789012")
+    LB.set_key(s, "vybe", "vy-key-123456789012")
+    assert LB.key_status(s) == {"st": "app", "vybe": "app"}
+    assert asyncio.run(LB.rebuild_world(s)) == 9
+    assert any(h.get("x-api-key") == "st-key-123456789012" for _, _, h in calls)
+    assert any(h.get("X-API-KEY") == "vy-key-123456789012" for _, _, h in calls)
+    rows = LB.top(s, 7, kind="world")
+    by = {r["wallet"]: r for r in rows}
+    assert rows[0]["wallet"] == WALLET  # stabilny, mniejszy zysk > bot z większym
+    assert by[W2]["bot"] and not by[WALLET]["bot"]
+    assert by[WALLET]["name"] == "Mistrz" and by[WALLET]["kol"] and by[WALLET]["pnl"] == 260
+    assert by[WALLET]["series"] == [5, -1, 7, 2] and by[WALLET]["green_days"] == 5
+    assert by[W3]["kol"] and by[W3]["name"] == "Ziomek"
+    assert LB.top(s, 7, "green", kind="world")[0]["wallet"] == WALLET
+    assert LB.top(s, 7, kind="chain") == []
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/leaderboard?period=30")
+        assert st == 200 and j["kind"] == "world" and j["counts"]["world"] == 3 and j["keys"]["st"] == "app"
+        st, j = await call(FRIEND, "/api/sol/leaderboard?period=30")
+        assert j["keys"] is None and j["has_world"]
+        st, j = await call(FRIEND, "/api/sol/action", {"action": "lb_keys", "st": "x" * 30})
+        assert st == 400
+        st, j = await call(OWNER, "/api/sol/action", {"action": "lb_keys", "vybe": "zły klucz"})
+        assert st == 400
+        LB.STATE["running"] = True  # nie uruchamiaj liczenia w teście
+        st, j = await call(OWNER, "/api/sol/action", {"action": "lb_keys", "vybe": ""})
+        LB.STATE["running"] = False
+        assert st == 200 and j["keys"]["vybe"] is None
+    run(s, steps)
