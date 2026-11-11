@@ -1192,3 +1192,17 @@ def test_late_sell_still_runs_and_day_limit_not_shrinking(tmp_path):
     lim = s.db.get_user(OWNER)["sol_day_limit"]
     AC.apply(s, s.db.get_user(OWNER), 0.6)  # saldo spadło w ciągu dnia
     assert s.db.get_user(OWNER)["sol_day_limit"] == lim
+
+
+def test_open_positions_count_only_real_holdings(tmp_path):
+    s, _, _ = ready(tmp_path)
+    u = s.db.get_user(OWNER)
+    s.sol.wallet(OWNER)
+    paper = not s.sol.is_live(u)
+    for m in ("MINTA", "MINTB", "MINTC"):
+        s.sol.record(OWNER, None, None, "buy", m, 0.1, 1000, "filled", "x", paper)
+    # w portfelu został tylko A (B sprzedany ręcznie poza botem, C to martwy token bez trasy)
+    s.sol.paper_apply(OWNER, {"MINTA": 1000, "MINTC": 5})
+    s.sol._unvaluable = {"MINTC": time.monotonic()}
+    assert s.sol.open_positions(OWNER, paper) == 3  # stary sposób – liczył wszystkie
+    assert asyncio.run(s.sol.open_positions_now(u)) == 1

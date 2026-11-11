@@ -500,6 +500,31 @@ class SolEngine:
                           WHERE t > 1e-9""", (tg_id, int(paper)))
         return r[0]["n"] if r else 0
 
+    async def open_positions_now(self, u) -> int:
+        """Otwarte pozycje NAPRAWDĘ trzymane teraz: kupione przez bota I wciąż w portfelu. Tokeny sprzedane
+        ręcznie (np. w Axiom), resztki po sprzedaży i martwe tokeny bez trasy wymiany nie zajmują miejsca
+        z limitu – inaczej bot przestawał kupować, choć pozycji już nie było."""
+        paper = not self.is_live(u)
+        ledger = {r["mint"] for r in self.db._q(
+            """SELECT mint FROM (SELECT mint, SUM(CASE WHEN side = 'buy' THEN tokens ELSE -tokens END) t
+               FROM sol_trades WHERE tg_id = ? AND paper = ? AND status = 'filled' GROUP BY mint) WHERE t > 1e-9""",
+            (u["tg_id"], int(paper)))}
+        if not ledger:
+            return 0
+        cache = self.__dict__.setdefault("_hold_cache", {})
+        hit = cache.get(u["tg_id"])
+        if hit and time.monotonic() - hit[0] < 5:
+            hold = hit[1]
+        else:
+            try:
+                hold = await asyncio.wait_for(self.holdings(u), 4)
+            except Exception:  # noqa: BLE001
+                return self.open_positions(u["tg_id"], paper)  # RPC nie odpowiada – liczymy po staremu
+            cache[u["tg_id"]] = (time.monotonic(), hold)
+        dead = self.__dict__.get("_unvaluable", {})
+        now = time.monotonic()
+        return sum(1 for m in ledger if hold.get(m, 0) > 0 and now - dead.get(m, -1e9) >= 600)
+
     def note_buy(self, lid: int, mint: str):
         now = time.time()
         self._recent_buys.setdefault(mint, {})[lid] = now
@@ -574,7 +599,7 @@ class SolEngine:
         paper = not self.is_live(u)
         max_pos = u["sol_max_pos"] if "sol_max_pos" in keys else 0
         if max_pos and max_pos > 0 and not allow_add:
-            n = self.open_positions(u["tg_id"], paper)
+            n = await self.open_positions_now(u)
             if n >= max_pos and await self.token_raw(u, sw.mint) <= 0:
                 raise Skip(f"masz już {n} otwartych pozycji (Twój limit {max_pos}) – czekam, aż coś się sprzeda")
         streak = u["sol_streak"] if "sol_streak" in keys else 0

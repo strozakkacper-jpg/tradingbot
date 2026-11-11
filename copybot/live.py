@@ -6,7 +6,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from telegram.constants import ParseMode
-from telegram.error import BadRequest, Forbidden
+from telegram.error import BadRequest, Forbidden, NetworkError
 
 from .engine import _resolve, fmt_money, fmt_price  # noqa: F401 (fmt_price używane też przez demo)
 
@@ -120,5 +120,7 @@ async def live_job(ctx) -> None:
             await refresh(ctx.bot, s, u)
         except Forbidden:  # użytkownik zablokował bota
             s.db.update_user(u["tg_id"], live_pin=0, pin_msg_id=None)
+        except NetworkError as e:  # chwilowy brak połączenia z Telegramem – następna próba za minutę
+            log.warning("Telegram chwilowo niedostępny (podgląd na żywo %s): %s", u["tg_id"], e)
         except Exception:  # noqa: BLE001
             log.exception("Nie odświeżono informacji na żywo dla %s", u["tg_id"])
