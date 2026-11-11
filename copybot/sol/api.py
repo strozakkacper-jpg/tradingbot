@@ -11,7 +11,7 @@ import logging
 from aiohttp import web
 
 from ..bot import admin_ids
-from ..db import now_ms
+from ..db import now_ms, ref_id
 from . import admin as adm
 from .engine import Skip, short
 from .parser import LAMPORTS, SOL_MINT
@@ -403,7 +403,10 @@ async def state(s, u) -> dict:
                     "AND ts >= ?", (uid, lead["id"], day_ago))[0]["n"]
         ok = isinstance(rep, dict)
         fr = s.db.follow_row(uid, lead["id"])
+        his = s.db._q("SELECT MAX(ts) last, SUM(ts >= ?) n FROM sol_trades WHERE tg_id = ? AND status = 'filled'",
+                      (day_ago, ref_id(lead["id"])))[0]  # portfel wzorcowy = każdy ruch tradera
         wallets.append({"id": lead["id"], "name": lead["name"], "wallet": lead["wallet"], "copy": copy, "n24": n,
+                        "his24": his["n"] or 0, "his_last": his["last"],
                         "hold": se.hold_stats(lead["id"]),
                         "priority": bool(fr and fr["priority"]),
                         "result": rep["total"] * 100 if ok else None,

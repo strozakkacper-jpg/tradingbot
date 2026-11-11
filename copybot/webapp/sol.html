@@ -209,7 +209,14 @@ function ago(ts) {
   return new Date(ts).toLocaleDateString('pl-PL', {day: '2-digit', month: '2-digit'});
 }
 const short = a => a ? a.slice(0, 4) + '…' + a.slice(-4) : '';
-const avatar = (name, icon) => `<div class="av">${icon ? `<img src="${esc(icon)}" onerror="this.remove()">` : ''}${icon ? '' : esc((name || '?').replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?')}</div>`;
+function avText(name) {
+  const n = String(name || '?');
+  const kol = /^⭐ ([^·]+?) ·/.exec(n), top = /Top (\d+)/.exec(n);
+  const src = kol ? kol[1] : (top && !kol ? null : n);
+  if (!src && top) return '#' + top[1];  // trader z rankingu: miejsce zamiast „TO”
+  return src.replace(/[^\p{L}\p{N}]/gu, '').slice(0, 2).toUpperCase() || '?';
+}
+const avatar = (name, icon) => `<div class="av">${icon ? `<img src="${esc(icon)}" onerror="this.remove()">` : ''}${icon ? '' : esc(avText(name))}</div>`;
 function haptic(t = 'light') { try { tg.HapticFeedback.impactOccurred(t); } catch (e) {} }
 function toast(msg, ms = 2600) {
   const el = $('#toast'); el.textContent = msg; el.classList.add('show');
@@ -421,8 +428,9 @@ let DASH_ALL = false;
 function ownTxt(o) { return o.sol ? o.sol + ' SOL' : o.pct ? o.pct + '% jego kwoty' : ''; }
 function walletItem(w) {
   return `<div class="item" onclick="openWallet(${w.id})">${avatar(w.name)}
-    <div class="sp" style="min-width:0"><div class="b" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
-      <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}${holdTxt(w.hold) ? ' · ' + holdTxt(w.hold) : ''}</div></div>
+    <div class="sp" style="min-width:0"><div class="b" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;line-height:1.25">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
+      <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${w.his24 != null ? ` (jego ruchów: ${w.his24})` : ''}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}${holdTxt(w.hold) ? ' · ' + holdTxt(w.hold) : ''}</div>
+      ${w.copy && !w.his24 ? `<div class="tiny y">😴 ${w.his_last ? 'trader nie handluje od ' + ago(w.his_last).replace(' temu', '') : 'trader jeszcze nic nie zrobił, odkąd go kopiujesz'}</div>` : ''}</div>
     <div style="width:64px">${chart(w.spark, 28, true)}</div><div style="min-width:58px;text-align:right">${pct(w.result)}</div></div>`;
 }
 function feedItem(f) {
@@ -1101,6 +1109,7 @@ function lbRow(r, i) {
     r.win_rate != null ? `trafia <b>${Math.round(r.win_rate * 100)}%</b>${r.closed ? ' (' + r.closed + ')' : ''}` : '',
     gd && gd[1] ? `📅 na plusie <b>${gd[0]}/${gd[1]}</b> dni` : ''].filter(Boolean).join(' · ');
   const more = [
+    r.last ? (Date.now() / 1000 - r.last > 48 * 3600 ? '<span class="r">😴 ostatni ruch ' + ago(r.last * 1000) + '</span>' : 'ostatni ruch ' + ago(r.last * 1000)) : '',
     r.hold_s != null ? 'trzyma ~' + fSec(r.hold_s) : '',
     r.trades && r.kind === 'world' ? r.trades.toLocaleString('pl-PL') + ' transakcji' : '',
     r.avg_buy ? 'kupuje ~' + r.avg_buy.toFixed(r.avg_buy < 1 ? 2 : 1) + ' SOL' : '',

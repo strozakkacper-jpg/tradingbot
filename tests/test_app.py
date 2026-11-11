@@ -1206,3 +1206,31 @@ def test_open_positions_count_only_real_holdings(tmp_path):
     s.sol._unvaluable = {"MINTC": time.monotonic()}
     assert s.sol.open_positions(OWNER, paper) == 3  # stary sposób – liczył wszystkie
     assert asyncio.run(s.sol.open_positions_now(u)) == 1
+
+
+def test_pct_rounds_up_to_minimum_and_autocfg_trusts_real_buys(tmp_path):
+    import pytest
+    from copybot.db import ref_id
+    from copybot.sol import autocfg as AC
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, sol_buy_mode="pct", sol_pct=2, sol_min_buy=0.016, sol_max=1)
+    u = s.db.get_user(OWNER)
+
+    async def his(sw):
+        return his.v
+    s.sol.trader_sol = his
+    his.v = 0.4  # 2% = 0.008 SOL → połowa minimum → kupuje za minimum
+    assert asyncio.run(s.sol.buy_amount(u, swap("buy", 0.4, "x1"))) == 16_000_000
+    his.v = 0.1  # 2% = 0.002 SOL → zakup testowy → pomija
+    with pytest.raises(Exception):
+        asyncio.run(s.sol.buy_amount(u, swap("buy", 0.1, "x2")))
+    # „średni zakup” z rankingu 100 SOL nie wygrywa z prawdziwymi zakupami tradera
+    import json as js
+    lid = s.db.create_leader("🏆 Top 1 ocena 7d", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, 1, ?, '🌍 X')", (WALLET, js.dumps({"avg_buy": 100}), int(time.time() * 1000)))
+    assert AC.trader_profiles(s, OWNER)[0]["median"] == AC.HINT_CAP
+    s.sol.record(ref_id(lid), lid, None, "buy", "M1", 0.3, 1000, "filled", "0.3", True)
+    p = AC.trader_profiles(s, OWNER)[0]
+    assert p["median"] == 0.3 and "1 jego" in p["src"]

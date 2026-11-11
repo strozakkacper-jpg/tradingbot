@@ -19,6 +19,7 @@ import logging
 import math
 import os
 import re
+import time
 
 import aiohttp
 
@@ -203,6 +204,15 @@ def world_score(a: dict, days: int) -> float:
         s -= 10
     if days > 1 and a.get("max_single_usd") and a["max_single_usd"] > 0.7 * pnl:
         s -= 15  # prawie cały zysk z jednego tokena
+    last = a.get("last")
+    if last:
+        idle_h = (time.time() - last) / 3600
+        if idle_h > 5 * 24:
+            s -= 40  # już nie handluje – kopiowanie nic nie da
+        elif idle_h > 48:
+            s -= 18
+    elif a.get("per_day") is not None and a["per_day"] < 0.5:
+        s -= 15  # z łańcucha: prawie nie handluje
     return round(s, 1)
 
 

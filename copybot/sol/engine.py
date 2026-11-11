@@ -680,13 +680,18 @@ class SolEngine:
             want, why = int((f_buy or u["sol_buy"]) * LAMPORTS), None
         if u["sol_max"] > 0:
             want = min(want, int(u["sol_max"] * LAMPORTS))
-        if why and want < MIN_BUY:
+        floor0 = (u["sol_min_buy"] if "sol_min_buy" in keys else 0) or 0
+        if why and want < MIN_BUY and not (floor0 and want >= floor0 * LAMPORTS * 0.3):
             raise Skip(why)
         want = min(want, bal - reserve)
         if want < MIN_BUY:
             raise Skip(f"za mało SOL na koncie (masz {bal / LAMPORTS:.4f} SOL)")
         floor = u["sol_min_buy"] if "sol_min_buy" in u.keys() else 0
         if floor and want < floor * LAMPORTS:
+            # tylko trochę poniżej minimum (zwykłe wejście tradera) → kupujemy za minimum, jeśli starcza SOL;
+            # dużo poniżej (jego zakup testowy za grosze) → pomijamy, bo opłaty zjadłyby zysk
+            if why and want >= floor * LAMPORTS * 0.3 and floor * LAMPORTS <= bal - reserve:
+                return int(floor * LAMPORTS)
             raise Skip(f"za mała kwota ({want / LAMPORTS:.4f} SOL, Twoje minimum {floor:g} SOL) – opłaty zjadłyby zysk")
         return want
 

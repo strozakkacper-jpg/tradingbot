@@ -25,6 +25,7 @@ RENT = 0.00203928
 BASE_FEE = 5_000
 MAX_FEE_SHARE = 0.025  # opłaty (tam i z powrotem) najwyżej 2,5% pozycji
 MAX_ONE_BUY = 3.0  # SOL – większe kupno w małym memecoinie samo rusza cenę
+HINT_CAP = 5.0  # SOL – górna granica „średniego zakupu” z rankingu, dopóki bot nie zobaczy prawdziwych
 SIZING_KEYS = ("sol_buy_mode", "sol_pct", "sol_buy", "sol_max", "sol_min_buy", "sol_max_pos", "sol_day_limit",
                "sol_priority")
 
@@ -72,12 +73,16 @@ def trader_profiles(s, uid: int) -> list[dict]:
             if v and v > 0:
                 buys.append(v)
         src = "7 dni jego zakupów"
-        median = statistics.median(buys) if len(buys) >= 3 else None
+        # 1) prawdziwe zakupy, które bot sam widział (nawet 1–2 są lepsze niż cudza średnia)
+        median = statistics.median(buys) if buys else None
+        if buys and len(buys) < 3:
+            src = f"{len(buys)} jego zakupy"
         if median is None:
-            median = lb.get(it["wallet"]) or ((it.get("stats") or {}).get("avg_buy"))
-            src = "ranking / badanie" if median else "brak danych"
-        if median is None and buys:
-            median, src = statistics.median(buys), f"{len(buys)} jego zakupy"
+            # 2) ranking / badanie – „średni zakup” z serwisów bywa liczony na cały token, nie na jedno
+            #    kupno (wychodziło ~100 SOL przy realnych 0,3 SOL) → ograniczamy do rozsądnego zakresu
+            hint = lb.get(it["wallet"]) or ((it.get("stats") or {}).get("avg_buy"))
+            median = min(max(hint, 0.05), HINT_CAP) if hint else None
+            src = "ranking / badanie (szacunek)" if median else "brak danych"
         span_days = max((now_ms() - min(r["ts"] for r in rows)) / DAY_MS, 0.25) if rows else None
         out.append({"lid": it["lid"], "wallet": it["wallet"], "name": it["name"], "median": median, "src": src,
                     "buys": len(buys), "per_day": len(rows) / span_days if span_days else None})
@@ -192,7 +197,10 @@ def apply(s, u, balance: float, full: bool = False) -> dict:
 
 
 def signature(traders: list[dict]) -> str:
-    return ",".join(str(t["lid"]) for t in sorted(traders, key=lambda t: t["lid"]))
+    """Lista traderów + rząd wielkości ich zakupów – gdy realna kwota tradera zmieni się ~2×, przeliczamy."""
+    import math
+    return ",".join(f"{t['lid']}:{round(math.log2(t['median'])) if t.get('median') else '-'}"
+                    for t in sorted(traders, key=lambda t: t["lid"]))
 
 
 def needs_update(u, balance: float, traders: list[dict]) -> str | None:
