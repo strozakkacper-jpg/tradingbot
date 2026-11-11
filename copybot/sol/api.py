@@ -35,7 +35,7 @@ SETTINGS = {
     "sol_turbo": (bool, None, None),
     "sol_min_buy": (float, 0, 10), "sol_max_pos": (int, 0, 100), "sol_streak": (int, 0, 20),
     "sol_max_mcap": (float, 0, 1e10), "sol_min_age": (float, 0, 100000), "sol_max_age": (float, 0, 100000),
-    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None),
+    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None), "sol_autopilot": (bool, None, None),
     "sol_report": (bool, None, None),
 }
 
@@ -751,6 +751,21 @@ async def action(s, u, body: dict) -> dict:
             if full:
                 msg += f" – reszta czeka na liście (limit {MAX_COPIED} kopiowanych naraz)"
         return {"msg": msg, "added": len(new), "turned": turned}
+    if act in ("autopilot_on", "autopilot_preview"):
+        from . import autopilot as AP
+        from .axiom import portfolio
+        bal = float(body.get("balance") or (await portfolio(s, u))["total"])
+        if bal <= 0:
+            raise ApiError("Saldo 0 SOL – najpierw wpłać SOL albo zacznij ćwiczenia")
+        if act == "autopilot_preview":
+            c = AP.candidates(s)[:AP.target_count(bal)]
+            return {"target": AP.target_count(bal), "candidates": [
+                {"wallet": r["wallet"], "name": r.get("name"), "pnl": r.get("pnl"), "pnl_usd": r.get("pnl_usd"),
+                 "activity": r.get("activity"), "green_days": r.get("green_days"), "active_days": r.get("active_days"),
+                 "win_rate": r.get("win_rate")} for r in c]}
+        res = await AP.enable(s, u, bal)
+        return {"msg": "🚀 Autopilot zarobku włączony", "text": AP.summary(res) + "\n\n" + res["text"],
+                "warn": res["warn"], "on": res["on"], "off": res["off"]}
     if act == "auto_name":
         from . import leaderboard as LB
         n = LB.auto_name(s, uid, refresh=True, everyone=bool(body.get("everyone")))

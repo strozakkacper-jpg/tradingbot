@@ -810,6 +810,20 @@ function settings() {
   const example = m === 'fixed' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${st.sol_buy} SOL</b>${inUsd(st.sol_buy) ? ' (' + inUsd(st.sol_buy) + ')' : ''}.`
     : m === 'pct' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${sig2(5 * st.sol_pct / 100)} SOL</b>.` : '';
   return `
+  <div class="card" style="border-color:${st.sol_autopilot ? 'rgba(34,197,94,.45)' : 'var(--acc)'};background:linear-gradient(135deg,rgba(155,107,255,.16),rgba(34,197,94,.08) 70%),var(--card)">
+    <div class="row"><div class="sp"><div class="b" style="font-size:17px">🚀 Autopilot zarobku</div>
+      <div class="mut tiny">jeden przycisk – potem bot sam pilnuje wyniku</div></div>
+      ${st.sol_autopilot ? '<span class="pill g">● włączony</span>' : ''}</div>
+    <div class="small" style="margin:10px 0">
+      <div class="note">🏆 <b>Dobiera traderów</b> wysoko naraz w ocenie, aktywności i stabilności (sprawdzonych też w 30 dniach) – bez botów, flipperów i nieaktywnych.</div>
+      <div class="note">🔄 <b>Co 6 h rotuje:</b> wyłącza tych, na których <b>Ty</b> tracisz albo którzy przestali handlować, zostawia zarabiających, wolne miejsca bierze z rankingu.</div>
+      <div class="note">💵 <b>Kwoty pod saldo</b> (🤖 Auto), więcej na zarabiających, wyjście z martwych pozycji po 90 min, ucieczka twórcy tokena, ×2 z ruchomym stopem.</div></div>
+    ${st.sol_autopilot
+      ? `<button class="btn g" onclick="autopilotOn(true)">🔄 Popraw skład teraz</button>
+         <div class="row" style="margin-top:12px"><div class="sp small">Autopilot włączony</div>${tgl('sol_autopilot', st.sol_autopilot)}</div>`
+      : `<button class="btn" onclick="autopilotOn(false)">🚀 Włącz autopilota</button>
+         <button class="btn ghost" style="margin-top:8px" onclick="autopilotPreview()">👀 Kogo by wybrał</button>`}
+    <div class="mut tiny" style="margin-top:8px">Działa w trybie, w którym grasz (🧪 ćwiczenia / 💰 prawdziwe). Najpierw sprawdź go kilka dni na ćwiczeniach. Zwiększa szanse, nie gwarantuje zysku.</div></div>
   <div class="card" style="border-color:var(--acc)"><div class="b">✨ Ustaw najlepsze pod moje saldo</div>
     <div class="mut tiny" style="margin:4px 0 10px">Bot liczy z prawdziwych danych: Twoje saldo (ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}), opłaty sieci (zakup musi być na tyle duży, żeby zjadały maks. ~2,5%), depozyty kont tokenów i <b>za ile naprawdę kupuje każdy Twój trader</b> – każdy dostaje osobny %, tak żeby jego zwykłe wejście dało u Ciebie zwykłą pozycję (mocne wejście = większa). Do tego liczba pozycji naraz, limit straty dnia, zwrot wkładu ×2, ruchomy stop i filtr pułapek.</div>
     <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button>
@@ -1004,6 +1018,28 @@ async function autoSettings() {
   if (!await confirmBox('Ustawić wszystko pod Twoje saldo i traderów? Obecne kwoty, limity i strategia zostaną zastąpione, a 🤖 Auto będzie je samo poprawiać, gdy saldo się zmieni.')) return;
   const r = await act('auto_settings', {}, {quiet: true});
   if (r && r.text) showHtml('✨ Gotowe', autoTxt(r) + `<br><br><span class="mut">${r.auto ? '🤖 Auto włączone – sam przeliczy, gdy saldo zmieni się o 12%+. ' : ''}Każdą wartość możesz poprawić suwakami w Opcjach.</span>`);
+}
+async function autopilotOn(again) {
+  if (!again && !await confirmBox('Włączyć autopilota? Bot wybierze najlepszych traderów z rankingu, wyłączy słabych i nieaktywnych (⭐ priorytetowi zostają), ustawi kwoty pod saldo i co 6 h sam poprawi skład.')) return;
+  loading('Autopilot');
+  try {
+    const r = await api('/api/sol/action', {action: 'autopilot_on'});
+    SAVED = null; await load();
+    showHtml(again ? '🔄 Skład poprawiony' : '🚀 Autopilot włączony', autoTxt(r) + '<br><br><span class="mut">Co 6 h dostaniesz wiadomość, jeśli coś zmieni. Wyłączysz go przełącznikiem w Opcjach.</span>');
+  } catch (e) { closeSheet(); toast('⚠️ ' + e.message); }
+}
+async function autopilotPreview() {
+  loading('Kogo by wybrał');
+  try {
+    const r = await api('/api/sol/action', {action: 'autopilot_preview'});
+    const rows = r.candidates.map((c, i) => `<div class="item" style="cursor:default">${avatar(c.name || ('Top ' + (i + 1)))}
+      <div class="sp"><div class="b">${c.name ? esc(c.name) : short(c.wallet)}</div>
+        <div class="tiny">${c.pnl != null ? `<b class="g">+${c.pnl.toFixed(c.pnl > 100 ? 0 : 2)} SOL</b>` : c.pnl_usd != null ? `<b class="g">+${usd(c.pnl_usd)}</b>` : ''}
+          ${c.active_days ? ` · 📅 ${c.green_days ?? '?'}/${c.active_days} dni na plusie` : ''}${c.activity ? ` · 🔥 ${Math.round(c.activity)}` : ''}${c.win_rate != null ? ` · trafia ${Math.round(c.win_rate * 100)}%` : ''}</div></div></div>`).join('');
+    sheet(hdr('👀 Kogo by wybrał') + `<div class="card"><div class="mut tiny" style="margin-bottom:6px">Przy Twoim saldzie: <b>${r.target}</b> traderów naraz (mniej = sensowne kwoty na każdego).</div>
+      ${rows || '<div class="empty">Ranking jeszcze pusty albo nikt nie spełnia warunków – spróbuj za kilka godzin.</div>'}</div>
+      ${rows ? '<button class="btn" onclick="closeSheet();autopilotOn(false)">🚀 Włącz autopilota</button>' : ''}`);
+  } catch (e) { closeSheet(); toast('⚠️ ' + e.message); }
 }
 async function autoPreview() {
   loading('Podgląd');

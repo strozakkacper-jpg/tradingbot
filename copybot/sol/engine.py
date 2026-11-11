@@ -511,7 +511,7 @@ class SolEngine:
             (u["tg_id"], int(paper)))}
         if not ledger:
             return 0
-        cache = self.__dict__.setdefault("_hold_cache", {})
+        cache = self.__dict__.setdefault("_pos_cache", {})
         hit = cache.get(u["tg_id"])
         if hit and time.monotonic() - hit[0] < 5:
             hold = hit[1]

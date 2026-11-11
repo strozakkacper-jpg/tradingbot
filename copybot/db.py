@@ -143,6 +143,7 @@ MIGRATIONS = {
     "sol_dev_exit": "INTEGER NOT NULL DEFAULT 0",  # sprzedaj, gdy twórca tokena wyprzeda swoje tokeny
     "sol_smart": "INTEGER NOT NULL DEFAULT 0",  # inteligentne kwoty: więcej na traderów, którzy dają Ci zysk
     "sol_report": "INTEGER NOT NULL DEFAULT 1",  # raport dzienny i tygodniowy w czacie
+    "sol_autopilot": "INTEGER NOT NULL DEFAULT 0",  # 🚀 autopilot zarobku: sam dobiera i rotuje traderów
     "sol_autocfg": "INTEGER NOT NULL DEFAULT 0",  # 🤖 auto: kwoty i limity same dopasowują się do salda
     "sol_autocfg_bal": "REAL",  # saldo przy ostatnim auto-ustawieniu
     "sol_autocfg_at": "INTEGER",
@@ -169,7 +170,7 @@ USER_FIELDS = {"username", "accepted", "active", "paper", "multiplier", "max_tra
                "sol_presets", "sol_tp", "sol_sl", "sol_safe", "sol_day_limit", "sol_x2", "role", "nickname", "chat_notify", "sol_no_add", "sol_min_lead", "sol_min_hold", "sol_priority", "sol_paper_start", "sol_notify", "sol_consensus", "sol_cons_window", "sol_boost", "sol_trail",
                "sol_auto_rank", "sol_turbo", "sol_min_buy", "sol_max_pos", "sol_streak",
                "sol_max_mcap", "sol_min_age", "sol_max_age", "sol_time_exit", "sol_dev_exit", "sol_smart", "sol_report",
-               "sol_autocfg", "sol_autocfg_bal", "sol_autocfg_at", "sol_autocfg_sig",
+               "sol_autopilot", "sol_autocfg", "sol_autocfg_bal", "sol_autocfg_at", "sol_autocfg_sig",
                "pin_hash", "session_start", "session_end", "session_sol0", "session_cex0"}
 LEADER_MIGRATIONS = {"wallet": "TEXT"}
 WALLET_MIGRATIONS = {"source": "TEXT NOT NULL DEFAULT 'bot'"}

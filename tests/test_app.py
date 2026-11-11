@@ -1277,3 +1277,49 @@ def test_leaderboard_combined_sorts(tmp_path):
         st, j = await call(OWNER, "/api/sol/leaderboard?period=7&sort=pnl,active")
         assert st == 200 and j["rows"][0]["wallet"] == W3
     run(s, steps)
+
+
+def test_autopilot(tmp_path):
+    import json as js
+    from copybot.db import ref_id
+    from copybot.sol import autopilot as AP, leaderboard as LB
+    s, _, _ = ready(tmp_path)
+    now = time.time()
+    good = {"kind": "world", "roi": 80, "win_rate": .55, "src": ["X"], "green_days": 5, "active_days": 7,
+            "trades": 280, "last": now - 1800, "pnl_usd": 30000, "pnl": 150}
+    W = [f"Good{i}" + "1" * (38 - len(str(i))) for i in range(8)]
+    rows = {w: dict(good, pnl_usd=30000 - i * 1000, pnl=150 - i * 5) for i, w in enumerate(W)}
+    rows["Bot" + "2" * 40] = dict(good, pnl_usd=90000, trades=7 * 5000)
+    rows["Flip" + "3" * 39] = dict(good, pnl_usd=80000, hold_s=6)
+    rows["Idle" + "4" * 39] = dict(good, pnl_usd=70000, last=now - 4 * 86400)
+    rows["Lucky" + "5" * 38] = dict(good, pnl_usd=60000)
+    for w, a in rows.items():
+        s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, 0, ?, '🌍 X')", (w, js.dumps(a), int(now * 1000)))
+    s.db._q("INSERT INTO leaderboard VALUES (?, 30, ?, 0, ?, '🌍 X')",
+            ("Lucky" + "5" * 38, js.dumps(dict(good, pnl_usd=-5000, pnl=-25)), int(now * 1000)))
+    c = [r["wallet"] for r in AP.candidates(s)]
+    assert c[:3] == W[:3] and not any(x.startswith(("Bot", "Flip", "Idle", "Lucky")) for x in c)
+    # użytkownik kopiuje: przegrywającego (na nim traci), nieaktywnego i jednego z dobrych
+    los = s.db.create_leader("Przegryw", "sol", OWNER, "active", wallet=WALLET)
+    idle = s.db.create_leader("Śpioch", "sol", OWNER, "active", wallet=W2)
+    g0 = s.db.create_leader("Mój dobry", "sol", OWNER, "active", wallet=W[5])
+    for lid in (los, idle, g0):
+        s.db.follow(OWNER, lid, True)
+    s.db._q("UPDATE follows SET created_at = ? WHERE tg_id = ?", (int((now - 5 * 86400) * 1000), OWNER))
+    paper = not s.sol.is_live(s.db.get_user(OWNER))
+    for i in range(6):
+        s.sol.record(OWNER, los, None, "sell", f"L{i}", 0.05, 10, "filled", "x", paper, pnl=-0.01)
+    for lid in (los, g0):
+        s.sol.record(ref_id(lid), lid, None, "buy", "MX", 0.3, 10, "filled", "0.3", True)
+    res = asyncio.run(AP.enable(s, s.db.get_user(OWNER), 2.0))  # saldo 2 SOL → 5 traderów
+    assert any("Przegryw" in o and "tracisz" in o for o in res["off"])
+    assert any("Śpioch" in o and "nie handluje" in o for o in res["off"])
+    copied = {it["wallet"] for it in __import__("copybot.sol.api", fromlist=["x"]).saved_list(s, OWNER) if it["status"] == "copy"}
+    assert len(copied) == 5 and W[5] in copied and WALLET not in copied and W2 not in copied
+    assert "Mój dobry" in res["kept"] and len(res["on"]) == 4 and res["on"][0].startswith("🏆🔥📅 Top 1")
+    u = s.db.get_user(OWNER)
+    assert u["sol_autopilot"] == 1 and u["sol_autocfg"] == 1 and u["sol_time_exit"] == 90 and u["sol_min_lead"] == 0
+    assert u["sol_auto_rank"] == 0 and u["sol_dev_exit"] == 1
+    # druga rotacja bez zmian
+    res2 = AP.rotate(s, u, 2.0)
+    assert not res2["on"] and not res2["off"]
