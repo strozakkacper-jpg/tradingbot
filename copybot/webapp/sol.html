@@ -1108,6 +1108,7 @@ function lbRow(r, i) {
     r.roi != null ? `zwrot <b>${r.roi >= 0 ? '+' : ''}${r.roi.toFixed(0)}%</b>` : '',
     r.win_rate != null ? `trafia <b>${Math.round(r.win_rate * 100)}%</b>${r.closed ? ' (' + r.closed + ')' : ''}` : '',
     gd && gd[1] ? `📅 na plusie <b>${gd[0]}/${gd[1]}</b> dni` : ''].filter(Boolean).join(' · ');
+  const actTxt = r.activity ? `🔥 aktywność <b>${Math.round(r.activity)}</b>${r.tpd ? ' · ~' + (r.tpd < 10 ? r.tpd.toFixed(1) : Math.round(r.tpd)) + ' transakcji/dzień' : ''}` : '';
   const more = [
     r.last ? (Date.now() / 1000 - r.last > 48 * 3600 ? '<span class="r">😴 ostatni ruch ' + ago(r.last * 1000) + '</span>' : 'ostatni ruch ' + ago(r.last * 1000)) : '',
     r.hold_s != null ? 'trzyma ~' + fSec(r.hold_s) : '',
@@ -1123,6 +1124,7 @@ function lbRow(r, i) {
         ${badges.trim() ? `<div style="margin-top:4px">${badges}</div>` : ''}
         <div class="tiny" style="margin-top:4px">${sol}${u}${r.series ? lbBars(r.series) : ''}</div>
         ${info ? `<div class="tiny">${info}</div>` : ''}
+        ${actTxt ? `<div class="tiny">${actTxt}</div>` : ''}
         ${more ? `<div class="tiny mut">${more}</div>` : ''}
         <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
           ${r.status === 'copy' ? '<span class="pill g">🟢 kopiujesz</span>' : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', true, ${r.bot || flip}, ${i + 1})">🟢 Kopiuj</button>`}
@@ -1158,13 +1160,13 @@ function lbHtml() {
   const sc = (k, l) => `<button class="chip ${LB_SORT === k ? 'on' : ''}" onclick="LB_SORT='${k}';LB=null;render()">${l}</button>`;
   const rows = LB.rows.map(lbRow).join('');
   const about = kind === 'world'
-    ? 'Najlepsi traderzy memecoinów z całej sieci Solana (Solana Tracker / Vybe): bez botów arbitrażowych i „jednego szczęśliwego strzału”. ⭐ Ocena łączy zysk, % zwrotu, <b>stabilność (dni na plusie)</b> i skuteczność; bot sam sprawdza z łańcucha, ile trzymają tokeny – flipperzy i boty idą w dół.'
+    ? 'Najlepsi traderzy memecoinów z całej sieci Solana (Solana Tracker / Vybe): bez botów arbitrażowych i „jednego szczęśliwego strzału”. ⭐ Ocena łączy zysk, % zwrotu, <b>stabilność (dni na plusie)</b>, skuteczność i <b>aktywność (handluje codziennie i dużo)</b>; 🔥 Aktywność = najaktywniejsi na plusie na górze; bot sam sprawdza z łańcucha, ile trzymają tokeny – flipperzy i boty idą w dół.'
     : 'Bot sam liczy ten ranking z łańcucha: aktywni kupujący popularne memecoiny i portfele z Waszych list (zysk z ich własnych transakcji, skuteczność, czas trzymania).';
   const empty = kind === 'world'
     ? (LB.has_world ? (stt.running ? 'Pobieram ranking światowy…' : 'Jeszcze pusto – ranking odświeża się co 6 h.') : 'Ranking światowy wymaga darmowego klucza – ' + (LB.admin ? 'dodaj go poniżej 👇' : 'poproś admina, żeby go dodał. Na razie zobacz „🔎 Od bota”.'))
     : (stt.running ? 'Liczę ranking – pierwsze wyniki za kilka minut…' : 'Jeszcze pusto – bot liczy go co 12 h.');
   return `<div class="card">${grp}${per}
-      <div class="chips" style="margin-top:10px">${sc('score', '⭐ Ocena')}${sc('pnl', '💰 Zysk')}${sc('roi', '📈 % zwrotu')}${sc('green', '📅 Stabilność')}${sc('win', '🎯 Skuteczność')}</div>
+      <div class="chips" style="margin-top:10px">${sc('score', '⭐ Ocena')}${sc('pnl', '💰 Zysk')}${sc('roi', '📈 % zwrotu')}${sc('green', '📅 Stabilność')}${sc('win', '🎯 Skuteczność')}${sc('active', '🔥 Aktywność')}</div>
       <div class="mut tiny" style="margin-top:8px">${about} ${stt.finished ? 'Odświeżono ' + ago(stt.finished) + '.' : ''}
         ${stt.running ? `<b>${esc(stt.step || 'Liczę…')}</b>` : ''}</div>
       ${LB.admin ? `<button class="btn ghost" style="margin-top:8px" ${stt.running ? 'disabled' : ''} onclick="act('lb_refresh', {chain: LB.kind === 'chain'}, {reload: false}).then(loadLB)">🔄 Odśwież teraz</button>` : ''}</div>

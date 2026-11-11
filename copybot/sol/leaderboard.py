@@ -179,6 +179,26 @@ def is_bot(a: dict) -> bool:
     return bool(a.get("trades")) and a["trades"] / max(days, 1) > BOT_TRADES_PER_DAY
 
 
+def activity(a: dict, days: int) -> tuple[float, float | None]:
+    """(ocena aktywności 0–100, transakcji na dzień). Liczy się: handluje CODZIENNIE (dni z handlem / dni okresu),
+    DUŻO (transakcji na dzień, skala logarytmiczna – 50/dzień to maks.) i NIEDAWNO (ostatni ruch).
+    Boty z setkami transakcji dziennie dostają 0 – takich nie da się kopiować."""
+    act = a.get("active_days") or a.get("active7")
+    span = days if a.get("active_days") else (7 if a.get("active7") else days)
+    trades = a.get("trades") or a.get("swaps")
+    tpd = trades / max(act or 1, 1) if trades else a.get("per_day")
+    if a.get("bot") or (tpd and tpd > BOT_TRADES_PER_DAY):
+        return 0.0, tpd
+    s = (min(act / max(span, 1), 1.0) * 50) if act else 0.0
+    if tpd:
+        s += min(math.log2(tpd + 1) / math.log2(51), 1.0) * 40
+    last = a.get("last")
+    if last:
+        idle_h = (time.time() - last) / 3600
+        s += 10 if idle_h < 6 else 5 if idle_h < 24 else 0
+    return round(s, 1), tpd
+
+
 def world_score(a: dict, days: int) -> float:
     """Ocena: zysk (skala logarytmiczna – $1k i $1M to nie 1000× lepszy trader), % zwrotu, STABILNOŚĆ
     (dni na plusie), skuteczność. Boty, flipperzy i „jeden strzał” w dół."""
@@ -192,7 +212,9 @@ def world_score(a: dict, days: int) -> float:
     if green is None:
         green, active = a.get("green7"), a.get("active7")
     if green is not None and active and active >= 2:
-        s += green / active * 35 * (1 if days > 1 else 0.3)
+        # dni na plusie względem okresu (min. połowa okresu) – 2 dobre dni z 7 to nie „stabilny” trader
+        span = 7 if a.get("green_days") is None else days
+        s += min(green / max(active, span * 0.5), 1.0) * 35 * (1 if days > 1 else 0.3)
     if a.get("win_rate") is not None:
         s += a["win_rate"] * 15
     if a.get("bot"):
@@ -213,6 +235,7 @@ def world_score(a: dict, days: int) -> float:
             s -= 18
     elif a.get("per_day") is not None and a["per_day"] < 0.5:
         s -= 15  # z łańcucha: prawie nie handluje
+    s += activity(a, days)[0] * 0.35  # aktywni (codziennie, dużo, niedawno) wyżej – maks. +35
     return round(s, 1)
 
 
@@ -418,15 +441,20 @@ def top(s, period: int, sort: str = "score", limit: int = 100, kind: str | None 
             continue
         if k == "chain" and not a.get("closed"):
             continue
-        out.append({"wallet": r["wallet"], "source": r["source"], "updated": r["updated"], "score": r["score"],
-                    "kind": k, **{f: a.get(f) for f in FIELDS}})
+        act, tpd = activity(a, period)
+        # ocena światowa liczona na bieżąco – „ostatni ruch” i aktywność starzeją się z godziny na godzinę
+        score = world_score(a, period) if k == "world" else r["score"]
+        out.append({"wallet": r["wallet"], "source": r["source"], "updated": r["updated"], "score": score,
+                    "kind": k, "activity": act, "tpd": tpd, **{f: a.get(f) for f in FIELDS}})
 
     def green(x):
         g, act = (x["green_days"], x["active_days"]) if x["green_days"] is not None else (x["green7"], x["active7"])
         return ((g or 0) / act if act else 0, g or 0, x["pnl"] or 0)
     key = {"score": lambda x: x["score"], "pnl": lambda x: x["pnl"] if x["pnl"] is not None else (x["pnl_usd"] or 0) / 150,
            "roi": lambda x: x["roi"] if x["roi"] is not None else -1e9, "green": green,
-           "win": lambda x: (x["win_rate"] or 0, x["pnl"] or 0)}.get(sort, lambda x: x["score"])
+           "win": lambda x: (x["win_rate"] or 0, x["pnl"] or 0),
+           # najaktywniejsi na górze – ale tylko ci na plusie (aktywny i tracący to najgorszy wybór)
+           "active": lambda x: ((x["pnl"] or x["pnl_usd"] or 0) > 0, x["activity"], x["score"])}.get(sort, lambda x: x["score"])
     out.sort(key=key, reverse=True)
     return out[:limit]
 
@@ -457,8 +485,8 @@ __all__ = ["rebuild", "top", "leaderboard_job", "start_rebuild", "STATE", "get_k
 
 # ---------- nazwy traderów z rankingu („🎯 Top 5 skuteczność 7d”) ----------
 SORT_NAMES = {"score": ("🏆", "ocena"), "win": ("🎯", "skuteczność"), "green": ("📅", "stabilność"),
-              "pnl": ("💰", "zysk"), "roi": ("📈", "zwrot")}
-_AUTO = re.compile(r"Top \d+ (ocena|skuteczność|stabilność|zysk|zwrot) \d+d")
+              "pnl": ("💰", "zysk"), "roi": ("📈", "zwrot"), "active": ("🔥", "aktywność")}
+_AUTO = re.compile(r"Top \d+ (ocena|skuteczność|stabilność|zysk|zwrot|aktywność) \d+d")
 _SHORT = re.compile(r"^(🌍 |Portfel )?[1-9A-HJ-NP-Za-km-z]{3,6}(…|\.\.\.)[1-9A-HJ-NP-Za-km-z]{3,6}$")
 
 
@@ -486,7 +514,8 @@ def rank_table(s) -> dict[str, tuple]:
                 need = {"roi": "roi", "win": "win_rate", "pnl": "pnl"}.get(sort)
                 rows = [r for r in top(s, period, sort, kind=kind)
                         if not (need and r.get(need) is None)
-                        and not (sort == "green" and r.get("green_days") is None and r.get("green7") is None)]
+                        and not (sort == "green" and r.get("green_days") is None and r.get("green7") is None)
+                        and not (sort == "active" and not r.get("activity"))]
                 for i, r in enumerate(rows):  # miejsce liczone tylko wśród tych, którzy mają tę miarę
                     if r.get("bot") or (r.get("score") or 0) <= -100:
                         continue

@@ -1234,3 +1234,22 @@ def test_pct_rounds_up_to_minimum_and_autocfg_trusts_real_buys(tmp_path):
     s.sol.record(ref_id(lid), lid, None, "buy", "M1", 0.3, 1000, "filled", "0.3", True)
     p = AC.trader_profiles(s, OWNER)[0]
     assert p["median"] == 0.3 and "1 jego" in p["src"]
+
+
+def test_leaderboard_activity(tmp_path):
+    import json as js
+    from copybot.sol import leaderboard as LB
+    s, _, _ = ready(tmp_path)
+    now = time.time()
+    W3 = "So11111111111111111111111111111111111111112"
+    base = {"kind": "world", "pnl_usd": 20000, "roi": 60, "win_rate": .55, "src": ["X"], "green_days": 4}
+    rows = {WALLET: dict(base, active_days=7, trades=420, last=now - 600),        # codziennie, ~60/dzień, przed chwilą
+            W2: dict(base, pnl_usd=60000, active_days=2, green_days=2, trades=12, last=now - 4 * 86400),  # więcej zysku, ale rzadko
+            W3: dict(base, active_days=7, trades=7 * 3000, last=now - 60)}          # bot
+    for w, a in rows.items():
+        s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, 0, ?, '🌍 X')", (w, js.dumps(a), int(now * 1000)))
+    act = {r["wallet"]: r for r in LB.top(s, 7, "active", kind="world")}
+    assert LB.top(s, 7, "active", kind="world")[0]["wallet"] == WALLET
+    assert act[W3]["activity"] == 0 and act[WALLET]["activity"] > 90 and act[WALLET]["tpd"] == 60
+    assert LB.top(s, 7, "score", kind="world")[0]["wallet"] == WALLET  # aktywność liczy się też w ocenie
+    assert LB.rank_name("active", 2, 7) == "🔥 Top 2 aktywność 7d" and LB.is_generic("🔥 Top 2 aktywność 7d")
