@@ -448,6 +448,7 @@ function feedItem(f) {
 // ---------- traderzy ----------
 let SAVED = null, SAVED_Q = '', SAVED_N = 40, SAVED_F = 'all', SCAN_T = null, SEL = null;  // SEL: zaznaczeni (Set) albo null
 let TR_VIEW = 'mine', LB = null, LB_P = 7, LB_SORT = 'score';
+try { LB_SORT = localStorage.getItem('lb_sort') || 'score'; } catch (e) {}
 function traders() {
   const seg = `<div class="seg" style="margin:4px 0 12px">${[['mine', '👥 Moi traderzy'], ['lb', '🌍 Ranking top 100']].map(([k, l]) => `<button class="${TR_VIEW === k ? 'on' : ''}" onclick="TR_VIEW='${k}';render();${k === 'lb' ? 'loadLB()' : ''}">${l}</button>`).join('')}</div>`;
   if (TR_VIEW === 'lb') return seg + lbHtml();
@@ -1125,6 +1126,7 @@ function lbRow(r, i) {
         <div class="tiny" style="margin-top:4px">${sol}${u}${r.series ? lbBars(r.series) : ''}</div>
         ${info ? `<div class="tiny">${info}</div>` : ''}
         ${actTxt ? `<div class="tiny">${actTxt}</div>` : ''}
+        ${r.combo != null ? `<div class="tiny">🔗 wynik łączony <b>${Math.round(r.combo)}</b>/100</div>` : ''}
         ${more ? `<div class="tiny mut">${more}</div>` : ''}
         <div class="row" style="gap:6px;margin-top:6px;flex-wrap:wrap">
           ${r.status === 'copy' ? '<span class="pill g">🟢 kopiujesz</span>' : `<button class="chip" style="padding:5px 10px" onclick="lbAdd('${r.wallet}', true, ${r.bot || flip}, ${i + 1})">🟢 Kopiuj</button>`}
@@ -1157,7 +1159,8 @@ function lbHtml() {
   const grp = `<div class="seg" style="margin-bottom:8px">${[['world', `🌍 Świat${cnt.world ? ' · ' + cnt.world : ''}`], ['chain', `🔎 Od bota${cnt.chain ? ' · ' + cnt.chain : ''}`]].map(([k, l]) =>
     `<button class="${kind === k ? 'on' : ''}" onclick="LB_KIND='${k}';LB=null;render()">${l}</button>`).join('')}</div>`;
   const per = `<div class="seg">${[[1, '1 dzień'], [7, '7 dni'], [30, '30 dni']].map(([k, l]) => `<button class="${LB_P === k ? 'on' : ''}" onclick="LB_P=${k};LB=null;render()">${l}</button>`).join('')}</div>`;
-  const sc = (k, l) => `<button class="chip ${LB_SORT === k ? 'on' : ''}" onclick="LB_SORT='${k}';LB=null;render()">${l}</button>`;
+  const sel = LB_SORT.split(',');
+  const sc = (k, l) => `<button class="chip ${sel.includes(k) ? 'on' : ''}" onclick="lbSort('${k}')">${l}</button>`;
   const rows = LB.rows.map(lbRow).join('');
   const about = kind === 'world'
     ? 'Najlepsi traderzy memecoinów z całej sieci Solana (Solana Tracker / Vybe): bez botów arbitrażowych i „jednego szczęśliwego strzału”. ⭐ Ocena łączy zysk, % zwrotu, <b>stabilność (dni na plusie)</b>, skuteczność i <b>aktywność (handluje codziennie i dużo)</b>; 🔥 Aktywność = najaktywniejsi na plusie na górze; bot sam sprawdza z łańcucha, ile trzymają tokeny – flipperzy i boty idą w dół.'
@@ -1167,12 +1170,21 @@ function lbHtml() {
     : (stt.running ? 'Liczę ranking – pierwsze wyniki za kilka minut…' : 'Jeszcze pusto – bot liczy go co 12 h.');
   return `<div class="card">${grp}${per}
       <div class="chips" style="margin-top:10px">${sc('score', '⭐ Ocena')}${sc('pnl', '💰 Zysk')}${sc('roi', '📈 % zwrotu')}${sc('green', '📅 Stabilność')}${sc('win', '🎯 Skuteczność')}${sc('active', '🔥 Aktywność')}</div>
+      ${sel.length > 1 ? `<div class="tiny" style="margin-top:8px">🔗 <b>Łączone:</b> ${sel.map(k => ({score: '⭐ ocena', pnl: '💰 zysk', roi: '📈 zwrot', green: '📅 stabilność', win: '🎯 skuteczność', active: '🔥 aktywność'})[k]).join(' + ')} – na górze ci, którzy są wysoko we wszystkich naraz. Kliknij filtr ponownie, żeby go odznaczyć.</div>` : '<div class="tiny mut" style="margin-top:8px">💡 Możesz zaznaczyć kilka filtrów naraz – wyniki się łączą.</div>'}
       <div class="mut tiny" style="margin-top:8px">${about} ${stt.finished ? 'Odświeżono ' + ago(stt.finished) + '.' : ''}
         ${stt.running ? `<b>${esc(stt.step || 'Liczę…')}</b>` : ''}</div>
       ${LB.admin ? `<button class="btn ghost" style="margin-top:8px" ${stt.running ? 'disabled' : ''} onclick="act('lb_refresh', {chain: LB.kind === 'chain'}, {reload: false}).then(loadLB)">🔄 Odśwież teraz</button>` : ''}</div>
     ${LB.admin && (kind === 'world' || !LB.has_world) ? lbKeysBox() : ''}
     <div class="card">${rows || `<div class="empty">${empty}</div>`}</div>
     <div class="mut tiny c">Wynik z przeszłości nie gwarantuje zysku z kopii – kopia wchodzi chwilę później i po gorszej cenie. Nowego tradera sprawdź najpierw w demo.</div>`;
+}
+function lbSort(k) {
+  // kliknięcie dodaje / usuwa filtr – kilka naraz się łączy (np. ⭐ Ocena + 🔥 Aktywność)
+  let sel = LB_SORT.split(',').filter(Boolean);
+  sel = sel.includes(k) ? sel.filter(x => x !== k) : sel.concat(k);
+  LB_SORT = (sel.length ? sel : ['score']).join(',');
+  try { localStorage.setItem('lb_sort', LB_SORT); } catch (e) {}
+  LB = null; render();
 }
 async function lbAdd(wallet, copy, risky, rank) {
   if (copy && !await confirmBox(risky ? '⚠️ To bot albo flipper (trzyma sekundy) – kopia zwykle wchodzi za późno i traci. Na pewno włączyć kopiowanie?' : 'Dodać tego tradera i od razu włączyć kopiowanie?')) return;

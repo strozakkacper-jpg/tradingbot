@@ -1253,3 +1253,27 @@ def test_leaderboard_activity(tmp_path):
     assert act[W3]["activity"] == 0 and act[WALLET]["activity"] > 90 and act[WALLET]["tpd"] == 60
     assert LB.top(s, 7, "score", kind="world")[0]["wallet"] == WALLET  # aktywność liczy się też w ocenie
     assert LB.rank_name("active", 2, 7) == "🔥 Top 2 aktywność 7d" and LB.is_generic("🔥 Top 2 aktywność 7d")
+
+
+def test_leaderboard_combined_sorts(tmp_path):
+    import json as js
+    from copybot.sol import leaderboard as LB
+    s, _, _ = ready(tmp_path)
+    now = time.time()
+    W3 = "So11111111111111111111111111111111111111112"
+    base = {"kind": "world", "roi": 50, "win_rate": .5, "src": ["X"], "green_days": 4}
+    rows = {WALLET: dict(base, pnl_usd=200000, active_days=2, trades=10, last=now - 3 * 86400),  # najlepsza ocena, mało aktywny
+            W2: dict(base, pnl_usd=3000, active_days=7, trades=500, last=now - 60),           # bardzo aktywny, mały zysk
+            W3: dict(base, pnl_usd=250000, active_days=7, trades=600, last=now - 600)}        # najlepszy w obu
+    for w, a in rows.items():
+        s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, 0, ?, '🌍 X')", (w, js.dumps(a), int(now * 1000)))
+    both = LB.top(s, 7, "pnl,active", kind="world")
+    assert both[0]["wallet"] == W3 and both[0]["combo"] == 100.0 and "combo" not in LB.top(s, 7, "pnl")[0]
+    assert LB.top(s, 7, "zle,,active")[0]["wallet"] == W3 and len(LB.top(s, 7, "zle")) == 3  # nieznane pomija
+    assert LB.rank_name("score,active", 3, 7) == "🏆🔥 Top 3 ocena+aktywność 7d"
+    assert LB.is_generic("🏆🔥 Top 3 ocena+aktywność 7d")
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/leaderboard?period=7&sort=pnl,active")
+        assert st == 200 and j["rows"][0]["wallet"] == W3
+    run(s, steps)

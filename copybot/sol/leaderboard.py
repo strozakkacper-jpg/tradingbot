@@ -454,8 +454,21 @@ def top(s, period: int, sort: str = "score", limit: int = 100, kind: str | None 
            "roi": lambda x: x["roi"] if x["roi"] is not None else -1e9, "green": green,
            "win": lambda x: (x["win_rate"] or 0, x["pnl"] or 0),
            # najaktywniejsi na górze – ale tylko ci na plusie (aktywny i tracący to najgorszy wybór)
-           "active": lambda x: ((x["pnl"] or x["pnl_usd"] or 0) > 0, x["activity"], x["score"])}.get(sort, lambda x: x["score"])
-    out.sort(key=key, reverse=True)
+           "active": lambda x: ((x["pnl"] or x["pnl_usd"] or 0) > 0, x["activity"], x["score"])}
+    sorts = [k for k in dict.fromkeys(str(sort or "score").split(",")) if k in key][:6] or ["score"]
+    if len(sorts) == 1:
+        out.sort(key=key[sorts[0]], reverse=True)
+        return out[:limit]
+    # kilka filtrów naraz: miejsce w każdym z nich → średnia (0 = pierwszy, 1 = ostatni); wygrywa ten, kto jest
+    # wysoko we WSZYSTKICH wybranych naraz, a nie tylko w jednym
+    n = max(len(out) - 1, 1)
+    pos = {id(x): 0.0 for x in out}
+    for k in sorts:
+        for i, x in enumerate(sorted(out, key=key[k], reverse=True)):
+            pos[id(x)] += i / n
+    for x in out:
+        x["combo"] = round((1 - pos[id(x)] / len(sorts)) * 100, 1)
+    out.sort(key=lambda x: (x["combo"], x["score"]), reverse=True)
     return out[:limit]
 
 
@@ -486,12 +499,15 @@ __all__ = ["rebuild", "top", "leaderboard_job", "start_rebuild", "STATE", "get_k
 # ---------- nazwy traderów z rankingu („🎯 Top 5 skuteczność 7d”) ----------
 SORT_NAMES = {"score": ("🏆", "ocena"), "win": ("🎯", "skuteczność"), "green": ("📅", "stabilność"),
               "pnl": ("💰", "zysk"), "roi": ("📈", "zwrot"), "active": ("🔥", "aktywność")}
-_AUTO = re.compile(r"Top \d+ (ocena|skuteczność|stabilność|zysk|zwrot|aktywność) \d+d")
+_W = r"(ocena|skuteczność|stabilność|zysk|zwrot|aktywność)"
+_AUTO = re.compile(r"Top \d+ " + _W + r"(\+" + _W + r")* \d+d")
 _SHORT = re.compile(r"^(🌍 |Portfel )?[1-9A-HJ-NP-Za-km-z]{3,6}(…|\.\.\.)[1-9A-HJ-NP-Za-km-z]{3,6}$")
 
 
 def rank_name(sort: str, rank: int, period: int, name: str | None = None) -> str:
-    emo, word = SORT_NAMES.get(sort, SORT_NAMES["score"])
+    keys = [k for k in dict.fromkeys(str(sort or "score").split(",")) if k in SORT_NAMES] or ["score"]
+    emo = "".join(SORT_NAMES[k][0] for k in keys)
+    word = "+".join(SORT_NAMES[k][1] for k in keys)  # np. „🏆🔥 Top 3 ocena+aktywność 7d”
     tag = f"{emo} Top {rank} {word} {period}d"
     return (f"⭐ {name[:14]} · " + tag) if name else tag
 
