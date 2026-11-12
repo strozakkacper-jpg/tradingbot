@@ -209,17 +209,20 @@ def report_list(s, u, n: int = 10) -> list[dict]:
     have_days = {datetime.fromtimestamp(r["ts"] / 1000, tz).date() for r in out if r["kind"] == "dzień"}
     midnight = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
     from datetime import timedelta
-    for back in range(0, 30):
+    for back in range(-1, 30):  # -1 = dziś (do teraz)
         if len(out) >= n:
             break
         day_end = midnight - timedelta(days=back)
         day = (day_end - timedelta(days=1)).date()
         if day in have_days:
             continue
+        today = back == -1
         text = period_report(s, u, 1, int(day_end.timestamp() * 1000), day.strftime("%d.%m"))
         if text:
-            out.append({"id": None, "day": day.isoformat(), "kind": "dzień", "ts": int(day_end.timestamp() * 1000) - 1,
-                        "title": f"Raport dnia {day.strftime('%d.%m')} (z historii)", "summary": report_summary(text)})
+            ts = now_ms() if today else int(day_end.timestamp() * 1000) - 1
+            out.append({"id": None, "day": day.isoformat(), "kind": "dzień", "ts": ts,
+                        "title": f"Raport dnia {day.strftime('%d.%m')} ({'dziś, do teraz' if today else 'z historii'})",
+                        "summary": report_summary(text)})
     out.sort(key=lambda r: -r["ts"])
     return out[:n]
 

@@ -1343,7 +1343,7 @@ def test_reports_list_and_safety_untouched_by_autopilot(tmp_path):
     items = EX.report_list(s, s.db.get_user(OWNER))
     assert items[0]["kind"] == "sesja" and items[0]["summary"] == "+0.1234 SOL · +2.5%"
     rebuilt = [r for r in items if r["id"] is None]
-    assert len(rebuilt) >= 2 and all("z historii" in r["title"] for r in rebuilt)
+    assert len(rebuilt) >= 2 and all("z historii" in r["title"] or "dziś" in r["title"] for r in rebuilt)
     txt = EX.report_text(s, s.db.get_user(OWNER), day=rebuilt[0]["day"])
     assert "RAPORT DNIA" in txt and "odtworzony" in txt
     text, kb = EX.reports_view(s, s.db.get_user(OWNER))
