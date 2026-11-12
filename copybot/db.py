@@ -52,6 +52,11 @@ CREATE TABLE IF NOT EXISTS leaderboard (  -- ranking traderów liczony przez bot
     wallet TEXT NOT NULL, period INTEGER NOT NULL, stats TEXT NOT NULL, score REAL NOT NULL, updated INTEGER NOT NULL,
     source TEXT, PRIMARY KEY (wallet, period)
 );
+CREATE TABLE IF NOT EXISTS reports (  -- raporty (sesja / dzień / tydzień) – /raporty pokazuje 10 ostatnich
+    id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, kind TEXT NOT NULL, ts INTEGER NOT NULL,
+    title TEXT NOT NULL, summary TEXT, text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS reports_user ON reports (tg_id, ts);
 CREATE TABLE IF NOT EXISTS chat_messages (  -- czat grupowy w aplikacji
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, text TEXT NOT NULL, ts INTEGER NOT NULL,
     deleted INTEGER NOT NULL DEFAULT 0
@@ -418,6 +423,24 @@ class DB:
     def set_activity(self, wallet: str, last_active: int | None):
         """Aktywność to cecha portfela – zapisujemy u wszystkich, którzy go mają na liście."""
         self._q("UPDATE sol_saved SET last_active = ?, checked_at = ? WHERE wallet = ?", (last_active, now_ms(), wallet))
+
+    # --- raporty ---
+    def add_report(self, tg_id: int, kind: str, title: str, text: str, summary: str | None = None) -> int:
+        with self.lock, self.conn:
+            cur = self.conn.execute("INSERT INTO reports (tg_id, kind, ts, title, summary, text) VALUES (?, ?, ?, ?, ?, ?)",
+                                    (tg_id, kind, now_ms(), title, summary, text))
+            # trzymamy 60 ostatnich na osobę
+            self.conn.execute("""DELETE FROM reports WHERE tg_id = ? AND id NOT IN
+                                 (SELECT id FROM reports WHERE tg_id = ? ORDER BY id DESC LIMIT 60)""", (tg_id, tg_id))
+            return cur.lastrowid
+
+    def reports(self, tg_id: int, limit: int = 10) -> list:
+        return self._q("SELECT id, kind, ts, title, summary FROM reports WHERE tg_id = ? ORDER BY id DESC LIMIT ?",
+                       (tg_id, limit))
+
+    def report(self, tg_id: int, rid: int):
+        rows = self._q("SELECT * FROM reports WHERE tg_id = ? AND id = ?", (tg_id, rid))
+        return rows[0] if rows else None
 
     # --- czat grupowy ---
     def chat_add(self, tg_id: int, text: str) -> int:

@@ -817,7 +817,7 @@ function settings() {
     <div class="small" style="margin:10px 0">
       <div class="note">🏆 <b>Dobiera traderów</b> wysoko naraz w ocenie, aktywności i stabilności (sprawdzonych też w 30 dniach) – bez botów, flipperów i nieaktywnych.</div>
       <div class="note">🔄 <b>Co 6 h rotuje:</b> wyłącza tych, na których <b>Ty</b> tracisz albo którzy przestali handlować, zostawia zarabiających, wolne miejsca bierze z rankingu.</div>
-      <div class="note">💵 <b>Kwoty pod saldo</b> (🤖 Auto), więcej na zarabiających, wyjście z martwych pozycji po 90 min, ucieczka twórcy tokena, ×2 z ruchomym stopem.</div></div>
+      <div class="note">💵 <b>Kwoty pod saldo</b> (🤖 Auto), więcej na zarabiających, wyjście z martwych pozycji po 90 min, ucieczka twórcy tokena, ×2 z ruchomym stopem. 🛡 Bezpieczników nie rusza.</div></div>
     ${st.sol_autopilot
       ? `<button class="btn g" onclick="autopilotOn(true)">🔄 Popraw skład teraz</button>
          <div class="row" style="margin-top:12px"><div class="sp small">Autopilot włączony</div>${tgl('sol_autopilot', st.sol_autopilot)}</div>`
@@ -825,10 +825,10 @@ function settings() {
          <button class="btn ghost" style="margin-top:8px" onclick="autopilotPreview()">👀 Kogo by wybrał</button>`}
     <div class="mut tiny" style="margin-top:8px">Działa w trybie, w którym grasz (🧪 ćwiczenia / 💰 prawdziwe). Najpierw sprawdź go kilka dni na ćwiczeniach. Zwiększa szanse, nie gwarantuje zysku.</div></div>
   <div class="card" style="border-color:var(--acc)"><div class="b">✨ Ustaw najlepsze pod moje saldo</div>
-    <div class="mut tiny" style="margin:4px 0 10px">Bot liczy z prawdziwych danych: Twoje saldo (ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}), opłaty sieci (zakup musi być na tyle duży, żeby zjadały maks. ~2,5%), depozyty kont tokenów i <b>za ile naprawdę kupuje każdy Twój trader</b> – każdy dostaje osobny %, tak żeby jego zwykłe wejście dało u Ciebie zwykłą pozycję (mocne wejście = większa). Do tego liczba pozycji naraz, limit straty dnia, zwrot wkładu ×2, ruchomy stop i filtr pułapek.</div>
+    <div class="mut tiny" style="margin:4px 0 10px">Bot liczy z prawdziwych danych: Twoje saldo (ok. ${num(S.total, 3)} SOL${inUsd(S.total) ? ' · ' + inUsd(S.total) : ''}), opłaty sieci (zakup musi być na tyle duży, żeby zjadały maks. ~2,5%), depozyty kont tokenów i <b>za ile naprawdę kupuje każdy Twój trader</b> – każdy dostaje osobny %, tak żeby jego zwykłe wejście dało u Ciebie zwykłą pozycję (mocne wejście = większa). Do tego strategia sprzedaży: zwrot wkładu ×2, ruchomy stop, stop-loss awaryjny. <b>🛡 Bezpieczników nie zmienia</b> (limity, min. zakup, pozycje, przerwa po stratach) – najwyżej je podpowie.</div>
     <button class="btn" onclick="autoSettings()">✨ Ustaw za mnie</button>
     <div class="row" style="margin-top:12px"><div class="sp"><div class="b">🤖 Auto – dopasowuj samo do salda</div>
-      <div class="mut tiny">Co 30 min sprawdza: gdy saldo zmieni się o 12%+, zmienisz traderów albo minie doba – przelicza kwoty i limity (strategii nie rusza). Dostaniesz krótką wiadomość, co zmienił.${st.sol_autocfg && st.sol_autocfg_at ? ' Ostatnio: ' + ago(st.sol_autocfg_at) + '.' : ''}</div></div>${tgl('sol_autocfg', st.sol_autocfg)}</div>
+      <div class="mut tiny">Co 30 min sprawdza: gdy saldo zmieni się o 12%+, zmienisz traderów albo minie doba – przelicza kwoty (strategii i 🛡 bezpieczników nie rusza). Dostaniesz krótką wiadomość, co zmienił.${st.sol_autocfg && st.sol_autocfg_at ? ' Ostatnio: ' + ago(st.sol_autocfg_at) + '.' : ''}</div></div>${tgl('sol_autocfg', st.sol_autocfg)}</div>
     <button class="btn ghost" style="margin-top:10px" onclick="autoPreview()">👀 Podgląd – co by ustawił</button>
     <button class="btn ghost" style="margin-top:8px" onclick="openOptimizer()">🧪 Optymalizator – sprawdź na prawdziwych ruchach traderów</button></div>
   <h2>💵 Ile wydać, gdy trader kupi</h2>
@@ -1015,7 +1015,7 @@ function autoTxt(r) {
   return esc(r.text || '').replace(/\n/g, '<br>');
 }
 async function autoSettings() {
-  if (!await confirmBox('Ustawić wszystko pod Twoje saldo i traderów? Obecne kwoty, limity i strategia zostaną zastąpione, a 🤖 Auto będzie je samo poprawiać, gdy saldo się zmieni.')) return;
+  if (!await confirmBox('Ustawić kwoty i strategię pod Twoje saldo i traderów? 🛡 Bezpieczniki zostaną bez zmian. Obecne kwoty i strategia zostaną zastąpione, a 🤖 Auto będzie je samo poprawiać, gdy saldo się zmieni.')) return;
   const r = await act('auto_settings', {}, {quiet: true});
   if (r && r.text) showHtml('✨ Gotowe', autoTxt(r) + `<br><br><span class="mut">${r.auto ? '🤖 Auto włączone – sam przeliczy, gdy saldo zmieni się o 12%+. ' : ''}Każdą wartość możesz poprawić suwakami w Opcjach.</span>`);
 }

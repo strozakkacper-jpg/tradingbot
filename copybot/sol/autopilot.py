@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 DAY_MS = 24 * 3600 * 1000
 COMBO = "score,active,green"
 PROFIT_SETTINGS = {"sol_time_exit": 90, "sol_dev_exit": 1, "sol_smart": 1, "sol_auto_rank": 0, "sol_autocfg": 1,
-                   "sol_x2": 1, "sol_trail": 40, "sol_min_hold": 30, "sol_min_lead": 0, "sol_safe": 1}
+                   "sol_x2": 1, "sol_trail": 40, "sol_min_hold": 30, "sol_min_lead": 0}  # 🛡 bezpieczników nie rusza
 
 
 def target_count(balance: float) -> int:

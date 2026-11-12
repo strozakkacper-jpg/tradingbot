@@ -471,11 +471,14 @@ def test_demo_start_real_costs_and_auto_settings(tmp_path):
         assert st == 200 and s.sol.paper(OWNER)[SOL_MINT] == 600_000_000
         st, j = await call(OWNER, "/api/sol/state")
         assert j["demo_start"] == 0.6 and abs(j["result"]) < 1e-9
+        safety = {k: s.db.get_user(OWNER)[k] for k in ("sol_safe", "sol_min_buy", "sol_max_pos", "sol_streak",
+                                                           "sol_max", "sol_day_limit")}
         st, j = await call(OWNER, "/api/sol/action", {"action": "auto_settings"})
         u = s.db.get_user(OWNER)
-        assert st == 200 and u["sol_buy_mode"] == "pct" and u["sol_pct"] == 4.7 and u["sol_max"] == 0.093
-        assert u["sol_min_buy"] == 0.016 and u["sol_max_pos"] == 4 and u["sol_streak"] == 5 and u["sol_trail"] == 40
-        assert u["sol_autocfg"] == 1 and j["text"].startswith("Saldo 0.600 SOL")
+        assert st == 200 and u["sol_buy_mode"] == "pct" and u["sol_pct"] == 4.7 and u["sol_trail"] == 40
+        # 🛡 bezpieczniki zostają dokładnie takie, jakie były
+        assert {k: u[k] for k in safety} == safety
+        assert u["sol_autocfg"] == 1 and j["text"].startswith("Saldo 0.600 SOL") and "🛡 Bezpieczniki bez zmian" in j["text"]
     run(s, steps)
     # depozyt za konto tokena: pobrany przy pierwszym zakupie, wraca po sprzedaży całości
     asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.047))
@@ -1323,3 +1326,34 @@ def test_autopilot(tmp_path):
     # druga rotacja bez zmian
     res2 = AP.rotate(s, u, 2.0)
     assert not res2["on"] and not res2["off"]
+
+
+def test_reports_list_and_safety_untouched_by_autopilot(tmp_path):
+    from copybot.sol import autopilot as AP, extras as EX
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    u = s.db.get_user(OWNER)
+    paper = not s.sol.is_live(u)
+    # historia: sprzedaże wczoraj i przedwczoraj → raporty odtworzone z historii
+    day = 24 * 3600 * 1000
+    for back, pnl in ((1, 0.05), (2, -0.02)):
+        s.sol.record(OWNER, None, None, "sell", f"H{back}", 0.1, 10, "filled", "x", paper, pnl=pnl)
+        s.db._q("UPDATE sol_trades SET ts = ? WHERE mint = ?", (int(time.time() * 1000) - back * day, f"H{back}"))
+    EX.save_report(s, OWNER, "sesja", "📊 <b>Raport sesji</b>\nWynik: <b>+0.1234 SOL</b> (+2.5%)")
+    items = EX.report_list(s, s.db.get_user(OWNER))
+    assert items[0]["kind"] == "sesja" and items[0]["summary"] == "+0.1234 SOL · +2.5%"
+    rebuilt = [r for r in items if r["id"] is None]
+    assert len(rebuilt) >= 2 and all("z historii" in r["title"] for r in rebuilt)
+    txt = EX.report_text(s, s.db.get_user(OWNER), day=rebuilt[0]["day"])
+    assert "RAPORT DNIA" in txt and "odtworzony" in txt
+    text, kb = EX.reports_view(s, s.db.get_user(OWNER))
+    assert "Ostatnie raporty" in text and kb.inline_keyboard[0][0].callback_data.startswith("rp:")
+    for i in range(70):
+        s.db.add_report(OWNER, "dzień", f"R{i}", "x")
+    assert len(s.db.reports(OWNER, 100)) == 60  # trzymamy 60 ostatnich
+    # autopilot nie rusza bezpieczników
+    s.db.update_user(OWNER, sol_safe=0, sol_min_buy=0.2, sol_max_pos=2, sol_streak=0, sol_max=0.3, sol_day_limit=0)
+    asyncio.run(AP.enable(s, s.db.get_user(OWNER), 3.0))
+    u = s.db.get_user(OWNER)
+    assert (u["sol_safe"], u["sol_min_buy"], u["sol_max_pos"], u["sol_streak"], u["sol_max"], u["sol_day_limit"]) == \
+        (0, 0.2, 2, 0, 0.3, 0) and u["sol_autopilot"] == 1

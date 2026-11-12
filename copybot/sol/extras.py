@@ -7,6 +7,7 @@ import html
 import io
 import logging
 import os
+import re
 import secrets
 import sqlite3
 import tempfile
@@ -14,9 +15,9 @@ import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from telegram import InputFile, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler
+from telegram.ext import Application, CallbackQueryHandler, CommandHandler
 
 from ..bot import S, admin_ids, owner_ids, require_accepted
 from ..db import now_ms
@@ -122,12 +123,14 @@ async def health_job(ctx):
 
 # ---------------- raport dzienny / tygodniowy ----------------
 
-def period_report(s, u, days: int) -> str | None:
+def period_report(s, u, days: int, until: int | None = None, label: str | None = None) -> str | None:
+    """Raport z ostatnich `days` dni (do teraz albo do `until` – wtedy odtworzony z historii)."""
     se = s.sol
     uid, paper = u["tg_id"], not se.is_live(u)
-    since = now_ms() - days * DAY_MS
+    until = until or now_ms()
+    since = until - days * DAY_MS
     rows = s.db._q("""SELECT t.side, t.pnl, t.status, l.name FROM sol_trades t LEFT JOIN leaders l ON l.id = t.leader_id
-                      WHERE t.tg_id = ? AND t.paper = ? AND t.ts >= ?""", (uid, int(paper), since))
+                      WHERE t.tg_id = ? AND t.paper = ? AND t.ts >= ? AND t.ts < ?""", (uid, int(paper), since, until))
     if not rows:
         return None
     sells = [r for r in rows if r["side"] == "sell" and r["status"] == "filled" and r["pnl"] is not None]
@@ -136,8 +139,10 @@ def period_report(s, u, days: int) -> str | None:
     per: dict[str, float] = {}
     for r in sells:
         per[r["name"] or "ręcznie"] = per.get(r["name"] or "ręcznie", 0) + r["pnl"]
-    eq = s.db.sol_equity_series(uid, paper, since)
+    eq = [x for x in s.db.sol_equity_series(uid, paper, since) if x[0] < until]
     title = "📅 <b>RAPORT DNIA</b>" if days == 1 else "🗓 <b>RAPORT TYGODNIA</b>"
+    if label:
+        title += f" · {html.escape(label)}"
     lines = [f"{title} · {'💰 prawdziwe SOL' if not paper else '🧪 ćwiczenia'}",
              f"{'🟢 Zarobek' if pnl >= 0 else '🔴 Strata'} na sprzedanych: <b>{pnl:+.4f} SOL</b>"]
     if len(eq) >= 2 and eq[0][1]:
@@ -165,10 +170,113 @@ async def report_job(ctx):
         for days in ((1, 7) if weekly else (1,)):
             text = period_report(s, u, days)
             if text:
+                save_report(s, u["tg_id"], "dzień" if days == 1 else "tydzień", text)
                 try:
                     await ctx.bot.send_message(u["tg_id"], text, parse_mode=ParseMode.HTML)
                 except Exception:  # noqa: BLE001
                     log.debug("Raport dla %s", u["tg_id"], exc_info=True)
+
+
+# ---------------- /raporty – 10 ostatnich raportów ----------------
+
+KIND_ICON = {"dzień": "📅", "tydzień": "🗓", "sesja": "📊"}
+
+
+def report_summary(text: str) -> str | None:
+    """Krótka linijka do listy: pierwszy wynik w SOL z raportu (np. „+0.1234 SOL”) i ewentualny % portfela."""
+    plain = re.sub(r"<[^>]+>", "", text)
+    m = re.search(r"([+−-]\d+[.,]\d+) SOL", plain)
+    pct = re.search(r"\(([+−-]\d+[.,]\d+%)\)", plain)
+    return " · ".join(x for x in ((m.group(1) + " SOL") if m else None, pct.group(1) if pct else None) if x) or None
+
+
+def save_report(s, uid: int, kind: str, text: str):
+    title = re.sub(r"<[^>]+>", "", text.split("\n", 1)[0]).strip()[:80]
+    try:
+        s.db.add_report(uid, kind, title, text, report_summary(text))
+    except Exception:  # noqa: BLE001
+        log.exception("Zapis raportu %s", uid)
+
+
+def report_list(s, u, n: int = 10) -> list[dict]:
+    """Zapisane raporty, a gdy jest ich mniej niż n – uzupełnione raportami poprzednich dni odtworzonymi z historii."""
+    uid = u["tg_id"]
+    out = [{"id": r["id"], "kind": r["kind"], "ts": r["ts"], "title": r["title"], "summary": r["summary"]}
+           for r in s.db.reports(uid, n)]
+    if len(out) >= n:
+        return out
+    tz = ZoneInfo(s.cfg.timezone)
+    have_days = {datetime.fromtimestamp(r["ts"] / 1000, tz).date() for r in out if r["kind"] == "dzień"}
+    midnight = datetime.now(tz).replace(hour=0, minute=0, second=0, microsecond=0)
+    from datetime import timedelta
+    for back in range(0, 30):
+        if len(out) >= n:
+            break
+        day_end = midnight - timedelta(days=back)
+        day = (day_end - timedelta(days=1)).date()
+        if day in have_days:
+            continue
+        text = period_report(s, u, 1, int(day_end.timestamp() * 1000), day.strftime("%d.%m"))
+        if text:
+            out.append({"id": None, "day": day.isoformat(), "kind": "dzień", "ts": int(day_end.timestamp() * 1000) - 1,
+                        "title": f"Raport dnia {day.strftime('%d.%m')} (z historii)", "summary": report_summary(text)})
+    out.sort(key=lambda r: -r["ts"])
+    return out[:n]
+
+
+def report_text(s, u, rid: int | None = None, day: str | None = None) -> str | None:
+    if rid:
+        r = s.db.report(u["tg_id"], rid)
+        return r["text"] if r else None
+    if day:
+        from datetime import timedelta
+        tz = ZoneInfo(s.cfg.timezone)
+        d = datetime.fromisoformat(day).replace(tzinfo=tz)
+        end = d + timedelta(days=1)
+        return period_report(s, u, 1, int(end.timestamp() * 1000), d.strftime("%d.%m") + " · odtworzony z historii")
+    return None
+
+
+def reports_view(s, u) -> tuple[str, InlineKeyboardMarkup]:
+    items = report_list(s, u)
+    tz = ZoneInfo(s.cfg.timezone)
+    if not items:
+        return ("📑 <b>Raporty</b>\n\nJeszcze nie ma żadnego raportu. Raport dnia przychodzi codziennie wieczorem, "
+                "a raport sesji – gdy wyłączysz kopiowanie.", InlineKeyboardMarkup([]))
+    lines = [f"📑 <b>Ostatnie raporty ({len(items)})</b> – kliknij numer, żeby otworzyć\n"]
+    btns = []
+    for i, r in enumerate(items, 1):
+        when = datetime.fromtimestamp(r["ts"] / 1000, tz).strftime("%d.%m %H:%M")
+        lines.append(f"{i}. {KIND_ICON.get(r['kind'], '📄')} {when} · {html.escape(r['title'])}"
+                     + (f" · <b>{html.escape(r['summary'])}</b>" if r.get("summary") else ""))
+        btns.append(InlineKeyboardButton(str(i), callback_data=f"rp:{r['id']}" if r["id"] else f"rpd:{r['day']}"))
+    rows = [btns[i:i + 5] for i in range(0, len(btns), 5)]
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def cmd_reports(update: Update, ctx):
+    if u := await require_accepted(update, ctx):
+        text, kb = reports_view(S(ctx), u)
+        await update.effective_chat.send_message(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+
+
+async def on_report_button(update: Update, ctx):
+    q = update.callback_query
+    s = S(ctx)
+    u = s.db.get_user(q.from_user.id)
+    await q.answer()
+    if not u:
+        return
+    data = q.data
+    if data == "rp:list":
+        text, kb = reports_view(s, u)
+        await q.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=kb)
+        return
+    text = (report_text(s, u, rid=int(data[3:])) if data.startswith("rp:") else report_text(s, u, day=data[4:]))
+    await q.message.reply_text(text or "Nie znalazłem tego raportu.", parse_mode=ParseMode.HTML,
+                               disable_web_page_preview=True,
+                               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📑 Wszystkie raporty",
+                                                                                       callback_data="rp:list")]]))
 
 
 # ---------------- eksport CSV ----------------
@@ -324,6 +432,8 @@ async def cmd_setpin(update: Update, ctx):
 
 
 def register(app: Application):
+    app.add_handler(CommandHandler("raporty", cmd_reports))
+    app.add_handler(CallbackQueryHandler(on_report_button, pattern=r"^(rp:(\d+|list)|rpd:\d{4}-\d{2}-\d{2})$"))
     app.add_handler(CommandHandler("backup", cmd_backup))
     app.add_handler(CommandHandler("eksport", cmd_export))
     app.add_handler(CommandHandler("pin", cmd_pin))

@@ -28,6 +28,9 @@ MAX_ONE_BUY = 3.0  # SOL – większe kupno w małym memecoinie samo rusza cenę
 HINT_CAP = 5.0  # SOL – górna granica „średniego zakupu” z rankingu, dopóki bot nie zobaczy prawdziwych
 SIZING_KEYS = ("sol_buy_mode", "sol_pct", "sol_buy", "sol_max", "sol_min_buy", "sol_max_pos", "sol_day_limit",
                "sol_priority")
+# 🛡 Bezpieczniki – ustawia je tylko człowiek. Automaty (✨ Ustaw za mnie, 🤖 Auto, 🚀 Autopilot) ich nie zmieniają,
+# najwyżej podpowiadają wartości pasujące do salda.
+SAFETY_KEYS = ("sol_safe", "sol_min_buy", "sol_max_pos", "sol_streak", "sol_max", "sol_day_limit")
 
 
 def r2(x: float) -> float:
@@ -150,11 +153,27 @@ def performance(s, u) -> dict[int, float]:
     return out
 
 
-def describe(p: dict, traders: list[dict]) -> str:
+def describe(p: dict, traders: list[dict], u=None) -> str:
     v = p["values"]
-    lines = [f"Saldo {p['balance']:.3f} SOL → zwykła pozycja ~{p['target']:.3g} SOL (mocne wejście tradera do "
-             f"{v['sol_max']:g} SOL), do {v['sol_max_pos']} pozycji naraz, min. zakup {v['sol_min_buy']:g} SOL "
-             f"(opłaty ~{p['fees']:.4f} SOL za kupno+sprzedaż), limit straty dnia {v['sol_day_limit']:g} SOL."]
+    lines = [f"Saldo {p['balance']:.3f} SOL → zwykła pozycja ~{p['target']:.3g} SOL "
+             f"(opłaty ~{p['fees']:.4f} SOL za kupno+sprzedaż)."]
+    if u is not None:
+        cur = (f"maks. {u['sol_max']:g} SOL na zakup" if u["sol_max"] else "bez limitu na zakup",
+               f"min. zakup {u['sol_min_buy']:g} SOL" if u["sol_min_buy"] else "bez min. zakupu",
+               f"do {u['sol_max_pos']} pozycji" if u["sol_max_pos"] else "bez limitu pozycji",
+               f"limit straty dnia {u['sol_day_limit']:g} SOL" if u["sol_day_limit"] else "bez limitu dnia")
+        lines.append("🛡 Bezpieczniki bez zmian (Twoje): " + ", ".join(cur) + ".")
+        hint = []
+        if not u["sol_max_pos"] or u["sol_max_pos"] > v["sol_max_pos"] * 1.5:
+            hint.append(f"do {v['sol_max_pos']} pozycji")
+        if not u["sol_min_buy"] or u["sol_min_buy"] < v["sol_min_buy"] * 0.5:
+            hint.append(f"min. zakup {v['sol_min_buy']:g} SOL")
+        if not u["sol_day_limit"]:
+            hint.append(f"limit dnia {v['sol_day_limit']:g} SOL")
+        if u["sol_max"] and u["sol_max"] < p["target"]:
+            hint.append(f"maks. na zakup co najmniej {v['sol_max']:g} SOL (teraz tnie zwykłe pozycje)")
+        if hint:
+            lines.append("💡 Sugestia do 🛡 Bezpieczników przy tym saldzie: " + ", ".join(hint) + ".")
     for t in traders[:12]:
         pct = p["per_trader"].get(t["lid"])
         if pct is None:
@@ -177,13 +196,10 @@ def apply(s, u, balance: float, full: bool = False) -> dict:
     live = s.sol.is_live(u)
     p = plan(balance, traders, live, performance(s, u))
     vals = dict(p["values"])
-    old_limit = u["sol_day_limit"] or 0
-    same_day = u["sol_autocfg_at"] and (now_ms() - u["sol_autocfg_at"]) < DAY_MS
-    if not full and same_day and old_limit > vals["sol_day_limit"]:
-        vals["sol_day_limit"] = old_limit  # w trakcie dnia limit straty nie maleje (strata nie może go „zjadać”)
     if full:
         base = recommended(balance, p["typical"], live)
         vals = {**base, **vals}
+    vals = {k: v for k, v in vals.items() if k not in SAFETY_KEYS}  # 🛡 bezpieczników nie ruszamy
     s.db.update_user(uid, sol_autocfg_bal=balance, sol_autocfg_at=now_ms(),
                      sol_autocfg_sig=signature(traders), **vals)
     for t in traders:
@@ -191,7 +207,7 @@ def apply(s, u, balance: float, full: bool = False) -> dict:
         if fr and fr["sol_buy"]:
             continue  # stała kwota ustawiona ręcznie dla tego tradera – zostaje
         s.db.set_follow_amount(uid, t["lid"], pct=p["per_trader"][t["lid"]])
-    p["text"] = describe(p, traders)
+    p["text"] = describe(p, traders, s.db.get_user(uid))
     p["traders"] = traders
     return p
 
@@ -232,8 +248,8 @@ async def autocfg_job(ctx):
                 continue
             old = {k: u[k] for k in SIZING_KEYS}
             p = apply(s, u, bal)
-            changed = old["sol_max_pos"] != p["values"]["sol_max_pos"] or not old["sol_buy"] or \
-                abs(p["values"]["sol_buy"] / old["sol_buy"] - 1) > 0.1
+            changed = not old["sol_buy"] or abs(p["values"]["sol_buy"] / old["sol_buy"] - 1) > 0.1 or \
+                old["sol_pct"] != p["values"]["sol_pct"]
             if changed:
                 await s.sol.say(u, "auto", f"🤖 <b>AUTO-USTAWIENIA</b> ({why})\n" + _esc(p["text"]))
         except Exception:  # noqa: BLE001

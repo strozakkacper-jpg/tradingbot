@@ -188,6 +188,8 @@ async def end(s, u, bot=None, reason: str = "") -> str:
     text = await build(s, s.db.get_user(u["tg_id"]))
     if reason:
         text = text.replace("📊 <b>Raport sesji</b>", f"📊 <b>Raport sesji</b> · {html.escape(reason)}", 1)
+    from .extras import save_report
+    save_report(s, u["tg_id"], "sesja", text)
     try:
         if bot is not None:
             await bot.send_message(u["tg_id"], text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)

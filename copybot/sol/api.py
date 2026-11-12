@@ -708,7 +708,7 @@ async def action(s, u, body: dict) -> dict:
         if act == "autocfg_preview":
             tr = autocfg.trader_profiles(s, uid)
             p = autocfg.plan(bal, tr, se.is_live(u), autocfg.performance(s, u))
-            return {"text": autocfg.describe(p, tr), "values": p["values"], "warn": p["warn"]}
+            return {"text": autocfg.describe(p, tr, u), "values": p["values"], "warn": p["warn"]}
         p = autocfg.apply(s, u, bal, full=True)
         auto = body.get("auto", True)
         s.db.update_user(uid, sol_autocfg=int(bool(auto)))

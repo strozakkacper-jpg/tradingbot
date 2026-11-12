@@ -121,7 +121,7 @@ async def post_init(app: Application):
     log.info("Giełdy: %s · traderzy aktywni: %d", ", ".join(cfg.exchanges), len(db.leaders("active")))
     await app.bot.set_my_commands([
         BotCommand("menu", "Pulpit"), BotCommand("portfel", "Dodaj portfel do kopiowania"),
-        BotCommand("raport", "Raport sesji"),
+        BotCommand("raport", "Raport sesji"), BotCommand("raporty", "10 ostatnich raportów"),
         BotCommand("traderzy", "Traderzy"), BotCommand("dodaj", "Dodaj tradera"),
         BotCommand("sygnal", "Wyślij sygnał"), BotCommand("kup", "Kup (demo)"),
         BotCommand("sprzedaj", "Sprzedaj (demo)"), BotCommand("polacz", "Podłącz giełdę"),
