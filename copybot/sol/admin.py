@@ -1,6 +1,7 @@
 """Panel administratora: podgląd każdego, kto handluje (saldo, wynik, pozycje, ruchy) i rangi."""
 import asyncio
 import html
+import json
 import logging
 
 from telegram import InlineKeyboardButton as B
@@ -388,3 +389,53 @@ def register(app: Application):
                                         conversation_timeout=300))
     app.add_handler(CommandHandler("nazwa", cmd_nazwa))
     app.add_handler(CallbackQueryHandler(on_button, pattern=r"^adm:(users|u:\d+|stop:\d+|role:\d+)$"))
+
+
+# ---------- diagnostyka (do logów – ocena każdego konta bez dostępu do bazy) ----------
+DIAG_KEYS = ("sol_buy_mode", "sol_pct", "sol_buy", "sol_max", "sol_min_buy", "sol_max_pos", "sol_day_limit",
+             "sol_streak", "sol_sl", "sol_tp", "sol_trail", "sol_x2", "sol_time_exit", "sol_min_hold", "sol_min_lead",
+             "sol_no_add", "sol_safe", "sol_slippage_bps", "sol_priority", "sol_turbo", "sol_autopilot", "sol_autocfg",
+             "sol_smart", "sol_auto_rank", "sol_dev_exit", "sol_consensus", "sol_boost")
+
+
+def diagnostics(s) -> list[dict]:
+    """Stan każdego konta: wynik 1/3/7 dni, saldo, ustawienia, wynik na każdym traderze, powody pominięć."""
+    from .api import ranking
+    out = []
+    now = now_ms()
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        uid = u["tg_id"]
+        paper = not s.sol.is_live(u)
+        d = {"uid": uid, "name": display_name(u), "live": not paper, "active": bool(u["active"])}
+        for days in (1, 3, 7):
+            r = s.db._q("""SELECT COALESCE(SUM(pnl), 0) p, COUNT(*) n, SUM(pnl > 0) w FROM sol_trades
+                           WHERE tg_id = ? AND paper = ? AND side = 'sell' AND status = 'filled' AND pnl IS NOT NULL
+                           AND ts >= ?""", (uid, int(paper), now - days * DAY_MS))[0]
+            d[f"pnl{days}d"] = round(r["p"] or 0, 4)
+            d[f"sells{days}d"] = r["n"]
+            d[f"wins{days}d"] = r["w"] or 0
+        eq = s.db.sol_equity_series(uid, paper, now - 7 * DAY_MS)
+        d["equity"] = round(eq[-1][1], 4) if eq else None
+        d["equity_7d_ago"] = round(eq[0][1], 4) if eq else None
+        d["open_positions"] = s.sol.open_positions(uid, paper)
+        reasons = s.db._q("""SELECT info, COUNT(*) n FROM sol_trades WHERE tg_id = ? AND status != 'filled' AND ts >= ?
+                             GROUP BY substr(info, 1, 40) ORDER BY n DESC LIMIT 4""", (uid, now - 3 * DAY_MS))
+        d["skips3d"] = [[(r["info"] or "")[:50], r["n"]] for r in reasons]
+        d["settings"] = {k.replace("sol_", ""): u[k] for k in DIAG_KEYS if k in u.keys()}
+        rows = [r for r in ranking(s, uid, paper) if r["status"] == "copy"]
+        d["copied"] = len(rows)
+        d["traders"] = sorted(([(r["name"] or "?")[:28], round(r["pnl_7d"], 4), r["sells"], r["copies"]] for r in rows),
+                              key=lambda x: x[1])
+        out.append(d)
+    return out
+
+
+async def diagnostics_job(ctx):
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None):
+        return
+    try:
+        for d in diagnostics(s):
+            log.info("DIAG %s", json.dumps(d, ensure_ascii=False))
+    except Exception:  # noqa: BLE001
+        log.exception("Diagnostyka")

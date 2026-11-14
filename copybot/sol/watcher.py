@@ -92,6 +92,8 @@ class SolWatcher:
                 log.warning("Solana WebSocket (%s): odmowa połączenia %s – ponawiam za %ss", self.mode, e.status, backoff)
             except Exception as e:  # noqa: BLE001
                 self.last_error = str(e)[:200]
+                if self.connected:
+                    backoff = 1  # połączenie działało – po zerwaniu wracamy od razu, nie po 10 s jak po serii porażek
                 log.warning("Solana WebSocket (%s) rozłączony: %s – ponawiam za %ss", self.mode, e, backoff)
             if self.connected or not self.disconnected_at:
                 self.disconnected_at = self.disconnected_at or time.time()

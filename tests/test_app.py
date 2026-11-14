@@ -1357,3 +1357,13 @@ def test_reports_list_and_safety_untouched_by_autopilot(tmp_path):
     u = s.db.get_user(OWNER)
     assert (u["sol_safe"], u["sol_min_buy"], u["sol_max_pos"], u["sol_streak"], u["sol_max"], u["sol_day_limit"]) == \
         (0, 0.2, 2, 0, 0.3, 0) and u["sol_autopilot"] == 1
+
+
+def test_diagnostics(tmp_path):
+    from copybot.sol import admin as ADM
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    u = s.db.get_user(OWNER)
+    s.sol.record(OWNER, None, None, "sell", "D1", 0.1, 10, "filled", "x", not s.sol.is_live(u), pnl=0.02)
+    d = next(x for x in ADM.diagnostics(s) if x["uid"] == OWNER)
+    assert d["pnl1d"] == 0.02 and d["sells7d"] == 1 and "day_limit" in d["settings"] and "traders" in d
