@@ -1367,3 +1367,30 @@ def test_diagnostics(tmp_path):
     s.sol.record(OWNER, None, None, "sell", "D1", 0.1, 10, "filled", "x", not s.sol.is_live(u), pnl=0.02)
     d = next(x for x in ADM.diagnostics(s) if x["uid"] == OWNER)
     assert d["pnl1d"] == 0.02 and d["sells7d"] == 1 and "day_limit" in d["settings"] and "traders" in d
+
+
+def test_autopilot_cuts_low_hit_rate_and_best_settings_once(tmp_path):
+    import json as js
+    from copybot.sol import autopilot as AP
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    paper = not s.sol.is_live(s.db.get_user(OWNER))
+    lid = s.db.create_leader("Pechowiec", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    for i, p in enumerate((-0.01, -0.02, 0.005)):  # 3 sprzedaże, 1 z zyskiem, razem na minusie
+        s.sol.record(OWNER, lid, None, "sell", f"P{i}", 0.05, 10, "filled", "x", paper, pnl=p)
+    s.sol.record(-lid, lid, None, "buy", "MX", 0.3, 10, "filled", "0.3", True)
+    now = time.time()
+    good = {"kind": "world", "roi": 80, "win_rate": .55, "src": ["X"], "green_days": 5, "active_days": 7,
+            "trades": 280, "last": now - 1800, "pnl_usd": 30000, "pnl": 150}
+    s.db._q("INSERT INTO leaderboard VALUES (?, 7, ?, 0, ?, '🌍 X')", (W2, js.dumps(good), int(now * 1000)))
+    res = AP.rotate(s, s.db.get_user(OWNER), 2.0)
+    assert any("Pechowiec" in o and "1/3" in o for o in res["off"]) and res["on"]
+    # jednorazowe najlepsze ustawienia: konto bez autopilota go dostaje, drugi raz nic się nie dzieje
+    s.db.update_user(OWNER, sol_autopilot=0)
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    asyncio.run(AP.best_settings_once(jctx))
+    assert s.db.get_user(OWNER)["sol_autopilot"] == 1 and s.db.get_state("best_settings_v1")
+    s.db.update_user(OWNER, sol_autopilot=0)
+    asyncio.run(AP.best_settings_once(jctx))
+    assert s.db.get_user(OWNER)["sol_autopilot"] == 0

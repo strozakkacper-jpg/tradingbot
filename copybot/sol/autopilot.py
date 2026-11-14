@@ -80,8 +80,10 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
         r = mine.get(it["wallet"]) or {}
         why = None
         if not it["priority"]:
-            if (r.get("sells") or 0) >= 5 and (r.get("pnl_7d") or 0) < 0:
-                why = f"tracisz na nim {r['pnl_7d']:+.3f} SOL w 7 dni"
+            sells, wins, pnl = r.get("sells") or 0, r.get("wins") or 0, r.get("pnl_7d") or 0
+            if pnl < 0 and (sells >= 5 or (sells >= 3 and wins * 3 <= sells)):
+                # ≥5 sprzedaży na minusie albo już ≥3 i trafia najwyżej co trzecią – nie czekamy na większą stratę
+                why = f"tracisz na nim {pnl:+.3f} SOL w 7 dni ({wins}/{sells} z zyskiem)"
             elif it["lid"]:
                 last = _his_last(s, it["lid"]) or 0
                 since = follows.get(it["lid"]) or now_ms()
@@ -158,6 +160,36 @@ def summary(res: dict) -> str:
     if res.get("kept"):
         lines.append("✅ Zostają: " + ", ".join(n or "?" for n in res["kept"]))
     return "\n".join(lines) or "Skład bez zmian – obecni traderzy dalej się sprawdzają."
+
+
+async def best_settings_once(ctx):
+    """Jednorazowo (na prośbę admina): każde konto z portfelem Solany dostaje autopilota – kto go nie miał,
+    ma od razu poprawiony skład traderów (nieaktywni / tracący → najlepsi z rankingu); kto miał – od razu
+    przechodzi rotację z nowymi zasadami. 🛡 Bezpieczników nie zmienia. Każdy dostaje wiadomość, co się stało."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("best_settings_v1"):
+        return
+    s.db.set_state("best_settings_v1", str(now_ms()))
+    from .axiom import portfolio
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        try:
+            bal = (await portfolio(s, u))["total"]
+            if not bal or bal <= 0:
+                continue
+            if u["sol_autopilot"]:
+                res = rotate(s, u, bal)
+                if res["on"] or res["off"]:
+                    autocfg.apply(s, s.db.get_user(u["tg_id"]), bal)
+                head = "🚀 <b>AUTOPILOT</b> – nowe, ostrzejsze zasady wycinania tracących traderów"
+            else:
+                res = await enable(s, u, bal)
+                head = ("🚀 <b>AUTOPILOT ZAROBKU WŁĄCZONY</b> przez admina – Twoi traderzy prawie nie handlowali, "
+                        "więc bot dobrał aktywnych z rankingu i ustawił kwoty pod saldo (🛡 bezpieczniki bez zmian). "
+                        "Wyłączysz go w Opcjach.")
+            log.info("Najlepsze ustawienia %s: +%d / -%d", u["tg_id"], len(res["on"]), len(res["off"]))
+            await s.sol.say(u, "auto", head + "\n" + html.escape(summary({**res, "kept": []})))
+        except Exception:  # noqa: BLE001
+            log.exception("Najlepsze ustawienia %s", u["tg_id"])
 
 
 async def autopilot_job(ctx):

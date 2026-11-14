@@ -424,8 +424,13 @@ def diagnostics(s) -> list[dict]:
         d["settings"] = {k.replace("sol_", ""): u[k] for k in DIAG_KEYS if k in u.keys()}
         rows = [r for r in ranking(s, uid, paper) if r["status"] == "copy"]
         d["copied"] = len(rows)
-        d["traders"] = sorted(([(r["name"] or "?")[:28], round(r["pnl_7d"], 4), r["sells"], r["copies"]] for r in rows),
-                              key=lambda x: x[1])
+        def idle_h(lid):
+            if not lid:
+                return None
+            x = s.db._q("SELECT MAX(ts) t FROM sol_trades WHERE tg_id = ? AND status = 'filled'", (-int(lid),))[0]["t"]
+            return round((now - x) / 3_600_000, 1) if x else None
+        d["traders"] = sorted(([(r["name"] or "?")[:28], round(r["pnl_7d"], 4), r["sells"], r["copies"], idle_h(r["lid"])]
+                               for r in rows), key=lambda x: x[1])
         out.append(d)
     return out
 
