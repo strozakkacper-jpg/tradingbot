@@ -422,6 +422,15 @@ def diagnostics(s) -> list[dict]:
                              GROUP BY substr(info, 1, 40) ORDER BY n DESC LIMIT 4""", (uid, now - 3 * DAY_MS))
         d["skips3d"] = [[(r["info"] or "")[:50], r["n"]] for r in reasons]
         d["settings"] = {k.replace("sol_", ""): u[k] for k in DIAG_KEYS if k in u.keys()}
+        d["flags"] = {"accepted": u["accepted"], "approved": u["approved"], "active": u["active"],
+                      "has_wallet": s.sol.has_wallet(uid), "paused_all": s.db.get_state("paused") == "1"}
+        cp = s.db._q("""SELECT l.id, l.status, l.source, l.wallet IS NOT NULL w FROM follows f JOIN leaders l
+                        ON l.id = f.leader_id WHERE f.tg_id = ? AND f.copy = 1""", (uid,))
+        d["copy_rows"] = [[r["id"], r["status"], r["source"], bool(r["w"]),
+                           any(x["tg_id"] == uid for x in s.db.active_followers(r["id"])),
+                           r["id"] in {ld["id"] for ld in s.sol.leaders_for(
+                               s.db.get_leader(r["id"])["wallet"] or "")}] for r in cp]
+        d["watched"] = sum(1 for r in cp if (s.db.get_leader(r["id"])["wallet"] or "") in s.sol.watched_wallets())
         rows = [r for r in ranking(s, uid, paper) if r["status"] == "copy"]
         d["copied"] = len(rows)
         def idle_h(lid):
