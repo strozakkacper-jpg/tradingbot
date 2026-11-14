@@ -430,6 +430,14 @@ def diagnostics(s) -> list[dict]:
                            any(x["tg_id"] == uid for x in s.db.active_followers(r["id"])),
                            r["id"] in {ld["id"] for ld in s.sol.leaders_for(
                                s.db.get_leader(r["id"])["wallet"] or "")}] for r in cp]
+        tr = s.db._q("SELECT COUNT(*) n, MIN(ts) a, MAX(ts) b, SUM(status = 'filled') f FROM sol_trades WHERE tg_id = ?",
+                     (uid,))[0]
+        eqa = s.db._q("SELECT COUNT(*) n, MIN(ts) a FROM sol_equity WHERE tg_id = ?", (uid,))[0]
+        d["history"] = {"trades": tr["n"], "filled": tr["f"] or 0, "first_h_ago": round((now - tr["a"]) / 3.6e6, 1) if tr["a"] else None,
+                        "last_h_ago": round((now - tr["b"]) / 3.6e6, 1) if tr["b"] else None, "equity_points": eqa["n"],
+                        "first_equity_h_ago": round((now - eqa["a"]) / 3.6e6, 1) if eqa["a"] else None,
+                        "follows_h_ago": [round((now - r["created_at"]) / 3.6e6, 1) for r in s.db._q(
+                            "SELECT created_at FROM follows WHERE tg_id = ? AND copy = 1", (uid,))]}
         d["watched"] = sum(1 for r in cp if (s.db.get_leader(r["id"])["wallet"] or "") in s.sol.watched_wallets())
         rows = [r for r in ranking(s, uid, paper) if r["status"] == "copy"]
         d["copied"] = len(rows)
