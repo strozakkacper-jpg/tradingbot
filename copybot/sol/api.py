@@ -35,7 +35,7 @@ SETTINGS = {
     "sol_turbo": (bool, None, None),
     "sol_min_buy": (float, 0, 10), "sol_max_pos": (int, 0, 100), "sol_streak": (int, 0, 20),
     "sol_max_mcap": (float, 0, 1e10), "sol_min_age": (float, 0, 100000), "sol_max_age": (float, 0, 100000),
-    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None), "sol_autopilot": (bool, None, None),
+    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None), "sol_autopilot": (bool, None, None), "sol_risk": (float, 0, 1),
     "sol_report": (bool, None, None),
 }
 
@@ -766,6 +766,33 @@ async def action(s, u, body: dict) -> dict:
         res = await AP.enable(s, u, bal)
         return {"msg": "🚀 Autopilot zarobku włączony", "text": AP.summary(res) + "\n\n" + res["text"],
                 "warn": res["warn"], "on": res["on"], "off": res["off"]}
+    if act in ("risk_mode", "risk_safety"):
+        from . import autocfg
+        from .axiom import portfolio
+        bal = (await portfolio(s, u))["total"] or 0
+        if act == "risk_safety":  # świadome kliknięcie: dopasuj 🛡 bezpieczniki do trybu ryzyka
+            fix = {b["key"]: b["want"] for b in autocfg.risk_blockers(u, bal, u["sol_risk"])}
+            if fix:
+                s.db.update_user(uid, **fix)
+            return {"msg": "🛡 Bezpieczniki dopasowane do trybu ryzyka" if fix else "Nic do zmiany"}
+        try:
+            level = float(body.get("level") or 0)
+        except (TypeError, ValueError):
+            level = -1
+        if level not in autocfg.RISK_LEVELS:
+            raise ApiError("Nieznany poziom ryzyka")
+        if level:
+            s.db.update_user(uid, sol_risk=level, sol_buy_mode="ratio", sol_mult=level)
+            # osobne % na kartach traderów nadpisałyby tryb – czyścimy (stałe kwoty SOL zostają)
+            s.db._q("UPDATE follows SET sol_pct = NULL WHERE tg_id = ?", (uid,))
+        else:
+            s.db.update_user(uid, sol_risk=0, sol_buy_mode="pct")
+            if bal > 0:
+                autocfg.apply(s, s.db.get_user(uid), bal)  # z powrotem kwoty pod saldo i osobne % traderów
+        u2 = s.db.get_user(uid)
+        m = autocfg.risk_math(level)
+        return {"msg": f"🔥 Poziom ryzyka: {autocfg.RISK_LEVELS[level]}", "level": level, "math": m,
+                "blockers": autocfg.risk_blockers(u2, bal, level)}
     if act == "auto_name":
         from . import leaderboard as LB
         n = LB.auto_name(s, uid, refresh=True, everyone=bool(body.get("everyone")))

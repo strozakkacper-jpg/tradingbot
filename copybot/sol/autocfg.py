@@ -31,6 +31,33 @@ SIZING_KEYS = ("sol_buy_mode", "sol_pct", "sol_buy", "sol_max", "sol_min_buy", "
 # 🛡 Bezpieczniki – ustawia je tylko człowiek. Automaty (✨ Ustaw za mnie, 🤖 Auto, 🚀 Autopilot) ich nie zmieniają,
 # najwyżej podpowiadają wartości pasujące do salda.
 SAFETY_KEYS = ("sol_safe", "sol_min_buy", "sol_max_pos", "sol_streak", "sol_max", "sol_day_limit")
+RISK_KEYS = ("sol_buy_mode", "sol_pct", "sol_buy", "sol_mult")
+
+# 🔥 poziomy ryzyka: ułamek tego, co trader wkłada ze swojego salda (1 = dokładnie jak on, all-in gdy on all-in)
+RISK_LEVELS = {0: "Normalny", 0.5: "Odważny", 0.75: "Agresywny", 1.0: "Jak trader"}
+
+
+def risk_math(level: float) -> dict:
+    """Przykład dla poziomu: 4 trafienia ×3 i jedna wtopa −90%, gdy trader wchodzi całym saldem."""
+    f = level or 0.06
+    return {"wins4": round(((1 + 2 * f) ** 4 - 1) * 100), "rug": round(0.9 * f * 100)}
+
+
+def risk_blockers(u, balance: float, level: float) -> list[dict]:
+    """Bezpieczniki, które przytną kwoty w trybie ryzyka (bot ich sam nie zmienia – tylko pokazuje)."""
+    out = []
+    if not level:
+        return out
+    if u["sol_max"] and u["sol_max"] < balance * level * 0.5:
+        out.append({"key": "sol_max", "now": u["sol_max"], "want": 0,
+                    "why": f"maks. {u['sol_max']:g} SOL na zakup tnie wejścia (tryb chce do ~{balance * level:.2g} SOL)"})
+    if u["sol_day_limit"] and u["sol_day_limit"] < balance * 0.4:
+        out.append({"key": "sol_day_limit", "now": u["sol_day_limit"], "want": r2(balance * 0.5),
+                    "why": f"dzienny limit straty {u['sol_day_limit']:g} SOL zatrzyma bota po pierwszej wtopie"})
+    if u["sol_max_pos"] and u["sol_max_pos"] > 5:
+        out.append({"key": "sol_max_pos", "now": u["sol_max_pos"], "want": 3,
+                    "why": "przy dużych wejściach lepiej mniej pozycji naraz (3)"})
+    return out
 
 
 def r2(x: float) -> float:
@@ -200,9 +227,13 @@ def apply(s, u, balance: float, full: bool = False) -> dict:
         base = recommended(balance, p["typical"], live)
         vals = {**base, **vals}
     vals = {k: v for k, v in vals.items() if k not in SAFETY_KEYS}  # 🛡 bezpieczników nie ruszamy
+    risk = u["sol_risk"] if "sol_risk" in u.keys() else 0
+    if risk:
+        # 🔥 tryb ryzyka: kwotę wyznacza trader (ten sam % salda × poziom) – auto nie zmienia trybu ani %
+        vals = {k: v for k, v in vals.items() if k not in RISK_KEYS}
     s.db.update_user(uid, sol_autocfg_bal=balance, sol_autocfg_at=now_ms(),
                      sol_autocfg_sig=signature(traders), **vals)
-    for t in traders:
+    for t in ([] if risk else traders):
         fr = s.db.follow_row(uid, t["lid"])
         if fr and fr["sol_buy"]:
             continue  # stała kwota ustawiona ręcznie dla tego tradera – zostaje

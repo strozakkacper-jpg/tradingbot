@@ -1394,3 +1394,41 @@ def test_autopilot_cuts_low_hit_rate_and_best_settings_once(tmp_path):
     s.db.update_user(OWNER, sol_autopilot=0)
     asyncio.run(AP.best_settings_once(jctx))
     assert s.db.get_user(OWNER)["sol_autopilot"] == 0
+
+
+def test_risk_mode(tmp_path):
+    from copybot.sol import autocfg as AC
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    lid = s.db.create_leader("Trader", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    s.db.set_follow_amount(OWNER, lid, pct=7)
+    s.db.update_user(OWNER, sol_max=0.3, sol_day_limit=0.2, sol_max_pos=14)
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/action", {"action": "risk_mode", "level": 0.75})
+        assert st == 200 and j["level"] == 0.75 and j["math"] == {"wins4": 3806, "rug": 68}
+        u = s.db.get_user(OWNER)
+        assert u["sol_buy_mode"] == "ratio" and u["sol_mult"] == 0.75 and s.db.follow_row(OWNER, lid)["sol_pct"] is None
+        assert {b["key"] for b in j["blockers"]} == {"sol_max", "sol_day_limit", "sol_max_pos"}
+        assert u["sol_max"] == 0.3  # bot sam bezpieczników nie zmienia
+        # 🤖 Auto nie przełącza z powrotem na % kwoty tradera
+        AC.apply(s, u, 5.0)
+        assert s.db.get_user(OWNER)["sol_buy_mode"] == "ratio" and s.db.follow_row(OWNER, lid)["sol_pct"] is None
+        st, j = await call(OWNER, "/api/sol/action", {"action": "risk_safety"})
+        u = s.db.get_user(OWNER)
+        assert u["sol_max"] == 0 and u["sol_max_pos"] == 3 and u["sol_day_limit"] >= 2
+        st, j = await call(OWNER, "/api/sol/action", {"action": "risk_mode", "level": 0.6})
+        assert st == 400
+        st, j = await call(OWNER, "/api/sol/action", {"action": "risk_mode", "level": 0})
+        u = s.db.get_user(OWNER)
+        assert u["sol_risk"] == 0 and u["sol_buy_mode"] == "pct" and s.db.follow_row(OWNER, lid)["sol_pct"]
+    run(s, steps)
+    # kwota w trybie „Jak trader”: trader wydał 80% swojego SOL → Ty 80% wolnego SOL
+    import dataclasses
+    s.db.update_user(OWNER, sol_risk=1, sol_buy_mode="ratio", sol_mult=1, sol_max=0, sol_min_buy=0)
+    s.db._q("UPDATE follows SET sol_pct = NULL WHERE tg_id = ?", (OWNER,))
+    u = s.db.get_user(OWNER)
+    sw = dataclasses.replace(swap("buy", 0.8, "r1"), fraction=0.8)
+    bal = asyncio.run(s.sol.sol_lamports(u))
+    assert abs(asyncio.run(s.sol.buy_amount(u, sw)) - bal * 0.8) < 2

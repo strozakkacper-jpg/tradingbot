@@ -810,6 +810,13 @@ function settings() {
   const example = m === 'fixed' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${st.sol_buy} SOL</b>${inUsd(st.sol_buy) ? ' (' + inUsd(st.sol_buy) + ')' : ''}.`
     : m === 'pct' ? `Trader kupi za 5 SOL → Ty kupisz za <b>${sig2(5 * st.sol_pct / 100)} SOL</b>.` : '';
   return `
+  <div class="card" style="${st.sol_risk ? 'border-color:rgba(239,68,68,.5);background:linear-gradient(135deg,rgba(239,68,68,.14),rgba(234,179,8,.06) 70%),var(--card)' : ''}">
+    <div class="row"><div class="sp"><div class="b" style="font-size:17px">🔥 Poziom ryzyka</div>
+      <div class="mut tiny">ile ze swojego salda wkładasz, gdy trader wchodzi</div></div>
+      ${st.sol_risk ? `<span class="pill r">${{0.5: 'Odważny', 0.75: 'Agresywny', 1: 'Jak trader'}[st.sol_risk] || ''}</span>` : ''}</div>
+    <div class="seg" style="margin-top:10px">${[[0, 'Normalny'], [0.5, 'Odważny'], [0.75, 'Agresywny'], [1, 'Jak trader']].map(([k, l]) =>
+      `<button class="${(st.sol_risk || 0) === k ? 'on' : ''}" onclick="setRisk(${k})">${l}</button>`).join('')}</div>
+    <div class="small" style="margin-top:10px">${riskTxt(st.sol_risk || 0)}</div></div>
   <div class="card" style="border-color:${st.sol_autopilot ? 'rgba(34,197,94,.45)' : 'var(--acc)'};background:linear-gradient(135deg,rgba(155,107,255,.16),rgba(34,197,94,.08) 70%),var(--card)">
     <div class="row"><div class="sp"><div class="b" style="font-size:17px">🚀 Autopilot zarobku</div>
       <div class="mut tiny">jeden przycisk – potem bot sam pilnuje wyniku</div></div>
@@ -1018,6 +1025,29 @@ async function autoSettings() {
   if (!await confirmBox('Ustawić kwoty i strategię pod Twoje saldo i traderów? 🛡 Bezpieczniki zostaną bez zmian. Obecne kwoty i strategia zostaną zastąpione, a 🤖 Auto będzie je samo poprawiać, gdy saldo się zmieni.')) return;
   const r = await act('auto_settings', {}, {quiet: true});
   if (r && r.text) showHtml('✨ Gotowe', autoTxt(r) + `<br><br><span class="mut">${r.auto ? '🤖 Auto włączone – sam przeliczy, gdy saldo zmieni się o 12%+. ' : ''}Każdą wartość możesz poprawić suwakami w Opcjach.</span>`);
+}
+function riskTxt(k) {
+  const m = {0: [60, 5], 0.5: [1500, 45], 0.75: [3800, 68], 1: [8000, 90]}[k];
+  const what = {0: 'Każda pozycja ~5–8% salda, kwoty dopasowane do każdego tradera. Najbezpieczniej.',
+    0.5: 'Wkładasz <b>połowę tego, co trader</b> (jego % salda × 0,5). Gdy on wchodzi całym saldem – Ty połową.',
+    0.75: 'Wkładasz <b>¾ tego, co trader</b>. Przy jego all-in to ~75% Twojego salda w jednej transakcji. Daje ok. <b>połowę jego wyniku</b>.',
+    1: 'Wkładasz <b>dokładnie tyle samo %</b> co trader – gdy on all-in, Ty też. Jego wynik minus opóźnienie kopii.'}[k];
+  return `${what}<div class="note" style="margin-top:8px">📈 Przykład – trader 4× trafia ×3 całym saldem: Ty <b class="g">+${m[0].toLocaleString('pl-PL')}%</b></div>
+    <div class="note">📉 Jedna wtopa −90% (rug) całym saldem: tracisz <b class="r">${m[1]}% salda</b></div>
+    ${k ? '<div class="warn">⚠️ Duże wejścia = duże wahania. Kilka złych transakcji z rzędu potrafi zabrać większość salda. Zacznij na 🧪 ćwiczeniach. Autopilot przy tym trybie trzyma maks. 3 traderów.</div>' : ''}`;
+}
+async function setRisk(k) {
+  if (k && !await confirmBox(`Włączyć tryb „${{0.5: 'Odważny', 0.75: 'Agresywny', 1: 'Jak trader'}[k]}”? Bot będzie wkładał ${k * 100}% tego, co trader (przy jego all-in – ${k * 100}% Twojego salda). Jedna wtopa może zabrać dużą część salda.`)) return;
+  try {
+    const r = await api('/api/sol/action', {action: 'risk_mode', level: k});
+    toast(r.msg); await load(); render();
+    if (r.blockers && r.blockers.length) {
+      sheet(hdr('🛡 Bezpieczniki przytną ten tryb') + `<div class="card small">${r.blockers.map(b => `<div class="note">• ${esc(b.why)}</div>`).join('')}
+        <div class="mut tiny" style="margin-top:8px">Bot sam bezpieczników nie zmienia. Możesz je dopasować jednym kliknięciem albo zostawić – wtedy tryb będzie łagodniejszy.</div></div>
+        <button class="btn r" onclick="act('risk_safety', {}, {reload: true}).then(closeSheet)">🔥 Dopasuj bezpieczniki do trybu</button>
+        <button class="btn ghost" style="margin-top:8px" onclick="closeSheet()">Zostaw jak jest</button>`);
+    }
+  } catch (e) { toast('⚠️ ' + e.message); }
 }
 async function autopilotOn(again) {
   if (!again && !await confirmBox('Włączyć autopilota? Bot wybierze najlepszych traderów z rankingu, wyłączy słabych i nieaktywnych (⭐ priorytetowi zostają), ustawi kwoty pod saldo i co 6 h sam poprawi skład.')) return;

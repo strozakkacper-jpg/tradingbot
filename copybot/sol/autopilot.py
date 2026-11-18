@@ -72,6 +72,8 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
     mine = {r["wallet"]: r for r in ranking(s, uid, paper)}
     items = [it for it in saved_list(s, uid) if it["status"] == "copy"]
     target = target_count(balance)
+    if (u["sol_risk"] if "sol_risk" in u.keys() else 0) > 0:
+        target = min(target, 3)  # 🔥 duże wejścia = mało traderów naraz (inaczej pierwszy zjada całe saldo)
     off, kept, on, off_w = [], [], [], set()
     follows = {r["leader_id"]: r["created_at"] for r in s.db._q("SELECT leader_id, created_at FROM follows WHERE tg_id = ?",
                                                                  (uid,))}
