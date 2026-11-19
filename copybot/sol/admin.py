@@ -426,6 +426,22 @@ def diagnostics(s) -> list[dict]:
                                 FROM sol_trades WHERE tg_id = ? AND paper = 1 AND status = 'filled' GROUP BY mint)""",
                        (uid,))[0]["x"]
         d["paper_oversold_sol"] = round(over or 0, 4)
+        top = s.db._q("""SELECT t.mint, t.sol, t.tokens, t.pnl, t.info, t.ts, l.name FROM sol_trades t
+                         LEFT JOIN leaders l ON l.id = t.leader_id WHERE t.tg_id = ? AND t.paper = ? AND t.side = 'sell'
+                         AND t.status = 'filled' AND t.ts >= ? ORDER BY t.pnl DESC LIMIT 8""",
+                      (uid, int(paper), now - 7 * DAY_MS))
+        d["top_sells"] = []
+        for r in top:
+            b = s.db._q("""SELECT COUNT(*) n, SUM(sol) sol, SUM(tokens) tok, GROUP_CONCAT(DISTINCT substr(info, 1, 18)) i
+                           FROM sol_trades WHERE tg_id = ? AND mint = ? AND side = 'buy' AND status = 'filled'""",
+                        (uid, r["mint"]))[0]
+            d["top_sells"].append({"mint": r["mint"], "sell_sol": round(r["sol"] or 0, 4), "sell_tok": r["tokens"],
+                                   "pnl": round(r["pnl"] or 0, 4), "info": (r["info"] or "")[:30],
+                                   "trader": (r["name"] or "")[:20], "buys": b["n"], "buy_sol": round(b["sol"] or 0, 4),
+                                   "buy_tok": b["tok"], "buy_info": (b["i"] or "")[:60]})
+        d["pnl_sum_all"] = round(s.db._q("SELECT COALESCE(SUM(pnl),0) p FROM sol_trades WHERE tg_id = ? AND paper = ? "
+                                         "AND side = 'sell' AND status = 'filled'", (uid, int(paper)))[0]["p"], 4)
+        d["paper_start"] = s.sol.paper_start(uid)
         reasons = s.db._q("""SELECT info, COUNT(*) n FROM sol_trades WHERE tg_id = ? AND status != 'filled' AND ts >= ?
                              GROUP BY substr(info, 1, 40) ORDER BY n DESC LIMIT 4""", (uid, now - 3 * DAY_MS))
         d["skips3d"] = [[(r["info"] or "")[:50], r["n"]] for r in reasons]
