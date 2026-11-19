@@ -380,9 +380,15 @@ def test_demo_fallback_at_trader_price_when_no_route(tmp_path):
     async def no_route(*a, **kw):
         raise ChainError("Jupiter: Could not find any route")
     s.sol.jup.quote = no_route
+    import dataclasses
+    PUMP = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgpump"
+    # zwykły token bez trasy – na ćwiczeniach też pomijamy (na prawdziwych SOL nie dałoby się go kupić)
     res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic()))
+    assert res.get("skipped") == 1 and TOKEN not in s.sol.paper(OWNER)
+    # token z Pump.fun bez trasy – po cenie tradera (na prawdziwych SOL kupimy go przez PumpPortal)
+    res = asyncio.run(s.sol.on_swap(WALLET, dataclasses.replace(swap("buy", 0.1, "p0"), mint=PUMP), time.monotonic()))
     # trader: 1 SOL za 1000 jednostek → 0,05 SOL = 50 jednostek, −2% = 49
-    assert res["filled"] == 1 and s.sol.paper(OWNER)[TOKEN] == 49
+    assert res["filled"] == 1 and s.sol.paper(OWNER)[PUMP] == 49
     assert "po cenie tradera" in s.sol.history(OWNER)[0]["info"]
     s.db.update_user(OWNER, sol_live=1)  # na prawdziwych SOL bez trasy – pomijamy
     res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "s2"), time.monotonic()))
@@ -1432,3 +1438,61 @@ def test_risk_mode(tmp_path):
     sw = dataclasses.replace(swap("buy", 0.8, "r1"), fraction=0.8)
     bal = asyncio.run(s.sol.sol_lamports(u))
     assert abs(asyncio.run(s.sol.buy_amount(u, sw)) - bal * 0.8) < 2
+
+
+def test_demo_realism_unroutable_tokens(tmp_path):
+    import pytest
+    from copybot.sol.parser import SOL_MINT
+    import dataclasses
+    from copybot.sol.chain import ChainError
+    from copybot.sol import autopilot as AP
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    u = s.db.get_user(OWNER)
+    STOCK = "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB"  # nie z platformy startowej
+    PUMP = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgpump"
+
+    async def no_route(*a, **k):
+        raise ChainError("Jupiter: No routes found")
+    s.sol.jup.quote = no_route
+
+    async def px(mints):
+        return {STOCK: 2.0, SOL_MINT: 100.0}
+    s.sol.jup.prices = px
+    buy = dataclasses.replace(swap("buy", 0.5, "z1"), mint=STOCK)
+    with pytest.raises(Exception, match="brak trasy"):
+        asyncio.run(s.sol.execute(u, "buy", STOCK, 50_000_000, decimals=6, fallback=buy))
+    pbuy = dataclasses.replace(swap("buy", 0.5, "z2"), mint=PUMP)
+    f = asyncio.run(s.sol.execute(u, "buy", PUMP, 50_000_000, decimals=6, fallback=pbuy))
+    assert f.note == "po cenie tradera"
+    # sprzedaż, gdy trader sprzedał za USDC – po jego cenie przeliczonej na SOL
+    held = s.sol.paper(OWNER)[PUMP]
+    usell = dataclasses.replace(swap("sell", 0.5, "z3"), mint=PUMP, quote_symbol="USDC", quote_amount=60.0, token_raw=held)
+    s.sol.jup.prices = lambda m: asyncio.sleep(0, {SOL_MINT: 120.0})
+    f = asyncio.run(s.sol.execute(u, "sell", PUMP, held, decimals=6, fallback=usell))
+    assert abs(f.sol - 0.5 * 0.98) < 0.01  # 60 USDC / 120 = 0,5 SOL, minus 2%
+    # zablokowana pozycja w tokenie bez trasy → zamknięta po cenie rynkowej (jednorazowo)
+    s.sol.paper_apply(OWNER, {STOCK: 3_000_000})
+    s.sol.record(OWNER, None, None, "buy", STOCK, 0.05, 3, "filled", "x", True)
+    s.sol.jup.prices = px
+    s.sol._dec[STOCK] = 6
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    asyncio.run(AP.demo_unstick_once(jctx))
+    assert s.sol.paper(OWNER).get(STOCK, 0) == 0
+    r = s.db._q("SELECT pnl, info FROM sol_trades WHERE tg_id = ? AND mint = ? AND side = 'sell'", (OWNER, STOCK))[0]
+    assert "bez trasy" in r["info"] and r["pnl"] is not None
+
+
+def test_autopilot_drops_no_route_trader(tmp_path):
+    from copybot.sol import autopilot as AP
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    lid = s.db.create_leader("Akcje", "sol", OWNER, "active", wallet=WALLET)
+    s.db.follow(OWNER, lid, True)
+    s.sol.record(-lid, lid, None, "buy", "MX", 0.3, 10, "filled", "0.3", True)
+    for i in range(6):
+        s.sol.record(OWNER, lid, None, "buy", f"S{i}", 0, 0, "skipped",
+                     "brak trasy wymiany – Jupiter jeszcze nie obsługuje tego tokena", True)
+    assert AP._no_route_share(s, OWNER, lid) == 1.0
+    res = AP.rotate(s, s.db.get_user(OWNER), 2.0)
+    assert any("Akcje" in o and "brak trasy" in o for o in res["off"])

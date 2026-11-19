@@ -58,6 +58,13 @@ def candidates(s) -> list[dict]:
     return out
 
 
+def _no_route_share(s, uid: int, lid: int) -> float:
+    """Jaka część prób kopiowania tradera w 48 h skończyła się „brakiem trasy” (min. 5 takich prób)."""
+    r = s.db._q("""SELECT COUNT(*) n, SUM(info LIKE '%brak trasy%') nr FROM sol_trades
+                   WHERE tg_id = ? AND leader_id = ? AND ts >= ?""", (uid, lid, now_ms() - 2 * DAY_MS))[0]
+    return (r["nr"] or 0) / r["n"] if r["n"] and (r["nr"] or 0) >= 5 else 0.0
+
+
 def _his_last(s, lid: int) -> int | None:
     r = s.db._q("SELECT MAX(ts) t FROM sol_trades WHERE tg_id = ? AND status = 'filled'", (ref_id(lid),))
     return r[0]["t"] if r else None
@@ -86,6 +93,8 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
             if pnl < 0 and (sells >= 5 or (sells >= 3 and wins * 3 <= sells)):
                 # ≥5 sprzedaży na minusie albo już ≥3 i trafia najwyżej co trzecią – nie czekamy na większą stratę
                 why = f"tracisz na nim {pnl:+.3f} SOL w 7 dni ({wins}/{sells} z zyskiem)"
+            elif it["lid"] and _no_route_share(s, uid, it["lid"]) >= 0.5:
+                why = "handluje tokenami, których nie da się kupić (brak trasy wymiany)"
             elif it["lid"]:
                 last = _his_last(s, it["lid"]) or 0
                 since = follows.get(it["lid"]) or now_ms()
@@ -213,3 +222,22 @@ async def autopilot_job(ctx):
                                 + html.escape(summary({**res, "kept": []})))
         except Exception:  # noqa: BLE001
             log.exception("Autopilot %s", u["tg_id"])
+
+
+async def demo_unstick_once(ctx):
+    """Jednorazowo: na ćwiczeniach zamyka pozycje w tokenach bez trasy wymiany (blokowały limit pozycji)."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("demo_unstick_v1"):
+        return
+    s.db.set_state("demo_unstick_v1", str(now_ms()))
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        try:
+            closed = await s.sol.paper_close_unroutable(u)
+            if closed:
+                log.info("Ćwiczenia %s: zamknięto %d pozycji bez trasy wymiany", u["tg_id"], len(closed))
+                await s.sol.say(u, "auto", "🧪 <b>ĆWICZENIA</b> – zamknąłem po cenie rynkowej tokeny, których nie da się "
+                                "sprzedać przez giełdę (np. tokenizowane akcje): " + html.escape(", ".join(closed))
+                                + "\nBlokowały miejsca na nowe pozycje. Od teraz ćwiczenia nie kupują tokenów, których "
+                                "nie dałoby się kupić na prawdziwych SOL.")
+        except Exception:  # noqa: BLE001
+            log.exception("Ćwiczenia – zamykanie tokenów bez trasy %s", u["tg_id"])

@@ -116,6 +116,7 @@ async def post_init(app: Application):
         app.job_queue.run_once(sol_leaderboard.name_everyone_once, 60)
         app.job_queue.run_once(sol_admin.diagnostics_job, 90)  # stan każdego konta do logów (ocena po wdrożeniu)
         app.job_queue.run_once(sol_autopilot.best_settings_once, 150)
+        app.job_queue.run_once(sol_autopilot.demo_unstick_once, 200)
         app.job_queue.run_repeating(sol_autopilot.autopilot_job, interval=30 * 60, first=1500)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:

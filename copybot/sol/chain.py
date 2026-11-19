@@ -52,14 +52,21 @@ class Rpc:
         for attempt in range(4):
             await self.limit.wait()
             self._id += 1
-            async with self.session.post(self.url, json={"jsonrpc": "2.0", "id": self._id, "method": method,
-                                                         "params": params or []}) as r:
-                if r.status in (401, 403):
-                    self.auth_error = f"HTTP {r.status}"
-                if r.status == 429:
-                    await asyncio.sleep(0.5 * (attempt + 1))
-                    continue
-                data = await r.json(content_type=None)
+            try:
+                async with self.session.post(self.url, json={"jsonrpc": "2.0", "id": self._id, "method": method,
+                                                             "params": params or []}) as r:
+                    if r.status in (401, 403):
+                        self.auth_error = f"HTTP {r.status}"
+                    if r.status == 429:
+                        await asyncio.sleep(0.5 * (attempt + 1))
+                        continue
+                    data = await r.json(content_type=None)
+            except (aiohttp.ClientConnectionError, ConnectionResetError, asyncio.TimeoutError) as e:
+                # zerwane połączenie z RPC (np. „Connection reset by peer”) – chwila i ponawiamy
+                if attempt == 3:
+                    raise ChainError(f"{method}: brak połączenia z RPC ({type(e).__name__})") from e
+                await asyncio.sleep(0.3 * (attempt + 1))
+                continue
             if "error" in data:
                 raise ChainError(f"{method}: {data['error'].get('message', data['error'])}")
             return data["result"]

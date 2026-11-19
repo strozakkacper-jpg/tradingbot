@@ -65,6 +65,11 @@ MIN_BUY = 1_000_000  # 0,001 SOL
 DAY_MS = 24 * 3600 * 1000
 
 
+def is_launchpad(mint: str) -> bool:
+    """Token z platformy startowej (Pump.fun, Bonk, …) – da się go kupić także bez trasy Jupitera."""
+    return mint.endswith(("pump", "bonk", "moon", "bags", "boop"))
+
+
 class Skip(Exception):
     pass
 
@@ -717,8 +722,13 @@ class SolEngine:
             except ChainError:
                 quote = None
             if quote is None:
-                if not self.is_live(u) and fallback and fallback.quote_symbol == "SOL" and fallback.token_raw > 0:
-                    return self._paper_at_trader_price(u, side, mint, amount_raw, fallback, t0, decimals)
+                # ćwiczenia jak prawdziwe: zakup bez trasy tylko dla tokenów z platform startowych (na prawdziwych
+                # SOL kupimy je przez PumpPortal); np. tokenizowanych akcji bez trasy nie „kupujemy” na niby.
+                # Sprzedaż – zawsze (pozycja już jest, trader wyszedł), także gdy on sprzedał za USDC.
+                if not self.is_live(u) and fallback and fallback.token_raw > 0 and (side == "sell" or is_launchpad(mint)):
+                    per = await self._trader_price(fallback)
+                    if per:
+                        return self._paper_at_trader_price(u, side, mint, amount_raw, fallback, t0, decimals, per)
                 if self.is_live(u) and self.pump is not None:  # świeży token z Pump.fun – zapasowa droga
                     return await self._live_pumpportal(u, side, mint, amount_raw, t0, t_recv, decimals)
                 raise Skip(f"brak trasy wymiany – Jupiter jeszcze nie obsługuje tego tokena ({e})") from e
@@ -757,6 +767,42 @@ class SolEngine:
             self._bal.pop(pub, None)
             log.info("Solana %s: zamknięto %d pustych kont tokenów (+%.4f SOL)", u["tg_id"], n, n * ATA_RENT / LAMPORTS)
         return n
+
+    async def paper_close_unroutable(self, u) -> list[str]:
+        """Ćwiczenia: zamyka pozycje w tokenach bez trasy wymiany (np. tokenizowane akcje kupione po cenie
+        tradera, zanim ćwiczenia zaczęły odrzucać takie zakupy) – po cenie rynkowej, o 2% gorzej.
+        Na prawdziwych SOL nic nie robi. Zwraca symbole zamkniętych."""
+        if self.is_live(u):
+            return []
+        uid = u["tg_id"]
+        hold = {m: r for m, r in self.paper(uid).items() if m != SOL_MINT and r > 0 and not is_launchpad(m)}
+        if not hold:
+            return []
+        try:
+            px = await asyncio.wait_for(self.jup.prices(list(hold)[:49] + [SOL_MINT]), 8)
+        except Exception:  # noqa: BLE001
+            return []
+        sol_usd = px.get(SOL_MINT)
+        closed = []
+        for mint, raw in hold.items():
+            if not sol_usd or mint not in px:
+                continue
+            try:
+                await self.jup.quote(mint, SOL_MINT, raw, 3000)
+                continue  # trasa jest – normalna sprzedaż zadziała
+            except ChainError as e:
+                if not any(x in str(e) for x in ("No routes", "not tradable", "ROUTE", "TRADABLE")):
+                    continue
+            sym, dec = self.cached_token(mint) or await self.token_info(mint)
+            out = int(raw / 10 ** dec * px[mint] / sol_usd * LAMPORTS * 0.98)
+            basis = self.cost_basis(uid, mint, True)
+            self.paper_trade(u, "sell", mint, raw, out)
+            fill = self.sell_pnl(basis, Fill(out / LAMPORTS, raw / 10 ** dec, None, 0, note="po cenie rynkowej"))
+            self.record(uid, None, None, "sell", mint, fill.sol, fill.tokens, "filled",
+                        "ćwiczenia: zamknięte po cenie rynkowej (token bez trasy wymiany)", True, pnl=fill.pnl)
+            closed.append(sym)
+            await asyncio.sleep(0.3)
+        return closed
 
     def after_sell(self, u, mint: str, sold_all: bool):
         """Po sprzedaży całości na prawdziwych SOL – w tle zamykamy puste konto tokena (odzysk depozytu)."""
@@ -889,10 +935,23 @@ class SolEngine:
         self._bal.pop(cur["pubkey"], None)
         return b["pubkey"]
 
-    def _paper_at_trader_price(self, u, side, mint, amount_raw, sw: Swap, t0: float, decimals: int) -> Fill:
+    async def _trader_price(self, sw: Swap) -> float | None:
+        """Cena z transakcji tradera w lamportach za jednostkę tokena (płacił/dostał SOL albo USDC/USDT)."""
+        if sw.token_raw <= 0 or sw.quote_amount <= 0:
+            return None
+        if sw.quote_symbol == "SOL":
+            return sw.quote_amount * LAMPORTS / sw.token_raw
+        try:
+            sol_usd = (await asyncio.wait_for(self.jup.prices([SOL_MINT]), 3)).get(SOL_MINT)
+        except Exception:  # noqa: BLE001
+            sol_usd = None
+        return sw.quote_amount / sol_usd * LAMPORTS / sw.token_raw if sol_usd else None
+
+    def _paper_at_trader_price(self, u, side, mint, amount_raw, sw: Swap, t0: float, decimals: int,
+                               per: float | None = None) -> Fill:
         """Ćwiczenia: Jupiter nie zna jeszcze tokena (np. świeży z Pump.fun) – liczymy po cenie z transakcji
         tradera, o 2% gorzej (poślizg). Na prawdziwych SOL takiej kopii nie da się zrobić bez trasy."""
-        per = sw.quote_amount * LAMPORTS / sw.token_raw
+        per = per or sw.quote_amount * LAMPORTS / sw.token_raw
         if side == "buy":
             got = int(amount_raw / per * 0.98)
             self.paper_trade(u, side, mint, amount_raw, got)
