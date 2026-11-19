@@ -1496,3 +1496,22 @@ def test_autopilot_drops_no_route_trader(tmp_path):
     assert AP._no_route_share(s, OWNER, lid) == 1.0
     res = AP.rotate(s, s.db.get_user(OWNER), 2.0)
     assert any("Akcje" in o and "brak trasy" in o for o in res["off"])
+
+
+def test_paper_double_sell_does_not_mint_sol(tmp_path):
+    from copybot.sol.parser import SOL_MINT
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    u = s.db.get_user(OWNER)
+    s.sol.paper_apply(OWNER, {TOKEN: 1000})
+    sol0 = s.sol.paper(OWNER)[SOL_MINT]
+    # dwie sprzedaże policzone od pełnego stanu (600 + 1000 przy 1000 w portfelu)
+    a1, o1 = s.sol.paper_trade(u, "sell", TOKEN, 600, 60_000_000)
+    a2, o2 = s.sol.paper_trade(u, "sell", TOKEN, 1000, 100_000_000)
+    assert (a1, a2) == (600, 400) and o2 == 40_000_000
+    gained = s.sol.paper(OWNER)[SOL_MINT] - sol0
+    assert gained < 100_000_000 + 3_000_000  # najwyżej za 1000 tokenów, nie za 1600
+    import pytest
+    from copybot.sol.engine import Skip
+    with pytest.raises(Skip):
+        s.sol.paper_trade(u, "sell", TOKEN, 100, 10_000_000)

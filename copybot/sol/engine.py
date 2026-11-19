@@ -65,6 +65,16 @@ MIN_BUY = 1_000_000  # 0,001 SOL
 DAY_MS = 24 * 3600 * 1000
 
 
+def clamp_sell(amount_raw: int, out_raw: int, held: int) -> tuple[int, int]:
+    """Sprzedaż najwyżej tego, co jest; przychód proporcjonalnie mniejszy. Nic nie zostało → Skip."""
+    if amount_raw > held:
+        out_raw = int(out_raw * held / amount_raw) if amount_raw else 0
+        amount_raw = held
+    if amount_raw <= 0:
+        raise Skip("już sprzedane (inna sprzedaż tego tokena była chwilę wcześniej)")
+    return amount_raw, out_raw
+
+
 def is_launchpad(mint: str) -> bool:
     """Token z platformy startowej (Pump.fun, Bonk, …) – da się go kupić także bez trasy Jupitera."""
     return mint.endswith(("pump", "bonk", "moon", "bags", "boop"))
@@ -153,17 +163,21 @@ class SolEngine:
         """Ćwiczenia z prawdziwymi kosztami: opłata sieci + ok. połowa maks. opłaty za szybkość."""
         return BASE_FEE + self.priority(u) // 2
 
-    def paper_trade(self, u, side: str, mint: str, amount_raw: int, out_raw: int):
+    def paper_trade(self, u, side: str, mint: str, amount_raw: int, out_raw: int) -> tuple[int, int]:
         """Transakcja na ćwiczeniach z kosztami jak na prawdziwych SOL: opłaty + depozyt za nowe konto tokena
-        (wraca po sprzedaży całości, bo bot zamyka puste konta)."""
+        (wraca po sprzedaży całości, bo bot zamyka puste konta). Zwraca (ilość, wynik) NAPRAWDĘ wykonane:
+        sprzedaż nie może przekroczyć tego, co masz – dwie sprzedaże tego samego tokena naraz (trader sprzedaje
+        w dwóch transakcjach) liczyły się wcześniej obie od pełnego stanu i dopisywały SOL za więcej tokenów."""
         uid, fee = u["tg_id"], self.paper_fee(u)
         held = self.paper(uid).get(mint, 0)
         if side == "buy":
             rent = ATA_RENT if held <= 0 else 0
             self.paper_apply(uid, {SOL_MINT: -(amount_raw + fee + rent), mint: out_raw})
-        else:
-            refund = ATA_RENT - BASE_FEE if amount_raw >= held else 0
-            self.paper_apply(uid, {mint: -amount_raw, SOL_MINT: out_raw - fee + refund})
+            return amount_raw, out_raw
+        amount_raw, out_raw = clamp_sell(amount_raw, out_raw, held)
+        refund = ATA_RENT - BASE_FEE if amount_raw >= held else 0
+        self.paper_apply(uid, {mint: -amount_raw, SOL_MINT: out_raw - fee + refund})
+        return amount_raw, out_raw
 
     def record(self, tg_id, leader_id, leader_sig, side, mint, sol, tokens, status, info, paper, sig=None, lat=None,
                pnl=None):
@@ -737,11 +751,13 @@ class SolEngine:
         if not self.is_live(u):
             lat = int((time.monotonic() - t0) * 1000)
             if u["tg_id"] > 0:
-                self.paper_trade(u, side, mint, amount_raw, out)
+                amount_raw, out = self.paper_trade(u, side, mint, amount_raw, out)
             elif side == "buy":
                 self.paper_apply(u["tg_id"], {SOL_MINT: -(amount_raw + PAPER_TX_FEE), mint: out})
             else:
+                amount_raw, out = clamp_sell(amount_raw, out, self.paper(u["tg_id"]).get(mint, 0))
                 self.paper_apply(u["tg_id"], {mint: -amount_raw, SOL_MINT: out - PAPER_TX_FEE})
+            sol_raw, tok_raw = (amount_raw, out) if side == "buy" else (out, amount_raw)
             return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, lat)
         pub, kp = self.wallet(u["tg_id"])
         self._fresh(t_recv, side)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
@@ -796,7 +812,7 @@ class SolEngine:
             sym, dec = self.cached_token(mint) or await self.token_info(mint)
             out = int(raw / 10 ** dec * px[mint] / sol_usd * LAMPORTS * 0.98)
             basis = self.cost_basis(uid, mint, True)
-            self.paper_trade(u, "sell", mint, raw, out)
+            raw, out = self.paper_trade(u, "sell", mint, raw, out)
             fill = self.sell_pnl(basis, Fill(out / LAMPORTS, raw / 10 ** dec, None, 0, note="po cenie rynkowej"))
             self.record(uid, None, None, "sell", mint, fill.sol, fill.tokens, "filled",
                         "ćwiczenia: zamknięte po cenie rynkowej (token bez trasy wymiany)", True, pnl=fill.pnl)
@@ -958,7 +974,7 @@ class SolEngine:
             sol_raw, tok_raw = amount_raw, got
         else:
             out = int(amount_raw * per * 0.98)
-            self.paper_trade(u, side, mint, amount_raw, out)
+            amount_raw, out = self.paper_trade(u, side, mint, amount_raw, out)
             sol_raw, tok_raw = out, amount_raw
         return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, None, int((time.monotonic() - t0) * 1000),
                     note="po cenie tradera")

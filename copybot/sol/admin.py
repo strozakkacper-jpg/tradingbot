@@ -418,6 +418,14 @@ def diagnostics(s) -> list[dict]:
         d["equity"] = round(eq[-1][1], 4) if eq else None
         d["equity_7d_ago"] = round(eq[0][1], 4) if eq else None
         d["open_positions"] = s.sol.open_positions(uid, paper)
+        # ćwiczenia: ile SOL dopisała podwójna sprzedaż (sprzedane więcej tokenów, niż kupione) – błąd do 19.11
+        over = s.db._q("""SELECT SUM(CASE WHEN sold > bought AND sold > 0 THEN sol_out * (sold - bought) / sold ELSE 0 END) x
+                          FROM (SELECT mint, SUM(CASE WHEN side = 'buy' THEN tokens ELSE 0 END) bought,
+                                       SUM(CASE WHEN side = 'sell' THEN tokens ELSE 0 END) sold,
+                                       SUM(CASE WHEN side = 'sell' THEN sol ELSE 0 END) sol_out
+                                FROM sol_trades WHERE tg_id = ? AND paper = 1 AND status = 'filled' GROUP BY mint)""",
+                       (uid,))[0]["x"]
+        d["paper_oversold_sol"] = round(over or 0, 4)
         reasons = s.db._q("""SELECT info, COUNT(*) n FROM sol_trades WHERE tg_id = ? AND status != 'filled' AND ts >= ?
                              GROUP BY substr(info, 1, 40) ORDER BY n DESC LIMIT 4""", (uid, now - 3 * DAY_MS))
         d["skips3d"] = [[(r["info"] or "")[:50], r["n"]] for r in reasons]
