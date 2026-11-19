@@ -35,7 +35,7 @@ SETTINGS = {
     "sol_turbo": (bool, None, None),
     "sol_min_buy": (float, 0, 10), "sol_max_pos": (int, 0, 100), "sol_streak": (int, 0, 20),
     "sol_max_mcap": (float, 0, 1e10), "sol_min_age": (float, 0, 100000), "sol_max_age": (float, 0, 100000),
-    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None), "sol_autopilot": (bool, None, None), "sol_risk": (float, 0, 1),
+    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None), "sol_autopilot": (bool, None, None), "sol_risk": (float, 0, 1), "sol_max_adds": (int, 0, 100),
     "sol_report": (bool, None, None),
 }
 

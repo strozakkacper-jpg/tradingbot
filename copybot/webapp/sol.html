@@ -887,6 +887,8 @@ function settings() {
     <div class="mut tiny" style="margin:2px 0 8px">Mniejszych kopii bot nie robi – kupno i sprzedaż kosztują ok. ${fSol(2 * (5000 + st.sol_priority) / 1e9)} opłat, więc przy groszowych zakupach opłaty zjadają zysk.</div>
     ${slider('maxpos', 'Maks. otwartych pozycji naraz', {min: 1, max: 40, round: R.int, fmt: v => v + ' tokenów', off: 'bez limitu', save: v => setS('sol_max_pos', v)}, st.sol_max_pos)}
     <div class="mut tiny" style="margin:2px 0 8px">Gdy tyle tokenów już trzymasz, nowych nie kupuje, dopóki coś się nie sprzeda. Chroni przed wydaniem wszystkiego naraz.</div>
+    <div class="b" style="margin-top:14px">🧺 Maks. zakupów jednego tokena (24 h)</div><div class="mut tiny" style="margin-bottom:8px">Niektórzy traderzy dokupują ten sam token dziesiątki razy. Bez limitu pakujesz w jeden token coraz więcej – a gdy spadnie, strata jest ogromna.</div>
+    ${chips('sol_max_adds', [0, 2, 3, 5, 10], v => v ? 'maks. ' + v + '×' : 'bez limitu', st.sol_max_adds)}
     <div class="b" style="margin-top:14px">☕ Przerwa po serii strat</div><div class="mut tiny" style="margin-bottom:8px">Po tylu sprzedażach ze stratą z rzędu bot przestaje kupować na 30 min (sprzedaje dalej). Zła passa często trwa chwilę.</div>
     ${chips('sol_streak', [0, 3, 5, 8], v => v ? 'po ' + v + ' stratach' : 'wył.', st.sol_streak)}
     ${slider('max', 'Maks. na jeden zakup', {min: 0.001, max: 20, log: true, round: R.sol, fmt: fSol, off: 'bez limitu', save: v => setS('sol_max', v)}, st.sol_max)}
@@ -977,7 +979,7 @@ function secSummary(title) {
     if (st.sol_min_hold) f.push('bez flipperów < ' + fSec(st.sol_min_hold));
     return f.join(' · ') || 'bez filtrów – kopiuje wszystko';
   }
-  if (title.includes('Bezpieczniki')) return `maks. ${st.sol_max ? st.sol_max + ' SOL' : 'bez limitu'} na zakup · limit dnia ${st.sol_day_limit ? st.sol_day_limit + ' SOL' : 'wył.'}${st.sol_max_pos ? ' · do ' + st.sol_max_pos + ' pozycji' : ''}${st.sol_safe ? ' · 🛡 pułapki' : ''}${st.sol_streak ? ' · ☕ po ' + st.sol_streak + ' stratach' : ''}`;
+  if (title.includes('Bezpieczniki')) return `maks. ${st.sol_max ? st.sol_max + ' SOL' : 'bez limitu'} na zakup · limit dnia ${st.sol_day_limit ? st.sol_day_limit + ' SOL' : 'wył.'}${st.sol_max_pos ? ' · do ' + st.sol_max_pos + ' pozycji' : ''}${st.sol_safe ? ' · 🛡 pułapki' : ''}${st.sol_streak ? ' · ☕ po ' + st.sol_streak + ' stratach' : ''}${st.sol_max_adds ? ' · 🧺 maks. ' + st.sol_max_adds + '× token' : ''}`;
   if (title.includes('Automatyczna')) {
     if (st.sol_x2) f.push('zwrot wkładu ×2');
     if (st.sol_tp) f.push('zysk +' + st.sol_tp + '%');

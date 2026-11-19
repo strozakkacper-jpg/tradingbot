@@ -609,6 +609,14 @@ class SolEngine:
                 raise Skip(f"mały zakup tradera ({his:.3g} SOL, Twój próg {u['sol_min_lead']:g} SOL)")
         if not allow_add and "sol_no_add" in keys and u["sol_no_add"] and await self.token_raw(u, sw.mint) > 0:
             raise Skip("masz już ten token – nie dokupuję (opcja „Nie dokupuj”)")
+        adds = u["sol_max_adds"] if "sol_max_adds" in keys else 0
+        if adds and adds > 0:
+            n = self.db._q("""SELECT COUNT(*) n FROM sol_trades WHERE tg_id = ? AND mint = ? AND side = 'buy'
+                              AND status = 'filled' AND paper = ? AND ts >= ?""",
+                           (u["tg_id"], sw.mint, int(not self.is_live(u)), now_ms() - 24 * 3600 * 1000))[0]["n"]
+            if n >= adds:
+                raise Skip(f"🛡 ten token kupiłeś już {n}× w 24 h (Twój limit {adds}) – trader dokupuje, "
+                           "a Ty nie pakujesz w jeden token coraz więcej")
         limit = u["sol_day_limit"] if "sol_day_limit" in keys else 0
         if limit and limit > 0:
             pnl = self.day_pnl(u["tg_id"], not self.is_live(u))

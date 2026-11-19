@@ -1515,3 +1515,14 @@ def test_paper_double_sell_does_not_mint_sol(tmp_path):
     from copybot.sol.engine import Skip
     with pytest.raises(Skip):
         s.sol.paper_trade(u, "sell", TOKEN, 100, 10_000_000)
+
+
+def test_max_buys_per_token(tmp_path):
+    s, _, sent = ready(tmp_path)
+    _two_leaders(s)
+    s.db.update_user(OWNER, sol_max_adds=2, sol_no_add=0, sol_min_buy=0)
+    r1 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "a1"), time.monotonic()))
+    r2 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "a2"), time.monotonic()))
+    r3 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "a3"), time.monotonic()))
+    assert r1["filled"] == 1 and r2["filled"] == 1 and r3.get("skipped") == 1
+    assert "kupiłeś już 2×" in s.sol.history(OWNER)[0]["info"]

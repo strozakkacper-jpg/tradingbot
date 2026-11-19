@@ -30,7 +30,7 @@ SIZING_KEYS = ("sol_buy_mode", "sol_pct", "sol_buy", "sol_max", "sol_min_buy", "
                "sol_priority")
 # 🛡 Bezpieczniki – ustawia je tylko człowiek. Automaty (✨ Ustaw za mnie, 🤖 Auto, 🚀 Autopilot) ich nie zmieniają,
 # najwyżej podpowiadają wartości pasujące do salda.
-SAFETY_KEYS = ("sol_safe", "sol_min_buy", "sol_max_pos", "sol_streak", "sol_max", "sol_day_limit")
+SAFETY_KEYS = ("sol_safe", "sol_min_buy", "sol_max_pos", "sol_streak", "sol_max", "sol_day_limit", "sol_max_adds")
 RISK_KEYS = ("sol_buy_mode", "sol_pct", "sol_buy", "sol_mult")
 
 # 🔥 poziomy ryzyka: ułamek tego, co trader wkłada ze swojego salda (1 = dokładnie jak on, all-in gdy on all-in)
