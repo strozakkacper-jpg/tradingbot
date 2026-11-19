@@ -1569,3 +1569,22 @@ def test_ladder_chase_reserve(tmp_path):
     bal = asyncio.run(s.sol.sol_lamports(u))
     amt = asyncio.run(s.sol.buy_amount(u, dataclasses.replace(swap("buy", 1.0, "r1"))))
     assert amt < bal * 0.15
+
+
+def test_reports_api(tmp_path):
+    from copybot.sol import extras as EX
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    EX.save_report(s, OWNER, "sesja", "📊 <b>Raport sesji</b>\nWynik: <b>+0.5 SOL</b>")
+
+    async def steps(call):
+        st, j = await call(OWNER, "/api/sol/reports")
+        assert st == 200 and j["items"][0]["kind"] == "sesja"
+        rid = j["items"][0]["id"]
+        st, j = await call(OWNER, f"/api/sol/reports?id={rid}")
+        assert st == 200 and "Raport sesji" in j["html"]
+        st, j = await call(FRIEND, f"/api/sol/reports?id={rid}")
+        assert st == 400  # cudzego raportu nie widać
+        st, j = await call(OWNER, "/api/sol/reports?day=zle")
+        assert st == 400
+    run(s, steps)

@@ -6,6 +6,7 @@ Odpowiedzi to czyste dane (JSON); wygląd robi copybot/webapp/sol.html.
 import asyncio
 import html
 import json
+import re
 import logging
 
 from aiohttp import web
@@ -1037,6 +1038,20 @@ def routes(s, app: web.Application, auth):
         from . import session
         return {"html": await session.build(s, s.db.get_user(u["tg_id"]))}
 
+    async def h_reports(req, u):
+        """📑 10 ostatnich raportów (lista) albo jeden raport (?id= / ?day=RRRR-MM-DD)."""
+        from . import extras as EX
+        uu = s.db.get_user(u["tg_id"])
+        rid, day = req.query.get("id"), req.query.get("day")
+        if rid or day:
+            if day and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+                raise ApiError("Zła data")
+            text = EX.report_text(s, uu, rid=int(rid) if rid and rid.isdigit() else None, day=day)
+            if not text:
+                raise ApiError("Nie znalazłem tego raportu")
+            return {"html": text}
+        return {"items": EX.report_list(s, uu)}
+
     async def h_deposit(_, u):
         pub, _ = s.sol.wallet(u["tg_id"])
         try:
@@ -1123,6 +1138,7 @@ def routes(s, app: web.Application, auth):
     r.add_get("/api/sol/token/{mint}", handler(h_token))
     r.add_get("/api/sol/trending", handler(h_trending))
     r.add_get("/api/sol/report", handler(h_report))
+    r.add_get("/api/sol/reports", handler(h_reports))
     r.add_get("/api/sol/deposit", handler(h_deposit))
     r.add_post("/api/sol/action", handler(h_action))
     r.add_get("/api/sol/saved", handler(h_saved))
