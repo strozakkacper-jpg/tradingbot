@@ -865,7 +865,9 @@ function settings() {
   </div>
   <h2>🎯 Co kopiować</h2>
   <div class="card">
-    <div class="row"><div class="sp"><div class="b">Nie dokupuj</div><div class="mut tiny">Kopiuj tylko pierwszy zakup tokena. Gdy trader dokupuje po trochu (np. po 0,1 SOL), Ty nie wydajesz za każdym razem pełnej kwoty.</div></div>${tgl('sol_no_add', st.sol_no_add)}</div>
+    <div class="b">🏃 Nie goń ceny</div><div class="mut tiny" style="margin-bottom:8px">Gdy Twoja cena byłaby o tyle wyższa niż cena, po której kupił trader – bot pomija zakup. Takie spóźnione wejścia najczęściej kończą się stratą.</div>
+    ${chips('sol_chase', [0, 15, 30, 50], v => v ? 'maks. +' + v + '%' : 'wył.', st.sol_chase)}
+    <div class="row" style="margin-top:14px"><div class="sp"><div class="b">Nie dokupuj</div><div class="mut tiny">Kopiuj tylko pierwszy zakup tokena. Gdy trader dokupuje po trochu (np. po 0,1 SOL), Ty nie wydajesz za każdym razem pełnej kwoty.</div></div>${tgl('sol_no_add', st.sol_no_add)}</div>
     ${slider('minlead', 'Pomijaj małe zakupy tradera', {min: 0.01, max: 20, log: true, round: R.sol, fmt: v => 'poniżej ' + fSol(v), off: 'wył.', save: v => setS('sol_min_lead', v)}, st.sol_min_lead)}
     <div class="mut tiny" style="margin:2px 0 8px">Np. 0,5 SOL: gdy trader kupi tylko za 0,2 SOL (test, drobne dokupienie), bot to pominie.</div>
     ${chips('sol_min_lead', [0, 0.2, 0.5, 1, 2], v => v ? '< ' + v + ' SOL' : 'wył.', st.sol_min_lead)}
@@ -887,6 +889,8 @@ function settings() {
     <div class="mut tiny" style="margin:2px 0 8px">Mniejszych kopii bot nie robi – kupno i sprzedaż kosztują ok. ${fSol(2 * (5000 + st.sol_priority) / 1e9)} opłat, więc przy groszowych zakupach opłaty zjadają zysk.</div>
     ${slider('maxpos', 'Maks. otwartych pozycji naraz', {min: 1, max: 40, round: R.int, fmt: v => v + ' tokenów', off: 'bez limitu', save: v => setS('sol_max_pos', v)}, st.sol_max_pos)}
     <div class="mut tiny" style="margin:2px 0 8px">Gdy tyle tokenów już trzymasz, nowych nie kupuje, dopóki coś się nie sprzeda. Chroni przed wydaniem wszystkiego naraz.</div>
+    <div class="b" style="margin-top:14px">💰 Rezerwa wolnego SOL</div><div class="mut tiny" style="margin-bottom:8px">Tyle % kapitału zawsze zostaje wolne – bot nigdy nie wchodzi wszystkim naraz, a na dobrą okazję zawsze są pieniądze.</div>
+    ${chips('sol_reserve_pct', [0, 15, 25, 40], v => v ? v + '%' : 'wył.', st.sol_reserve_pct)}
     <div class="b" style="margin-top:14px">🧺 Maks. zakupów jednego tokena (24 h)</div><div class="mut tiny" style="margin-bottom:8px">Niektórzy traderzy dokupują ten sam token dziesiątki razy. Bez limitu pakujesz w jeden token coraz więcej – a gdy spadnie, strata jest ogromna.</div>
     ${chips('sol_max_adds', [0, 2, 3, 5, 10], v => v ? 'maks. ' + v + '×' : 'bez limitu', st.sol_max_adds)}
     <div class="b" style="margin-top:14px">☕ Przerwa po serii strat</div><div class="mut tiny" style="margin-bottom:8px">Po tylu sprzedażach ze stratą z rzędu bot przestaje kupować na 30 min (sprzedaje dalej). Zła passa często trwa chwilę.</div>
@@ -910,6 +914,7 @@ function settings() {
     ${slider('texit', '⏰ Wyjście po czasie (bez ruchu)', {min: 10, max: 1440, log: true, round: v => Math.round(v / 5) * 5, fmt: v => v < 60 ? v + ' min' : (v / 60).toFixed(1) + ' h', off: 'wył.', save: v => setS('sol_time_exit', v)}, st.sol_time_exit)}
     <div class="mut tiny" style="margin:2px 0 8px">Gdy token tyle czasu stoi w miejscu (±15%) i nikt nic nie robi, bot sprzedaje i odzyskuje SOL na nowe okazje. Martwe memecoiny zwykle powoli spadają.</div>
     ${chips('sol_time_exit', [0, 60, 120, 360], v => v ? (v < 60 ? v + ' min' : v / 60 + ' h') : 'wył.', st.sol_time_exit)}
+    <div class="row" style="margin-top:14px"><div class="sp"><div class="b">🚀 Drabinka zysku (moonshoty)</div><div class="mut tiny">Gdy token urośnie ×5, ×10 i ×25 – bot za każdym razem sprzedaje 25% pozycji. Zysk z rakiety ląduje w SOL, zanim rynek go odda; reszta leci dalej z ruchomym stopem. Tak jak ręczna sprzedaż na szczycie – tylko sama, także w nocy.</div></div>${tgl('sol_ladder', st.sol_ladder)}</div>
     <div class="row" style="margin-top:14px"><div class="sp"><div class="b">🏃 Sprzedaj, gdy twórca ucieka</div><div class="mut tiny">Jeśli twórca tokena wyprzeda większość swoich tokenów (sprawdzane co 3 min), bot sprzedaje od razu – nie czekając na tradera.</div></div>${tgl('sol_dev_exit', st.sol_dev_exit)}</div>
   </div>
   <h2>🎚 Tolerancja ceny</h2>

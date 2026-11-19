@@ -711,6 +711,19 @@ class SolEngine:
         if why and want < MIN_BUY and not (floor0 and want >= floor0 * LAMPORTS * 0.3):
             raise Skip(why)
         want = min(want, bal - reserve)
+        rpct = u["sol_reserve_pct"] if "sol_reserve_pct" in keys else 0
+        if rpct and rpct > 0:
+            # 🛡 rezerwa: tyle % kapitału (wolny SOL + koszt otwartych pozycji) zawsze zostaje wolne
+            paper = not self.is_live(u)
+            locked = self.db._q("""SELECT COALESCE(SUM(c), 0) c FROM (SELECT SUM(CASE WHEN side = 'buy' THEN sol ELSE 0 END)
+                                   * MAX(1 - SUM(CASE WHEN side = 'sell' THEN tokens ELSE 0 END)
+                                   / NULLIF(SUM(CASE WHEN side = 'buy' THEN tokens ELSE 0 END), 0), 0) c
+                                   FROM sol_trades WHERE tg_id = ? AND paper = ? AND status = 'filled' GROUP BY mint)""",
+                                (u["tg_id"], int(paper)))[0]["c"] or 0
+            keep = int((bal / LAMPORTS + locked) * rpct / 100 * LAMPORTS)
+            want = min(want, bal - keep)
+            if want < MIN_BUY:
+                raise Skip(f"🛡 rezerwa {rpct:g}% kapitału zostaje wolna – na ten zakup już nie starcza")
         if want < MIN_BUY:
             raise Skip(f"za mało SOL na koncie (masz {bal / LAMPORTS:.4f} SOL)")
         floor = u["sol_min_buy"] if "sol_min_buy" in u.keys() else 0
@@ -755,6 +768,13 @@ class SolEngine:
                     return await self._live_pumpportal(u, side, mint, amount_raw, t0, t_recv, decimals)
                 raise Skip(f"brak trasy wymiany – Jupiter jeszcze nie obsługuje tego tokena ({e})") from e
         out = int(quote["outAmount"])
+        chase = u["sol_chase"] if "sol_chase" in u.keys() else 0
+        if side == "buy" and chase and fallback is not None and out > 0 and u["tg_id"] > 0:
+            his = await self._trader_price(fallback)  # lamporty za jednostkę tokena u tradera
+            mine = amount_raw / out
+            if his and mine > his * (1 + chase / 100):
+                raise Skip(f"🏃 cena uciekła: płaciłbyś o {(mine / his - 1) * 100:.0f}% drożej niż trader "
+                           f"(Twój limit {chase:g}%) – nie gonię ceny")
         sol_raw, tok_raw = (amount_raw, out) if side == "buy" else (out, amount_raw)
         if not self.is_live(u):
             lat = int((time.monotonic() - t0) * 1000)

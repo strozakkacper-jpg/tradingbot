@@ -855,6 +855,9 @@ async def conv_cancel(update: Update, ctx):
 
 # ---------------- auto take-profit / stop-loss ----------------
 
+LADDER = (5.0, 10.0, 25.0)  # 🚀 drabinka zysku: przy tych wielokrotnościach kosztu sprzedaje 25% pozycji
+
+
 async def tpsl_job(ctx):
     """Co minutę: auto-sprzedaż przy zysku/stracie oraz „zwrot wkładu” (połowa pozycji przy x2)."""
     s = ctx.application.bot_data["svc"]
@@ -862,7 +865,7 @@ async def tpsl_job(ctx):
         return
     users = s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id "
                     "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0 OR u.sol_x2 > 0 OR u.sol_trail > 0 "
-                    "OR u.sol_time_exit > 0 OR u.sol_dev_exit > 0)")
+                    "OR u.sol_time_exit > 0 OR u.sol_dev_exit > 0 OR u.sol_ladder > 0)")
     for u in users:
         try:
             pf = await portfolio(s, u)
@@ -876,11 +879,13 @@ async def tpsl_job(ctx):
             # ale dopiero gdy token był już ×2 (z „zwrotem wkładu”) albo ×1,5 – wcześniej to zwykłe wahania memecoina
             ratio, trail_hit = 1 + pnl / 100, False
             pkey = f"peak:{u['tg_id']}:{pos['mint']}"
-            if u["sol_trail"]:
+            ladder = u["sol_ladder"] if "sol_ladder" in u.keys() else 0
+            if u["sol_trail"] or ladder:
                 peak = max(float(s.db.get_state(pkey) or 0), ratio)
                 s.db.set_state(pkey, f"{peak:.4f}")
                 arm = 2.0 if u["sol_x2"] else 1.5  # wcześniej memecoin zwykle po prostu się waha
-                trail_hit = peak >= arm and ratio <= peak * (1 - u["sol_trail"] / 100)
+                trail = u["sol_trail"] or 40  # drabinka bez ustawionego stopu – reszta i tak z ruchomym stopem 40%
+                trail_hit = peak >= arm and ratio <= peak * (1 - trail / 100) and (u["sol_trail"] or peak >= 5)
             # wyjście po czasie: token od X min bez ruchu (ani kupna, ani sprzedaży) i stoi w miejscu (±15%)
             time_hit = False
             if u["sol_time_exit"] and -15 < pnl < 15:
@@ -902,6 +907,11 @@ async def tpsl_job(ctx):
                     now_dev = ((info or {}).get("audit") or {}).get("devBalancePercentage")
                     if now_dev is not None and now_dev < start_dev * 0.3:
                         dev_hit = (start_dev, now_dev)
+            step = None
+            if ladder and not dev_hit:
+                lkey = f"lad:{u['tg_id']}:{pos['mint']}"
+                done = float(s.db.get_state(lkey) or 0)
+                step = next((m for m in LADDER if ratio >= m and done < m), None)
             hit = ("🎯 <b>TAKE-PROFIT</b> – zysk osiągnięty" if u["sol_tp"] and pnl >= u["sol_tp"] else
                    f"🏃 <b>TWÓRCA UCIEKA</b> – miał {dev_hit[0]:.1f}% tokenów, teraz {dev_hit[1]:.1f}%" if dev_hit else
                    "🛑 <b>STOP-LOSS</b> – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else
@@ -914,8 +924,19 @@ async def tpsl_job(ctx):
                 if hit:
                     fill = await s.sol.sell_manual(u, pos["mint"], 100)
                     s.db.set_state(pkey, "0")
+                    s.db.set_state(f"lad:{u['tg_id']}:{pos['mint']}", "0")
                     await s.sol.say(u, "auto", f"{hit} · {sym}\nBot sprzedał wszystko za <b>{fill.sol:.4f} SOL</b>"
                                                f"{await s.sol.usd_txt(fill.sol)}{s.sol.pnl_line(fill)}",
+                                    [[("📊 Token", f"tkn:{pos['mint']}")]])
+                elif step:
+                    # 🚀 drabinka zysku: przy ×5 / ×10 / ×25 sprzedaje 25% tego, co zostało – zysk z moonshota
+                    # ląduje w SOL, zanim trader (albo rynek) go odda; reszta jedzie dalej z ruchomym stopem
+                    s.db.set_state(f"lad:{u['tg_id']}:{pos['mint']}", str(max(m for m in LADDER if ratio >= m)))
+                    fill = await s.sol.sell_manual(u, pos["mint"], 25)
+                    await s.sol.say(u, "auto", f"🚀 <b>DRABINKA ZYSKU</b> · {sym} urósł ×{ratio:.1f}\n"
+                                               f"Bot sprzedał 25% za <b>{fill.sol:.4f} SOL</b>"
+                                               f"{await s.sol.usd_txt(fill.sol)}{s.sol.pnl_line(fill)}\n"
+                                               "Reszta gra dalej – sprzeda ją ruchomy stop albo trader.",
                                     [[("📊 Token", f"tkn:{pos['mint']}")]])
                 elif u["sol_x2"] and pnl >= 100:
                     key = f"x2:{u['tg_id']}:{pos['mint']}"

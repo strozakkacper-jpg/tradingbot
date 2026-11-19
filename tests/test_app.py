@@ -1526,3 +1526,46 @@ def test_max_buys_per_token(tmp_path):
     r3 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "a3"), time.monotonic()))
     assert r1["filled"] == 1 and r2["filled"] == 1 and r3.get("skipped") == 1
     assert "kupiłeś już 2×" in s.sol.history(OWNER)[0]["info"]
+
+
+def test_ladder_chase_reserve(tmp_path):
+    import dataclasses
+    import pytest
+    from copybot.sol.engine import Skip
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    asyncio.run(AX.buy(s, s.db.get_user(OWNER), TOKEN, 0.5))  # 500 mln jednostek
+    s.db.update_user(OWNER, sol_ladder=1, sol_x2=0, sol_trail=0, sol_sl=0, sol_tp=0, sol_time_exit=0, sol_dev_exit=0)
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    s.sol.jup.token_usd = 0.6  # ×6 → 25%
+    asyncio.run(AX.tpsl_job(jctx))
+    assert s.sol.paper(OWNER)[TOKEN] == 375_000_000 and any("DRABINKA ZYSKU" in t for _, t in sent)
+    asyncio.run(AX.tpsl_job(jctx))
+    assert s.sol.paper(OWNER)[TOKEN] == 375_000_000  # ten sam szczebel drugi raz – nic
+    s.sol.jup.token_usd = 1.2  # ×12 → kolejne 25% reszty
+    asyncio.run(AX.tpsl_job(jctx))
+    assert s.sol.paper(OWNER)[TOKEN] == 281_250_000
+    s.sol.jup.token_usd = 0.6  # spadek o 50% od szczytu ×12 → ruchomy stop sprzedaje resztę
+    asyncio.run(AX.tpsl_job(jctx))
+    assert s.sol.paper(OWNER).get(TOKEN, 0) == 0 and any("RUCHOMY STOP" in t for _, t in sent)
+    # nie goń ceny: trader płacił 1 SOL / 1000 tokenów, a wycena daje dwa razy mniej tokenów (+100%)
+    s.db.update_user(OWNER, sol_chase=30)
+    u = s.db.get_user(OWNER)
+    orig = s.sol.jup.quote
+
+    async def pricey(i, o, amount, slip, **kw):
+        q = await orig(i, o, amount, slip, **kw)
+        return {"outAmount": str(int(q["outAmount"]) // 2)}
+    s.sol.jup.quote = pricey
+    # cena tradera zgodna z testowym Jupiterem: 1 SOL = 1e9 jednostek (1 lamport za jednostkę)
+    his = dataclasses.replace(swap("buy", 1.0, "c1"), token_raw=1_000_000_000)
+    with pytest.raises(Skip, match="cena uciekła"):
+        asyncio.run(s.sol.execute(u, "buy", TOKEN, 50_000_000, decimals=6, fallback=his))
+    s.sol.jup.quote = orig
+    asyncio.run(s.sol.execute(u, "buy", TOKEN, 50_000_000, decimals=6, fallback=his))
+    # rezerwa: przy 90% rezerwy prawie nic nie zostaje na zakup
+    s.db.update_user(OWNER, sol_reserve_pct=90, sol_buy_mode="fixed", sol_buy=3, sol_max=0, sol_min_buy=0)
+    u = s.db.get_user(OWNER)
+    bal = asyncio.run(s.sol.sol_lamports(u))
+    amt = asyncio.run(s.sol.buy_amount(u, dataclasses.replace(swap("buy", 1.0, "r1"))))
+    assert amt < bal * 0.15

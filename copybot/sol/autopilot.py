@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 DAY_MS = 24 * 3600 * 1000
 COMBO = "score,active,green"
 PROFIT_SETTINGS = {"sol_time_exit": 90, "sol_dev_exit": 1, "sol_smart": 1, "sol_auto_rank": 0, "sol_autocfg": 1,
-                   "sol_x2": 1, "sol_trail": 40, "sol_min_hold": 30, "sol_min_lead": 0}  # 🛡 bezpieczników nie rusza
+                   "sol_x2": 1, "sol_trail": 40, "sol_min_hold": 30, "sol_min_lead": 0, "sol_ladder": 1, "sol_chase": 30}  # 🛡 bezpieczników nie rusza
 
 
 def target_count(balance: float) -> int:
@@ -241,3 +241,21 @@ async def demo_unstick_once(ctx):
                                 "nie dałoby się kupić na prawdziwych SOL.")
         except Exception:  # noqa: BLE001
             log.exception("Ćwiczenia – zamykanie tokenów bez trasy %s", u["tg_id"])
+
+
+async def profit_v2_once(ctx):
+    """Jednorazowo: konta z autopilotem dostają drabinkę zysku i „nie goń ceny” (strategia, nie bezpieczniki)."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("profit_v2"):
+        return
+    s.db.set_state("profit_v2", str(now_ms()))
+    for u in s.db._q("SELECT * FROM users WHERE approved = 1 AND sol_autopilot = 1"):
+        try:
+            s.db.update_user(u["tg_id"], sol_ladder=1, sol_chase=30)
+            await s.sol.say(u, "auto", "🚀 <b>AUTOPILOT – NOWE</b>\n"
+                            "• <b>Drabinka zysku:</b> przy ×5, ×10 i ×25 bot sam sprzedaje po 25% pozycji – zysk z "
+                            "rakiety ląduje w SOL, reszta leci dalej z ruchomym stopem.\n"
+                            "• <b>Nie goń ceny:</b> gdy kopia byłaby o 30%+ droższa niż wejście tradera – pomija.\n"
+                            "Zmienisz w ⚙️ Opcjach. 🛡 Bezpieczniki bez zmian.")
+        except Exception:  # noqa: BLE001
+            log.exception("Autopilot v2 %s", u["tg_id"])

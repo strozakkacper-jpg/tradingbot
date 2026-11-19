@@ -35,7 +35,8 @@ SETTINGS = {
     "sol_turbo": (bool, None, None),
     "sol_min_buy": (float, 0, 10), "sol_max_pos": (int, 0, 100), "sol_streak": (int, 0, 20),
     "sol_max_mcap": (float, 0, 1e10), "sol_min_age": (float, 0, 100000), "sol_max_age": (float, 0, 100000),
-    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None), "sol_autopilot": (bool, None, None), "sol_risk": (float, 0, 1), "sol_max_adds": (int, 0, 100),
+    "sol_time_exit": (float, 0, 100000), "sol_dev_exit": (bool, None, None), "sol_smart": (bool, None, None), "sol_autocfg": (bool, None, None), "sol_autopilot": (bool, None, None), "sol_risk": (float, 0, 1), "sol_max_adds": (int, 0, 100), "sol_ladder": (bool, None, None), "sol_chase": (float, 0, 500),
+    "sol_reserve_pct": (float, 0, 90),
     "sol_report": (bool, None, None),
 }
 
@@ -77,7 +78,7 @@ def recommended(balance: float, typical_buy: float = 1.0, live: bool = False) ->
             "sol_no_add": 0, "sol_min_lead": 0, "sol_min_hold": 20, "sol_safe": 1,
             "sol_x2": 1, "sol_tp": 0, "sol_sl": 60, "sol_trail": 40, "sol_slippage_bps": 2000,
             "sol_priority": tip, "sol_turbo": 1 if live else 0,
-            "sol_boost": 2, "sol_consensus": 0, "sol_auto_rank": 1}
+            "sol_boost": 2, "sol_consensus": 0, "sol_auto_rank": 1, "sol_ladder": 1, "sol_chase": 30}
 
 
 def typical_trader_buy(s, uid: int) -> float:
