@@ -103,22 +103,34 @@ async def post_init(app: Application):
     app.job_queue.run_repeating(mirror_job, interval=cfg.mirror_minutes * 60, first=90)
     app.job_queue.run_repeating(live_job, interval=cfg.live_seconds, first=20)
     if cfg.sol_enabled:
-        app.job_queue.run_repeating(axiom.tpsl_job, interval=60, first=45)
-        app.job_queue.run_repeating(axiom.sol_equity_job, interval=15 * 60, first=120)
-        app.job_queue.run_repeating(axiom.auto_rank_job, interval=6 * 3600, first=600)
         tz = ZoneInfo(cfg.timezone)
-        app.job_queue.run_repeating(sol_extras.health_job, interval=300, first=240)
-        app.job_queue.run_daily(sol_extras.backup_job, dt.time(4, 7, tzinfo=tz))
-        app.job_queue.run_daily(sol_extras.report_job, dt.time(21, 3, tzinfo=tz))
-        app.job_queue.run_daily(sol_extras.smart_job, dt.time(6, 11, tzinfo=tz))
-        app.job_queue.run_repeating(sol_leaderboard.leaderboard_job, interval=6 * 3600, first=600)
-        app.job_queue.run_repeating(sol_autocfg.autocfg_job, interval=30 * 60, first=180)
-        app.job_queue.run_once(sol_leaderboard.name_everyone_once, 60)
-        app.job_queue.run_once(sol_admin.diagnostics_job, 90)  # stan każdego konta do logów (ocena po wdrożeniu)
-        app.job_queue.run_once(sol_autopilot.best_settings_once, 150)
-        app.job_queue.run_once(sol_autopilot.demo_unstick_once, 200)
-        app.job_queue.run_once(sol_autopilot.profit_v2_once, 230)
-        app.job_queue.run_repeating(sol_autopilot.autopilot_job, interval=30 * 60, first=1500)
+        # cykliczne zadania Solany: (zadanie, co ile sekund, pierwszy raz po … s od startu)
+        for job, every, first in (
+            (axiom.tpsl_job, 60, 45),                              # auto-sprzedaż: TP/SL, drabinka, ruchomy stop, czas
+            (sol_extras.health_job, 300, 240),                     # alerty o problemach (RPC, Jupiter, nasłuch)
+            (axiom.sol_equity_job, 15 * 60, 120),                  # punkt na wykresie wartości portfela
+            (sol_autocfg.autocfg_job, 30 * 60, 180),               # 🤖 Auto: kwoty pod saldo
+            (sol_autopilot.autopilot_job, 30 * 60, 1500),          # 🚀 autopilot: rotacja traderów (co ~6 h)
+            (axiom.auto_rank_job, 6 * 3600, 600),                  # automatyczna ocena listy (co 3 dni)
+            (sol_leaderboard.leaderboard_job, 6 * 3600, 600),      # ranking światowy i ranking bota
+        ):
+            app.job_queue.run_repeating(job, interval=every, first=first)
+        # codziennie o stałej porze (czas użytkowników)
+        for job, hour, minute in (
+            (sol_extras.backup_job, 4, 7),                         # kopia zapasowa bazy
+            (sol_extras.smart_job, 6, 11),                         # 🧠 inteligentne kwoty (gdy bez 🤖 Auto)
+            (sol_extras.report_job, 21, 3),                        # raport dnia / tygodnia (zapis do /raporty)
+        ):
+            app.job_queue.run_daily(job, dt.time(hour, minute, tzinfo=tz))
+        # jednorazowo po starcie – każde pilnuje się flagą w bazie, więc naprawdę wykona się tylko raz
+        for job, delay in (
+            (sol_leaderboard.name_everyone_once, 60),              # nazwy traderów wg rankingu
+            (sol_admin.diagnostics_job, 90),                       # stan każdego konta do logów (po każdym starcie)
+            (sol_autopilot.best_settings_once, 150),               # autopilot dla kont bez niego
+            (sol_autopilot.demo_unstick_once, 200),                # ćwiczenia: zamknięcie tokenów bez trasy
+            (sol_autopilot.profit_v2_once, 230),                   # drabinka zysku i „nie goń ceny”
+        ):
+            app.job_queue.run_once(job, delay)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
     if cfg.webapp_url:
         await app.bot.set_chat_menu_button(menu_button=MenuButtonWebApp("📱 Aplikacja", WebAppInfo(f"{cfg.webapp_url}/app")))

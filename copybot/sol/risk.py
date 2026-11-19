@@ -59,10 +59,6 @@ def risk(info: dict) -> tuple[str, list[str]]:
     return level, notes
 
 
-def is_risky(info: dict | None) -> bool:
-    return bool(info) and risk(info)[0].startswith("🔴")
-
-
 def trap_reason(info: dict | None) -> str | None:
     """Prawdziwa pułapka (powód) albo None. Świeży token z Pump.fun ma zawsze małą pulę i mało posiadaczy,
     a bonding curve trzyma większość podaży – to NIE są pułapki (a właśnie takie tokeny robią ×10).

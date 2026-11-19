@@ -4,7 +4,6 @@ Bierzemy tylko transakcje PODPISANE przez portfel (spam od innych się nie liczy
 (parse_swap). Ocena nagradza zysk i skuteczność, a karze flipperów (trzymają sekundy – kopia nie zdąży)
 i brak aktywności.
 """
-import asyncio
 import logging
 import statistics
 import time
@@ -150,17 +149,3 @@ def lb_score(a: dict, days: int) -> float:
     if a.get("partial"):
         s -= 5
     return round(s, 1)
-
-
-async def analyze_many(rpc, wallets: list[str], days: float = 3, pause: float = 0.3, progress=None) -> list[dict]:
-    out = []
-    for i, w in enumerate(wallets):
-        try:
-            out.append(await asyncio.wait_for(analyze_wallet(rpc, w, days), 90))
-        except Exception as e:  # noqa: BLE001
-            log.debug("Analiza %s: %s", w, e)
-        if progress:
-            progress(i + 1)
-        await asyncio.sleep(pause)
-    out.sort(key=lambda a: -a["score"])
-    return out

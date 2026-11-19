@@ -104,10 +104,6 @@ def fmt_tokens(x: float) -> str:
     return f"{x:,.0f}".replace(",", " ") if x >= 1000 else f"{x:.6g}"
 
 
-def tx_link(sig: str) -> str:
-    return f'<a href="https://solscan.io/tx/{sig}">Solscan</a>'
-
-
 class SolEngine:
     def __init__(self, cfg, db, vault, rpc: Rpc, jup: Jupiter, notify):
         self.cfg, self.db, self.vault, self.rpc, self.jup, self.notify = cfg, db, vault, rpc, jup, notify
@@ -371,14 +367,6 @@ class SolEngine:
         asyncio.create_task(self._reference(lead, sw))
         log.info("Solana %s: %s %s → %s", lead["name"], sw.side, symbol, dict(res))
         return res
-
-    @staticmethod
-    def _leader_line(name: str, sw: Swap, symbol: str, decimals: int) -> str:
-        verb = "kupił" if sw.side == "buy" else "sprzedał"
-        pct = (f" ({sw.fraction * 100:.0f}% {'swoich ' + sw.quote_symbol if sw.side == 'buy' else 'swoich tokenów'})"
-               if sw.fraction else "")
-        return (f"{name} {verb} {fmt_tokens(sw.token_raw / 10 ** decimals)} {symbol} "
-                f"za {sw.quote_amount:.4g} {sw.quote_symbol}{pct}")
 
     async def _copy(self, u, lead, sw: Swap, info_task, t_recv: float) -> str:
         live = self.is_live(u)

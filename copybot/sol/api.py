@@ -571,7 +571,7 @@ async def action(s, u, body: dict) -> dict:
         items = parse_wallets(str(body.get("text", "")))
         if not items:
             raise ApiError("Nie znalazłem żadnego adresu portfela w tym pliku")
-        new, upd = s.db.save_wallets(uid, items, "import")
+        new, _ = s.db.save_wallets(uid, items, "import")
         start_scan(s, uid)
         return {"msg": f"📥 Zapisano {len(items)} portfeli (nowe: {new}) – sprawdzam, kto jest aktywny. "
                        "Włącz 🟢 tych, których chcesz kopiować.", "count": len(items)}
