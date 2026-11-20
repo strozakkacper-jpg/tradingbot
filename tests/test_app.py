@@ -1795,3 +1795,19 @@ def test_raptor_fallback_pumpportal_down_and_trader_left(tmp_path):
     jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
     asyncio.run(AXm.tpsl_job(jctx))
     assert s.sol.paper(OWNER).get(TOKEN, 0) == 0 and any("TRADER WYSZEDŁ" in t for _, t in sent)
+
+
+def test_wikix_setup_once(tmp_path):
+    from copybot.sol import autopilot as AP
+    s, ctx, sent = ready(tmp_path)
+    s.db.ensure_user(AP.WIKIX, "wikix", 0.0, "USDT")
+    s.sol.wallet(AP.WIKIX)
+    bad = s.db.create_leader("🏆💰📈 Top 14 ocena+zysk+zwrot 30d DOBRY PO", "sol", AP.WIKIX, "active", wallet=WALLET)
+    s.db.follow(AP.WIKIX, bad, True)
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    asyncio.run(AP.wikix_setup_once(jctx))
+    u = s.db.get_user(AP.WIKIX)
+    assert u["sol_safe"] == 1 and u["sol_max_pos"] == 8 and u["sol_min_buy"] == 0.015 and u["sol_max"] == 0.12
+    assert u["sol_autopilot"] == 1 and u["sol_ladder"] == 1 and u["sol_risk"] == 0 and u["sol_reserve_pct"] == 20
+    assert not (s.db.follow_row(AP.WIKIX, bad) or {"copy": 0})["copy"]
+    assert s.db.get_state("wikix_setup_v1")

@@ -131,6 +131,7 @@ async def post_init(app: Application):
             (sol_autopilot.best_settings_once, 150),               # autopilot dla kont bez niego
             (sol_autopilot.demo_unstick_once, 200),                # ćwiczenia: zamknięcie tokenów bez trasy
             (sol_autopilot.profit_v2_once, 230),                   # drabinka zysku i „nie goń ceny”
+            (sol_autopilot.wikix_setup_once, 120),                 # ustawienia Wikixa pod saldo ~200 zł
         ):
             app.job_queue.run_once(job, delay)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))

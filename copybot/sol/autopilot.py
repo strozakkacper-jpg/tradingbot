@@ -259,3 +259,54 @@ async def profit_v2_once(ctx):
                             "Zmienisz w ⚙️ Opcjach. 🛡 Bezpieczniki bez zmian.")
         except Exception:  # noqa: BLE001
             log.exception("Autopilot v2 %s", u["tg_id"])
+
+
+WIKIX = 8576926628  # konto na prawdziwych SOL – ustawienia pod saldo ~200 zł na prośbę właściciela (20.11)
+WIKIX_SETUP = {
+    # 🛡 bezpieczniki pod ~0,75 SOL (200 zł)
+    "sol_safe": 1, "sol_min_buy": 0.015, "sol_max": 0.12, "sol_max_pos": 8, "sol_day_limit": 0.15, "sol_streak": 5,
+    "sol_max_adds": 3, "sol_reserve_pct": 20,
+    # strategia
+    "sol_risk": 0, "sol_buy_mode": "pct", "sol_sl": 50, "sol_tp": 0, "sol_turbo": 1, "sol_priority": 100_000,
+    "sol_slippage_bps": 1500, "sol_no_add": 0,
+}
+
+
+async def wikix_setup_once(ctx):
+    """Jednorazowo: najlepsze ustawienia dla Wikixa pod saldo ~200 zł (autopilot, 🤖 Auto, bezpieczniki)."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("wikix_setup_v1"):
+        return
+    u = s.db.get_user(WIKIX)
+    if not u:
+        return
+    s.db.set_state("wikix_setup_v1", str(now_ms()))
+    try:
+        from .api import saved_list, switch
+        from .axiom import portfolio
+        # trader kupujący zamrożone tokeny (FIONA, XMR) – wyłączony
+        dropped = []
+        for it in saved_list(s, WIKIX):
+            if it["status"] == "copy" and "DOBRY PO" in (it["name"] or ""):
+                switch(s, WIKIX, it["wallet"], False)
+                dropped.append(it["name"])
+        s.db.update_user(WIKIX, **WIKIX_SETUP)
+        bal = (await portfolio(s, s.db.get_user(WIKIX)))["total"] or 0
+        res = await enable(s, s.db.get_user(WIKIX), max(bal, 0.05))  # kwoty pod prawdziwe saldo – 🤖 Auto przeliczy po dopłacie
+        s.db.update_user(WIKIX, **WIKIX_SETUP)  # bezpieczniki i ryzyko zostają takie, jak wyżej
+        log.info("Wikix: ustawienia pod 200 zł – saldo %.4f SOL, traderzy +%d / -%d, wyłączony: %s",
+                 bal, len(res["on"]), len(res["off"]), dropped)
+        await s.sol.say(s.db.get_user(WIKIX), "auto",
+                        "⚙️ <b>NOWE USTAWIENIA</b> (ustawione przez admina pod saldo ok. 200 zł ≈ 0,75 SOL)\n"
+                        "🛡 <b>Bezpieczniki:</b> filtr pułapek włączony · min. zakup 0,015 SOL · maks. 0,12 SOL na zakup · "
+                        "do 8 pozycji · limit straty dnia 0,15 SOL · przerwa po 5 stratach · maks. 3 zakupy tokena · "
+                        "rezerwa 20%\n"
+                        "🚀 <b>Autopilot</b> dobiera 4 aktywnych traderów i co 6 h wycina tracących · 🤖 kwoty same "
+                        "dopasowują się do salda (po dopłacie przeliczą się same)\n"
+                        "📈 Drabinka zysku ×5/×10/×25 · zwrot wkładu ×2 · ruchomy stop 40% · stop-loss −50% · "
+                        "nie goń ceny > 30% · wyjście z martwych pozycji po 90 min\n"
+                        + (f"⚪ Wyłączony trader (kupował zamrożone tokeny): {html.escape(', '.join(dropped))}\n" if dropped else "")
+                        + html.escape(summary({**res, "kept": []}))
+                        + "\n\nWszystko zmienisz w ⚙️ Opcjach.")
+    except Exception:  # noqa: BLE001
+        log.exception("Wikix: ustawienia")
