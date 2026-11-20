@@ -236,6 +236,19 @@ h2:before{box-shadow:0 0 10px rgba(var(--accrgb),.8)}
 .th{border:2px solid transparent;border-radius:14px;padding:8px 2px 6px;text-align:center;font-size:11px;font-weight:700;cursor:pointer;background:var(--card2)}
 .th.on{border-color:var(--acc2)}
 .th .sw{height:30px;border-radius:9px;margin:0 6px 6px}
+/* odświeżanie przeciągnięciem w dół */
+html,body{overscroll-behavior-y:contain}
+#ptr{position:fixed;left:50%;top:0;z-index:60;width:40px;height:40px;margin-left:-20px;border-radius:50%;
+  display:flex;align-items:center;justify-content:center;background:var(--card,#151925);color:var(--text);
+  box-shadow:0 6px 20px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);transform:translateY(-60px);opacity:0;
+  pointer-events:none;font-size:18px}
+#ptr.anim{transition:transform .25s ease,opacity .25s ease}
+#ptr .ptrar{display:inline-block;transition:transform .15s ease}
+#ptr.ready .ptrar{transform:rotate(180deg)}
+#ptr.spin .ptrar{animation:ptrspin .8s linear infinite}
+@keyframes ptrspin{to{transform:rotate(360deg)}}
+#view.ptrpull{transition:none}
+#view.ptrback{transition:transform .25s ease}
 </style>
 </head>
 <body>
@@ -1787,6 +1800,58 @@ try {
   const c = localStorage.getItem('state_cache');
   if (c) { S = JSON.parse(c); LAST_JSON = ''; render(); }
 } catch (e) { S = null; }
+// ---------- odświeżanie przeciągnięciem w dół ----------
+async function refreshAll() {
+  LAST_JSON = '';
+  const jobs = [load()];
+  if (TAB === 'traders') jobs.push(TR_VIEW === 'lb' ? loadLB() : loadSaved());
+  if (TAB === 'tokens') jobs.push(loadTrend());
+  if (TAB === 'admin') jobs.push(loadAdmin(true));
+  if (TAB === 'chat') jobs.push(loadChat(true));
+  await Promise.allSettled(jobs);
+}
+(function pullToRefresh() {
+  const TH = 70, MAX = 120;
+  let y0 = null, x0 = 0, dy = 0, busy = false, el = null;
+  const ind = () => el || (el = Object.assign(document.createElement('div'), {id: 'ptr', innerHTML: '<span class="ptrar">↓</span>'}), document.body.appendChild(el), el);
+  const view = () => document.getElementById('view');
+  const blocked = t => SHEET || typing() || (t.closest && t.closest('input,textarea,select,.bigc,.seg,[data-noptr]'));
+  const set = (d, anim) => {
+    const i = ind(), v = view();
+    i.classList.toggle('anim', !!anim); i.classList.toggle('ready', d >= TH);
+    i.style.transform = `translateY(${Math.min(d, MAX) * 0.8 - 50}px)`; i.style.opacity = Math.min(d / TH, 1);
+    if (v) { v.classList.toggle('ptrback', !!anim); v.classList.toggle('ptrpull', !anim); v.style.transform = d > 0 ? `translateY(${Math.min(d, MAX) * 0.4}px)` : ''; }
+  };
+  document.addEventListener('touchstart', e => {
+    if (busy || e.touches.length !== 1 || window.scrollY > 0 || blocked(e.target)) { y0 = null; return; }
+    y0 = e.touches[0].clientY; x0 = e.touches[0].clientX; dy = 0;
+  }, {passive: true});
+  document.addEventListener('touchmove', e => {
+    if (y0 === null) return;
+    const ddy = e.touches[0].clientY - y0, ddx = Math.abs(e.touches[0].clientX - x0);
+    if (window.scrollY > 0 || (dy === 0 && ddx > Math.abs(ddy))) { y0 = null; set(0, true); return; }  // przewijanie w bok
+    const prev = dy;
+    dy = ddy > 0 ? ddy * 0.6 : 0;  // opór
+    if (dy > 0 && e.cancelable) e.preventDefault();
+    if (prev < TH && dy >= TH) haptic('light');
+    set(dy, false);
+  }, {passive: false});
+  document.addEventListener('touchend', async () => {
+    if (y0 === null) return;
+    y0 = null;
+    if (dy < TH) { dy = 0; return set(0, true); }
+    busy = true; dy = 0; haptic('medium');
+    const i = ind(); i.classList.add('spin'); i.classList.remove('ready');
+    i.querySelector(".ptrar").textContent = '⟳';
+    i.classList.add('anim'); i.style.transform = 'translateY(14px)'; i.style.opacity = 1;
+    const v = view(); if (v) { v.classList.add('ptrback'); v.style.transform = 'translateY(28px)'; }
+    try { await refreshAll(); toast('🔄 Odświeżono', 1200); } catch (e) {}
+    i.classList.remove('spin'); i.querySelector(".ptrar").textContent = '↓';
+    set(0, true); busy = false;
+  });
+  document.addEventListener('touchcancel', () => { if (y0 !== null) { y0 = null; dy = 0; set(0, true); } });
+})();
+
 load().then(liveLoop);
 // ceny i wartości zmieniają się bez zdarzeń – co 20 s ciche odświeżenie widocznej zakładki
 setInterval(() => {
