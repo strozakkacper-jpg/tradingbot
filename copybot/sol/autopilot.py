@@ -13,6 +13,7 @@ Uczciwie: to zwiększa szanse, nie gwarantuje zysku – rynek memecoinów potraf
 import html
 import logging
 import time
+from collections import Counter
 
 from ..db import now_ms, ref_id
 from . import autocfg, leaderboard as LB
@@ -28,33 +29,38 @@ def target_count(balance: float) -> int:
     return 3 if balance < 0.5 else 4 if balance < 1 else 5 if balance < 3 else 6 if balance < 10 else 8
 
 
-def candidates(s) -> list[dict]:
-    """Najlepsi do kopiowania – świat (a gdy brak kluczy: ranking bota), od najlepszego."""
+def candidates(s, why: Counter | None = None) -> list[dict]:
+    """Najlepsi do kopiowania – świat (a gdy brak kluczy: ranking bota), od najlepszego.
+    why – jeśli podany, zlicza powody odrzucenia (do logów)."""
+    why = why if why is not None else Counter()
     for kind in ("world", "chain"):
         rows = LB.top(s, 7, COMBO, kind=kind)
         if rows:
             break
     else:
+        why["pusty ranking"] += 1
         return []
     m30 = {r["wallet"]: r for r in LB.top(s, 30, "score", kind=kind)}
     now = time.time()
     out = []
     for r in rows:
         pnl = r["pnl"] if r["pnl"] is not None else r["pnl_usd"]
-        if not pnl or pnl <= 0 or r.get("bot"):
-            continue
-        if r.get("hold_s") is not None and r["hold_s"] < 30:
-            continue  # flipper – kopia wchodzi za późno
-        if (r.get("activity") or 0) < 35:
-            continue  # rzadko handluje – mało okazji
-        if r.get("last") and now - r["last"] > 36 * 3600:
-            continue
-        if r.get("win_rate") is not None and r["win_rate"] < 0.3:
-            continue
         r30 = m30.get(r["wallet"])
-        if r30 is not None and ((r30["pnl"] if r30["pnl"] is not None else r30["pnl_usd"]) or 0) <= 0:
-            continue  # zarabia 7 dni, ale w 30 dniach traci – szczęśliwy tydzień
-        out.append(r)
+        if not pnl or pnl <= 0 or r.get("bot"):
+            why["strata/bot"] += 1
+        elif r.get("hold_s") is not None and r["hold_s"] < 30:
+            why["flipper"] += 1  # kopia wchodzi za późno
+        elif (r.get("activity") or 0) < 35:
+            why["mało aktywny"] += 1  # rzadko handluje – mało okazji
+        elif r.get("last") and now - r["last"] > 36 * 3600:
+            why["cisza >36h"] += 1
+        elif r.get("win_rate") is not None and r["win_rate"] < 0.3:
+            why["skuteczność <30%"] += 1
+        elif r30 is not None and ((r30["pnl"] if r30["pnl"] is not None else r30["pnl_usd"]) or 0) <= 0:
+            why["traci w 30d"] += 1  # zarabia 7 dni, ale w 30 dniach traci – szczęśliwy tydzień
+        else:
+            out.append(r)
+    why[f"ok ({kind})"] += len(out)
     return out
 
 
@@ -124,7 +130,9 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
         kept = [k for k in kept[:target]] + [k for k in kept[target:] if k[0]["priority"]]
     need = max(target - len(kept), 0)
     have = {it["wallet"] for it in saved_list(s, uid) if it["status"] == "copy"}
-    for i, r in enumerate(candidates(s)):
+    why = Counter()
+    cands = candidates(s, why) if need else []
+    for i, r in enumerate(cands):
         if need <= 0:
             break
         w = r["wallet"]
@@ -148,6 +156,15 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
                 s.db.update_leader(ld["id"], name=name)
         on.append(name)
         need -= 1
+    if need > 0:
+        skip = Counter()
+        for r in cands:
+            w = r["wallet"]
+            prev = mine.get(w) or {}
+            skip["już kopiowany" if w in have else "właśnie wyłączony" if w in off_w else
+                 "tracił na nim" if (prev.get("sells") or 0) >= 5 and (prev.get("pnl_7d") or 0) < 0 else "inne"] += 1
+        log.info("Autopilot %s: brakuje %d traderów – ranking: %s; kandydaci pominięci: %s",
+                 uid, need, dict(why), dict(skip))
     return {"off": off, "on": on, "kept": [k[0]["name"] for k in kept], "target": target}
 
 
@@ -319,12 +336,12 @@ async def wikix_plan_once(ctx):
     """Jednorazowo: Wikix dopiero doładuje 200 zł – kwoty i skład traderów pod 0,75 SOL już teraz (saldo planowane
     na 7 dni albo do wpłaty), bezpieczniki jak w WIKIX_SETUP."""
     s = ctx.application.bot_data["svc"]
-    if not getattr(s, "sol", None) or s.db.get_state("wikix_plan_v1"):
+    if not getattr(s, "sol", None) or s.db.get_state("wikix_plan_v2"):
         return
     u = s.db.get_user(WIKIX)
     if not u:
         return
-    s.db.set_state("wikix_plan_v1", str(now_ms()))
+    s.db.set_state("wikix_plan_v2", str(now_ms()))
     try:
         autocfg.set_planned_balance(s, WIKIX, WIKIX_PLAN_SOL)
         s.db.update_user(WIKIX, **WIKIX_SETUP)
