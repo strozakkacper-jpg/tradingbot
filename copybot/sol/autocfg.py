@@ -264,6 +264,27 @@ def needs_update(u, balance: float, traders: list[dict]) -> str | None:
     return None
 
 
+def planned_balance(s, uid: int, bal: float) -> float:
+    """Saldo planowane (admin ustawia pod kwotę, którą ktoś dopiero wpłaci): automaty liczą kwoty jak przy nim,
+    dopóki prawdziwe saldo go nie dogoni (≥ 80%) albo nie minie termin. Potem znowu prawdziwe saldo."""
+    raw = s.db.get_state(f"plan_bal:{uid}")
+    if not raw:
+        return bal
+    try:
+        plan, until = raw.split("|")
+        plan, until = float(plan), int(until)
+    except ValueError:
+        return bal
+    if now_ms() > until or (bal or 0) >= 0.8 * plan:
+        s.db.set_state(f"plan_bal:{uid}", "")
+        return bal
+    return max(bal or 0, plan)
+
+
+def set_planned_balance(s, uid: int, sol: float, days: float = 7):
+    s.db.set_state(f"plan_bal:{uid}", f"{sol}|{now_ms() + int(days * DAY_MS)}")
+
+
 async def autocfg_job(ctx):
     s = ctx.application.bot_data["svc"]
     if not getattr(s, "sol", None):
@@ -272,7 +293,7 @@ async def autocfg_job(ctx):
     for u in s.db._q("SELECT * FROM users WHERE approved = 1 AND sol_autocfg = 1"):
         try:
             pf = await portfolio(s, u)
-            bal = pf["total"]
+            bal = planned_balance(s, u["tg_id"], pf["total"])
             if not bal or bal <= 0:
                 continue
             why = needs_update(u, bal, trader_profiles(s, u["tg_id"]))

@@ -214,7 +214,7 @@ async def autopilot_job(ctx):
             continue
         s.db.set_state(key, str(now_ms()))
         try:
-            bal = (await portfolio(s, u))["total"]
+            bal = autocfg.planned_balance(s, u["tg_id"], (await portfolio(s, u))["total"])
             res = rotate(s, u, bal)
             if res["on"] or res["off"]:
                 autocfg.apply(s, s.db.get_user(u["tg_id"]), bal)  # nowi traderzy → ich własne %
@@ -310,3 +310,34 @@ async def wikix_setup_once(ctx):
                         + "\n\nWszystko zmienisz w ⚙️ Opcjach.")
     except Exception:  # noqa: BLE001
         log.exception("Wikix: ustawienia")
+
+
+WIKIX_PLAN_SOL = 0.75  # 200 zł – Wikix dopiero dopłaca
+
+
+async def wikix_plan_once(ctx):
+    """Jednorazowo: Wikix dopiero doładuje 200 zł – kwoty i skład traderów pod 0,75 SOL już teraz (saldo planowane
+    na 7 dni albo do wpłaty), bezpieczniki jak w WIKIX_SETUP."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("wikix_plan_v1"):
+        return
+    u = s.db.get_user(WIKIX)
+    if not u:
+        return
+    s.db.set_state("wikix_plan_v1", str(now_ms()))
+    try:
+        autocfg.set_planned_balance(s, WIKIX, WIKIX_PLAN_SOL)
+        s.db.update_user(WIKIX, **WIKIX_SETUP)
+        res = await enable(s, s.db.get_user(WIKIX), WIKIX_PLAN_SOL)
+        s.db.update_user(WIKIX, **WIKIX_SETUP)
+        u = s.db.get_user(WIKIX)
+        log.info("Wikix: plan 0,75 SOL – traderzy +%d / -%d, kwota %s SOL / %s%%", len(res["on"]), len(res["off"]),
+                 u["sol_buy"], u["sol_pct"])
+        await s.sol.say(u, "auto",
+                        "💰 <b>GOTOWE POD 200 ZŁ</b> – kwoty i traderzy ustawione już teraz pod ok. 0,75 SOL, "
+                        "więc po doładowaniu bot od razu gra pełną stawką.\n"
+                        + html.escape(summary(res))
+                        + "\n\nDopóki saldo jest niższe, bot pomija zakupy („za mało SOL”) – nic nie tracisz. "
+                        "Doładuj na adres portfela z 👛 Portfel.")
+    except Exception:  # noqa: BLE001
+        log.exception("Wikix: plan 200 zł")

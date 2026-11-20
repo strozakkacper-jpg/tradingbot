@@ -1819,3 +1819,21 @@ def test_wikix_setup_once(tmp_path):
     assert u["sol_autopilot"] == 1 and u["sol_ladder"] == 1 and u["sol_risk"] == 0 and u["sol_reserve_pct"] == 20
     assert not (s.db.follow_row(AP.WIKIX, bad) or {"copy": 0})["copy"]
     assert s.db.get_state("wikix_setup_v1")
+
+
+def test_planned_balance_and_wikix_plan(tmp_path):
+    from copybot.sol import autocfg as AC, autopilot as AP
+    s, ctx, sent = ready(tmp_path)
+    assert AC.planned_balance(s, OWNER, 0.02) == 0.02
+    AC.set_planned_balance(s, OWNER, 0.75)
+    assert AC.planned_balance(s, OWNER, 0.02) == 0.75   # przed wpłatą – liczy jak przy 200 zł
+    assert AC.planned_balance(s, OWNER, 0.7) == 0.7      # wpłacone – znów prawdziwe saldo
+    assert AC.planned_balance(s, OWNER, 0.02) == 0.02    # plan zdjęty
+    s.db.ensure_user(AP.WIKIX, "wikix", 0.0, "USDT")
+    s.sol.wallet(AP.WIKIX)
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    asyncio.run(AP.wikix_plan_once(jctx))
+    u = s.db.get_user(AP.WIKIX)
+    assert u["sol_max_pos"] == 8 and u["sol_max"] == 0.12 and u["sol_autopilot"] == 1
+    assert u["sol_autocfg_bal"] == 0.75
+    assert AC.planned_balance(s, AP.WIKIX, 0.02) == 0.75
