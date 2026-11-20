@@ -113,8 +113,8 @@ details.sec>.card{border:0;border-top:1px solid var(--line);border-radius:0;marg
   --gg:linear-gradient(135deg,#34d672,#16a34a);--rg:linear-gradient(135deg,#f87171,#dc2626);
   --shadow:0 1px 0 rgba(255,255,255,.04) inset,0 8px 24px rgba(0,0,0,.28);--rad:18px}
 html{background:var(--bg)}
-body{background:radial-gradient(900px 420px at 15% -120px,rgba(139,92,246,.20),transparent 70%),
-  radial-gradient(700px 380px at 110% -60px,rgba(79,123,255,.13),transparent 70%),var(--bg);background-attachment:fixed;
+body{background:radial-gradient(900px 420px at 15% -120px,var(--glow1,rgba(139,92,246,.20)),transparent 70%),
+  radial-gradient(700px 380px at 110% -60px,var(--glow2,rgba(79,123,255,.13)),transparent 70%),var(--bg);background-attachment:fixed;
   font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;letter-spacing:-.005em}
 ::-webkit-scrollbar{width:0;height:0}
 h2{font-size:12px;letter-spacing:.09em;color:var(--mut);display:flex;align-items:center;gap:8px;margin:24px 4px 10px}
@@ -172,9 +172,74 @@ input[type=range]::-webkit-slider-thumb{border-color:#8b6bff;box-shadow:0 0 0 4p
   background:linear-gradient(135deg,rgba(139,92,246,.22),rgba(79,123,255,.12));border:1px solid var(--line2)}
 .ov b{font-size:14px}
 @media (hover:hover){.item:hover{background:rgba(255,255,255,.02)}.chip:hover{border-color:rgba(139,92,246,.45)}}
+
+/* ---------- 🎨 motywy (wybór w Opcjach → Wygląd) ---------- */
+:root[data-theme=cyber]{--acc:#10e39a;--acc2:#5ff5c2;--accg:linear-gradient(135deg,#19f5a8 0%,#0fb59a 55%,#0aa0c8 100%);
+  --glow1:rgba(16,227,154,.18);--glow2:rgba(10,160,200,.14);--accrgb:16,227,154}
+:root[data-theme=gold]{--acc:#f5b942;--acc2:#ffd27a;--accg:linear-gradient(135deg,#ffd36e 0%,#f5a524 55%,#e0761b 100%);
+  --glow1:rgba(245,185,66,.17);--glow2:rgba(224,118,27,.12);--accrgb:245,185,66}
+:root[data-theme=ocean]{--acc:#38bdf8;--acc2:#7dd3fc;--accg:linear-gradient(135deg,#5ad1ff 0%,#3b82f6 55%,#6366f1 100%);
+  --glow1:rgba(56,189,248,.18);--glow2:rgba(99,102,241,.14);--accrgb:56,189,248}
+:root[data-theme=sunset]{--acc:#fb7185;--acc2:#fda4af;--accg:linear-gradient(135deg,#ff8a9b 0%,#f43f5e 50%,#f59e0b 100%);
+  --glow1:rgba(251,113,133,.18);--glow2:rgba(245,158,11,.13);--accrgb:251,113,133}
+:root{--accrgb:139,92,246}
+.btn,.chip.on,.seg button.on{box-shadow:0 6px 18px rgba(var(--accrgb),.33)}
+.av{background:linear-gradient(135deg,rgba(var(--accrgb),.28),rgba(var(--accrgb),.10))}
+h2:before{box-shadow:0 0 10px rgba(var(--accrgb),.8)}
+/* ---------- ruchome tło ---------- */
+#bgfx{position:fixed;inset:0;z-index:-1;overflow:hidden;pointer-events:none}
+#bgfx i{position:absolute;width:60vmax;height:60vmax;border-radius:50%;filter:blur(60px);opacity:.22;
+  background:radial-gradient(circle,rgba(var(--accrgb),.9),transparent 60%);animation:drift 26s ease-in-out infinite alternate}
+#bgfx i:nth-child(2){left:40%;top:40%;opacity:.14;animation-duration:34s;animation-delay:-8s;
+  background:radial-gradient(circle,var(--glow2,rgba(79,123,255,.6)),transparent 60%)}
+#bgfx i:nth-child(3){left:-20%;top:60%;opacity:.12;animation-duration:40s;animation-delay:-15s}
+@keyframes drift{0%{transform:translate(-20%,-30%) scale(1)}50%{transform:translate(25%,10%) scale(1.25)}100%{transform:translate(-5%,30%) scale(.9)}}
+:root[data-bg=off] #bgfx,:root[data-anim=off] #bgfx{display:none}
+/* ---------- wejście kart ---------- */
+.in{animation:rise .5s cubic-bezier(.2,.8,.2,1) both}
+@keyframes rise{from{opacity:0;transform:translateY(14px) scale(.985)}to{opacity:1;transform:none}}
+:root[data-anim=soft] .in{animation-duration:.3s}
+/* ---------- wykres się rysuje ---------- */
+.enter .ln{stroke-dasharray:1;stroke-dashoffset:1;animation:draw 1.3s cubic-bezier(.4,0,.2,1) .15s forwards}
+.enter .ar{opacity:0;animation:fadein .9s ease .6s forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+@keyframes fadein{to{opacity:1}}
+/* ---------- puls „bot działa” ---------- */
+.dot.g{position:relative}
+.dot.g:after{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--g);animation:ping 1.8s ease-out infinite}
+@keyframes ping{0%{transform:scale(.6);opacity:.9}100%{transform:scale(1.8);opacity:0}}
+/* ---------- zakładki ---------- */
+.tabs button.on .i{animation:pop .35s cubic-bezier(.3,1.6,.5,1)}
+@keyframes pop{0%{transform:scale(.8)}100%{transform:translateY(-1px) scale(1.08)}}
+/* ---------- fala po kliknięciu ---------- */
+.btn,.chip{position:relative;overflow:hidden}
+.rip{position:absolute;border-radius:50%;background:rgba(255,255,255,.35);transform:scale(0);animation:rip .55s ease-out forwards;pointer-events:none}
+@keyframes rip{to{transform:scale(3.2);opacity:0}}
+/* ---------- konfetti ---------- */
+.cf{position:fixed;top:-12px;width:8px;height:14px;border-radius:2px;z-index:50;pointer-events:none;animation:fall 1.9s cubic-bezier(.25,.6,.5,1) forwards}
+@keyframes fall{to{transform:translate(var(--dx),105vh) rotate(var(--rot));opacity:.2}}
+/* ---------- duży wykres ---------- */
+.bigc{position:relative;touch-action:none;user-select:none}
+.bigc .xh{position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,.35);pointer-events:none;display:none}
+.bigc .tip{position:absolute;top:-6px;transform:translateX(-50%);background:rgba(20,24,36,.92);border:1px solid var(--line2);
+  border-radius:10px;padding:5px 9px;font-size:12px;white-space:nowrap;pointer-events:none;display:none;backdrop-filter:blur(8px)}
+.zoomhint{position:absolute;right:8px;top:6px;font-size:11px;color:var(--mut);background:rgba(0,0,0,.25);padding:3px 8px;border-radius:99px}
+/* ---------- bez animacji ---------- */
+:root[data-anim=off] *,:root[data-anim=off] *:before,:root[data-anim=off] *:after{animation:none!important;transition:none!important}
+@media (prefers-reduced-motion:reduce){:root:not([data-anim=full]) .in,:root:not([data-anim=full]) #bgfx{animation:none}}
+.pill.a{background:rgba(var(--accrgb),.15);color:var(--acc2);border-color:rgba(var(--accrgb),.32)}
+.hero{border-color:rgba(var(--accrgb),.28);box-shadow:0 0 0 1px rgba(var(--accrgb),.08) inset,0 12px 40px rgba(var(--accrgb),.14),var(--shadow);
+  background:radial-gradient(120% 80% at 0% 0%,rgba(var(--accrgb),.14),transparent 60%),linear-gradient(180deg,rgba(255,255,255,.03),rgba(255,255,255,0)),var(--card)}
+.hero .big{background:linear-gradient(180deg,#fff 30%,var(--acc2));-webkit-background-clip:text;background-clip:text;color:transparent}
+.slv{color:var(--acc2);background:rgba(var(--accrgb),.14);border-color:rgba(var(--accrgb),.28)}
+.themes{display:grid;grid-template-columns:repeat(5,1fr);gap:8px}
+.th{border:2px solid transparent;border-radius:14px;padding:8px 2px 6px;text-align:center;font-size:11px;font-weight:700;cursor:pointer;background:var(--card2)}
+.th.on{border-color:var(--acc2)}
+.th .sw{height:30px;border-radius:9px;margin:0 6px 6px}
 </style>
 </head>
 <body>
+<div id="bgfx"><i></i><i></i><i></i></div>
 <div id="view"><div class="loader"></div></div>
 <div class="sheet" id="sheet"></div>
 <div class="toast" id="toast"></div>
@@ -251,8 +316,82 @@ function chart(pts, h = 120, mini = false) {
   const col = v[v.length - 1] >= v[0] ? 'var(--g)' : 'var(--r)', id = 'g' + Math.random().toString(36).slice(2, 7);
   return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px">
     <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${col}" stop-opacity=".28"/><stop offset="1" stop-color="${col}" stop-opacity="0"/></linearGradient></defs>
-    ${mini ? '' : `<path d="${d} L${w} ${h} L0 ${h} Z" fill="url(#${id})"/>`}
-    <path d="${d}" fill="none" stroke="${col}" stroke-width="${mini ? 1.6 : 2.2}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+    ${mini ? '' : `<path class="ar" d="${d} L${w} ${h} L0 ${h} Z" fill="url(#${id})"/>`}
+    <path class="${mini ? '' : 'ln'}" pathLength="1" d="${d}" fill="none" stroke="${col}" stroke-width="${mini ? 1.6 : 2.2}" vector-effect="non-scaling-stroke" stroke-linejoin="round"/></svg>`;
+}
+
+// ---------- 🎨 wygląd (zapamiętany na tym telefonie) ----------
+const UI = Object.assign({theme: 'neon', anim: 'full', size: 'm', bg: true},
+  (() => { try { return JSON.parse(localStorage.getItem('ui_prefs') || '{}'); } catch (e) { return {}; } })());
+const THEMES = [['neon', 'Neon', 'linear-gradient(135deg,#9b6bff,#4f7bff)'], ['cyber', 'Cyber', 'linear-gradient(135deg,#19f5a8,#0aa0c8)'],
+  ['gold', 'Złoto', 'linear-gradient(135deg,#ffd36e,#e0761b)'], ['ocean', 'Ocean', 'linear-gradient(135deg,#5ad1ff,#6366f1)'],
+  ['sunset', 'Zachód', 'linear-gradient(135deg,#ff8a9b,#f59e0b)']];
+const SIZES = {s: 0.92, m: 1, l: 1.1, xl: 1.22};
+function applyUI() {
+  const r = document.documentElement;
+  r.dataset.theme = UI.theme; r.dataset.anim = UI.anim; r.dataset.bg = UI.bg ? 'on' : 'off';
+  document.body.style.zoom = SIZES[UI.size] || 1;
+}
+function setUI(k, v) {
+  UI[k] = v;
+  try { localStorage.setItem('ui_prefs', JSON.stringify(UI)); } catch (e) {}
+  applyUI(); haptic(); ENTER = true; render();
+}
+function confetti(pnl) {
+  if (UI.anim === 'off') return;
+  const n = Math.min(26 + Math.round((pnl || 0) * 400), 90), cols = ['#22c55e', '#facc15', getComputedStyle(document.documentElement).getPropertyValue('--acc').trim() || '#8b5cf6', '#38bdf8', '#fb7185'];
+  for (let i = 0; i < n; i++) {
+    const c = document.createElement('i');
+    c.className = 'cf';
+    c.style.left = Math.random() * 100 + 'vw';
+    c.style.background = cols[i % cols.length];
+    c.style.setProperty('--dx', (Math.random() * 160 - 80) + 'px');
+    c.style.setProperty('--rot', (Math.random() * 900 - 450) + 'deg');
+    c.style.animationDelay = Math.random() * 0.35 + 's';
+    document.body.appendChild(c);
+    setTimeout(() => c.remove(), 2600);
+  }
+  haptic('heavy');
+}
+document.addEventListener('pointerdown', e => {
+  const b = e.target.closest('.btn,.chip');
+  if (!b || UI.anim === 'off') return;
+  const r = b.getBoundingClientRect(), s = Math.max(r.width, r.height), x = document.createElement('span');
+  x.className = 'rip';
+  Object.assign(x.style, {width: s + 'px', height: s + 'px', left: (e.clientX - r.left - s / 2) + 'px', top: (e.clientY - r.top - s / 2) + 'px'});
+  b.appendChild(x); setTimeout(() => x.remove(), 600);
+}, {passive: true});
+// ---------- 🔍 duży wykres: zakres + przesuwanie palcem z wartością ----------
+let CH_RANGE = 'all';
+function openChart() {
+  const all = (S.series || []).filter(p => Array.isArray(p));
+  const now = Date.now(), span = {d: 864e5, w: 7 * 864e5, all: Infinity}[CH_RANGE];
+  const pts = all.filter(p => now - p[0] <= span);
+  const v = pts.length > 1 ? pts : all;
+  const first = v.length ? v[0][1] : 0, last = v.length ? v[v.length - 1][1] : 0;
+  const ch = first ? (last / first - 1) * 100 : 0;
+  sheet(hdr('📈 Wartość portfela') + `<div class="card">
+      <div class="big" style="font-size:30px">${num(last)} SOL</div>
+      <div class="small" style="margin:4px 0 10px">${pct(ch)} <span class="mut">w wybranym okresie · ${inUsd(last)}</span></div>
+      <div class="seg" style="margin-bottom:12px">${[['d', '24 h'], ['w', '7 dni'], ['all', 'Wszystko']].map(([k, l]) =>
+        `<button class="${CH_RANGE === k ? 'on' : ''}" onclick="CH_RANGE='${k}';openChart()">${l}</button>`).join('')}</div>
+      <div class="bigc enter" id="bigc">${chart(v, 300)}<div class="xh"></div><div class="tip"></div></div>
+      <div class="row mut tiny" style="justify-content:space-between;margin-top:8px"><span>min ${num(Math.min(...v.map(p => p[1])))}</span>
+        <span>👆 przesuń palcem po wykresie</span><span>maks ${num(Math.max(...v.map(p => p[1])))}</span></div></div>`);
+  const box = document.getElementById('bigc');
+  if (!box || v.length < 2) return;
+  const xh = box.querySelector('.xh'), tip = box.querySelector('.tip');
+  const move = e => {
+    const r = box.getBoundingClientRect(), x = Math.min(Math.max((e.touches ? e.touches[0].clientX : e.clientX) - r.left, 0), r.width);
+    const i = Math.round(x / r.width * (v.length - 1)), p = v[i];
+    xh.style.display = tip.style.display = 'block';
+    xh.style.left = x + 'px'; tip.style.left = Math.min(Math.max(x, 60), r.width - 60) + 'px';
+    tip.innerHTML = `<b>${num(p[1])} SOL</b> · ${new Date(p[0]).toLocaleString('pl-PL', {day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'})}`;
+  };
+  box.addEventListener('pointermove', move);
+  box.addEventListener('pointerdown', move);
+  box.addEventListener('touchmove', move, {passive: true});
+  box.addEventListener('pointerleave', () => { xh.style.display = tip.style.display = 'none'; });
 }
 
 // ---------- suwaki ----------
@@ -331,6 +470,7 @@ async function load() {
     const s = JSON.parse(txt);
     if (S && s.feed.length && LAST_FEED && s.feed[0].ts > LAST_FEED) {
       const f = s.feed[0];
+      if (f.status === 'filled' && f.side === 'sell' && f.pnl > 0) confetti(f.pnl);
       if (f.status === 'filled') toast(`${f.side === 'buy' ? '🟢 Kupiono' : '🔴 Sprzedano'} ${f.symbol} za ${num(f.sol)} SOL${f.pnl != null ? ` · ${f.pnl >= 0 ? 'zysk +' : 'strata '}${f.pnl.toFixed(4)}` : ''}`);
     }
     LAST_FEED = s.feed.length ? s.feed[0].ts : 0;
@@ -370,12 +510,37 @@ function renderTabs() {
   const unread = k => k === 'chat' && TAB !== 'chat' && S && S.chat_last_id > chatSeen();
   $('#tabs').innerHTML = tabs.map(([k, i, l]) => `<button class="${TAB === k ? 'on' : ''}" onclick="go('${k}')"><span class="i">${i}</span>${l}${unread(k) ? '<span class="badge"></span>' : ''}</button>`).join('');
 }
-function go(t) { if (t !== 'traders') { SEL = null; document.getElementById('selbar')?.remove(); document.body.classList.remove('sel'); } TAB = t; haptic(); window.scrollTo(0, 0); render(); if (t === 'tokens' && !TREND) loadTrend(); if (t === 'admin') loadAdmin(); if (t === 'chat') loadChat(true); }
+function go(t) { ENTER = true; if (t !== 'traders') { SEL = null; document.getElementById('selbar')?.remove(); document.body.classList.remove('sel'); } TAB = t; haptic(); window.scrollTo(0, 0); render(); if (t === 'tokens' && !TREND) loadTrend(); if (t === 'admin') loadAdmin(); if (t === 'chat') loadChat(true); }
+let ENTER = true;  // animacje wejścia tylko przy otwarciu / zmianie zakładki – nie przy cichym odświeżaniu danych
 function render() {
   if (!S) return;
   renderTabs();
-  $('#view').innerHTML = ({home, traders, tokens, history, settings, chat: chatTab, admin: adminTab})[TAB]();
+  const v = $('#view');
+  v.innerHTML = ({home, traders, tokens, history, settings, chat: chatTab, admin: adminTab})[TAB]();
   if (TAB === 'settings') foldSettings();
+  v.classList.toggle('enter', ENTER && UI.anim !== 'off');
+  if (ENTER && UI.anim !== 'off') {
+    [...v.children].forEach((el, i) => { el.classList.add('in'); el.style.animationDelay = Math.min(i * 45, 400) + 'ms'; });
+  }
+  animateCounts(ENTER);
+  ENTER = false;
+}
+// liczby „odliczają się” do nowej wartości (saldo) – przy wejściu od zera, przy odświeżeniu od poprzedniej
+const COUNTS = {};
+function animateCounts(fromZero) {
+  document.querySelectorAll('[data-count]').forEach(el => {
+    const to = parseFloat(el.dataset.count), kind = el.dataset.kind, key = kind + (el.id || '');
+    const from = fromZero ? to * 0.6 : (COUNTS[key] ?? to);
+    COUNTS[key] = to;
+    if (UI.anim === 'off' || Math.abs(to - from) < 1e-9 || !isFinite(to)) return;
+    const fmt = x => kind === 'usd' ? usd(x) : num(x) + ' SOL', t0 = performance.now(), dur = UI.anim === 'soft' ? 500 : 1100;
+    const step = now => {
+      const k = Math.min((now - t0) / dur, 1), e = 1 - Math.pow(1 - k, 4);
+      el.textContent = fmt(from + (to - from) * e);
+      if (k < 1 && el.isConnected) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
 }
 
 function modePill() { return S.live ? '<span class="pill y">💰 Prawdziwe pieniądze</span>' : '<span class="pill a">🧪 Ćwiczenia</span>'; }
@@ -409,12 +574,12 @@ function home() {
   const res = start ? (S.total / start - 1) * 100 : null;
   return `
   <div class="row" style="margin:4px 2px 12px"><div class="sp b" style="font-size:18px">Copy Trading</div>${modePill()}</div>
-  <div class="card">
+  <div class="card hero">
     <div class="mut small">Wszystko razem</div>
-    <div class="big">${S.sol_usd ? usd(S.total * S.sol_usd) : num(S.total) + ' SOL'}</div>
+    <div class="big" data-count="${S.sol_usd ? S.total * S.sol_usd : S.total}" data-kind="${S.sol_usd ? 'usd' : 'sol'}">${S.sol_usd ? usd(S.total * S.sol_usd) : num(S.total) + ' SOL'}</div>
     <div class="row small" style="margin-top:4px;flex-wrap:wrap;gap:6px"><span class="mut">${num(S.total)} SOL</span>
       ${res != null ? pctPill(res) + `<span class="mut">${S.live ? 'od startu sesji' : 'od startu ćwiczeń'}</span>` : ''}</div>
-    <div style="margin:12px -4px 0">${chart(S.series, 110)}</div>
+    <div style="margin:12px -4px 0;position:relative;cursor:zoom-in" onclick="openChart()">${chart(S.series, 110)}${S.series && S.series.length > 1 ? '<span class="zoomhint">🔍 powiększ</span>' : ''}</div>
     <div class="grid" style="margin-top:12px">
       <div class="stat"><div class="mut tiny">💵 Wolne SOL</div><div class="v">${num(S.sol, 3)}</div><div class="mut tiny">${inUsd(S.sol)}</div></div>
       <div class="stat"><div class="mut tiny">🪙 W tokenach</div><div class="v">${num(tokensVal, 3)}</div><div class="mut tiny">${S.positions.length} poz. · ${inUsd(tokensVal)}</div></div>
@@ -953,7 +1118,21 @@ function settings() {
     <div class="mut tiny" style="margin:2px 0 8px">Gdy dziś stracisz tyle na sprzedanych tokenach, bot przestaje kupować do jutra.</div>
     ${chips('sol_day_limit', [0, 0.1, 0.25, 0.5, 1], v => v ? v + ' SOL' : 'wył.', st.sol_day_limit)}
   </div>
-  <div class="grp"><span>👤 Konto</span><span class="mut">portfel, PIN, powiadomienia</span></div>
+  <div class="grp"><span>👤 Konto</span><span class="mut">wygląd, portfel, PIN</span></div>
+  <h2>🎨 Wygląd</h2>
+  <div class="card">
+    <div class="b">Motyw</div>
+    <div class="themes" style="margin:8px 0 14px">${THEMES.map(([k, l, g]) => `<div class="th ${UI.theme === k ? 'on' : ''}" onclick="setUI('theme','${k}')"><div class="sw" style="background:${g}"></div>${l}</div>`).join('')}</div>
+    <div class="b">Animacje</div>
+    <div class="seg" style="margin:8px 0 14px">${[['full', '✨ Pełne'], ['soft', '🌙 Delikatne'], ['off', '⏹ Wyłączone']].map(([k, l]) => `<button class="${UI.anim === k ? 'on' : ''}" onclick="setUI('anim','${k}')">${l}</button>`).join('')}</div>
+    <div class="b">Wielkość</div>
+    <div class="seg" style="margin:8px 0 14px">${[['s', 'S'], ['m', 'M'], ['l', 'L'], ['xl', 'XL']].map(([k, l]) => `<button class="${UI.size === k ? 'on' : ''}" onclick="setUI('size','${k}')">${l}</button>`).join('')}</div>
+    <div class="row"><div class="sp"><div class="b">Ruchome tło</div><div class="mut tiny">Delikatne świecące plamy w kolorze motywu.</div></div>
+      <label class="toggle"><input type="checkbox" ${UI.bg ? 'checked' : ''} onchange="setUI('bg', this.checked)"><span></span></label></div>
+    <div class="row" style="gap:8px;margin-top:12px"><button class="btn ghost" onclick="confetti(0.05)">🎉 Pokaż efekt zysku</button>
+      <button class="btn ghost" onclick="go('home');setTimeout(openChart,350)">🔍 Duży wykres</button></div>
+    <div class="mut tiny" style="margin-top:8px">Zapamiętane na tym telefonie. Konfetti wystrzeli samo przy każdej sprzedaży z zyskiem.</div>
+  </div>
   <h2>💰 Pieniądze</h2>
   <div class="card">
     <div class="row"><div class="sp"><div class="b">${S.live ? '💰 Grasz prawdziwymi SOL' : '🧪 Ćwiczenia (wirtualne SOL)'}</div>
@@ -1047,6 +1226,7 @@ function secSummary(title) {
   if (title.includes('Powiadomienia')) return {all: 'wszystkie', sells: 'tylko wyniki sprzedaży', none: 'wyłączone'}[st.sol_notify || 'all'];
   if (title.includes('Szybkość')) return (st.sol_turbo ? '⚡ turbo · ' : '') + 'opłata maks. ' + fSol(st.sol_priority / 1e9);
   if (title.includes('Bezpieczeństwo')) return S.has_pin ? '🔐 PIN ustawiony' : '⚠️ bez PIN-u – ustaw, chroni wypłaty';
+  if (title.includes('Wygląd')) return `${(THEMES.find(x => x[0] === UI.theme) || THEMES[0])[1]} · animacje ${({full: 'pełne', soft: 'delikatne', off: 'wyłączone'})[UI.anim]} · rozmiar ${UI.size.toUpperCase()}`;
   if (title.includes('Twoja nazwa')) return S.user.nickname || (S.user.username ? '@' + S.user.username : 'bez nazwy');
   if (title.includes('Pieniądze')) return S.live ? '💰 prawdziwe SOL' : `🧪 ćwiczenia · start ${S.demo_start} SOL`;
   return '';
@@ -1601,6 +1781,7 @@ async function renameUser(id, cur) {
 async function adminRole(id) { await act('admin_role', {uid: id}, {reload: false}); await loadAdmin(); openUser(id); }
 
 // ---------- start ----------
+applyUI();
 // pierwsze otwarcie: od razu ostatni zapamiętany stan, w tle świeże dane
 try {
   const c = localStorage.getItem('state_cache');
