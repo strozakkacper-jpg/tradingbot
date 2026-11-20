@@ -8,6 +8,7 @@
 import asyncio
 import html
 import logging
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,7 @@ from telegram.ext import Application, CallbackQueryHandler, CommandHandler, Conv
 
 from ..bot import S, UI_TIMEOUT, admin_ids, header, require_accepted, show
 from ..db import now_ms
+from .chain import ChainError
 from .engine import Skip, fmt_tokens, short
 from .parser import LAMPORTS, SOL_MINT
 from .risk import risk, usd  # noqa: F401 – usd używane też przez session/api
@@ -446,7 +448,16 @@ async def trend_view(s, u) -> tuple[str, KB]:
 
 async def buy(s, u, mint: str, sol: float) -> str:
     se = s.sol
-    fill = await se.execute(u, "buy", mint, int(sol * LAMPORTS))
+    frozen = se.__dict__.get("_frozen", {})
+    if time.time() - frozen.get(mint, 0) < 24 * 3600:
+        raise Skip("🧊 token zamrożony – twórca blokuje konta, nie da się go kupić ani sprzedać")
+    try:
+        fill = await se.execute(u, "buy", mint, int(sol * LAMPORTS))
+    except ChainError as e:  # odrzucona przez sieć – zwykłymi słowami, a zamrożony token zapamiętujemy
+        from .engine import friendly_error, is_frozen_error
+        if is_frozen_error(str(e)):
+            se.__dict__.setdefault("_frozen", {})[mint] = time.time()
+        raise Skip(friendly_error(e, u)) from e
     se.record(u["tg_id"], None, None, "buy", mint, fill.sol, fill.tokens, "filled", "ręcznie", not se.is_live(u),
               fill.sig, fill.latency_ms)
     sym, _ = se.cached_token(mint) or await se.token_info(mint)

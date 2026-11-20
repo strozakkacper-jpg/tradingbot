@@ -32,6 +32,11 @@ def token_age_min(info: dict) -> float | None:
     return (datetime.now(timezone.utc) - dt).total_seconds() / 60
 
 
+def is_frozen_error(s: str) -> bool:
+    """Program tokenów: błąd 17 = AccountFrozen (konto tokena zamrożone przez twórcę)."""
+    return "'Custom': 17}" in s or "AccountFrozen" in s or "account is frozen" in s.lower()
+
+
 def friendly_error(e: Exception, u=None) -> str:
     """Błąd sieci / Jupitera / Pump.fun zwykłymi słowami."""
     s = str(e)
@@ -47,6 +52,9 @@ def friendly_error(e: Exception, u=None) -> str:
         return "sieć nie potwierdziła transakcji w 45 s (przeciążenie) – sprawdź saldo, mogła nie wejść"
     if "insufficient" in s.lower() or "'Custom': 1}" in s:
         return "za mało SOL na transakcję i opłaty"
+    if is_frozen_error(s):
+        return ("🧊 token zamrożony – twórca tokena blokuje konta (pułapka albo token tylko dla wybranych, np. "
+                "tokenizowane akcje). Nie da się go kupić ani sprzedać – bot więcej go nie próbuje.")
     if "transakcja odrzucona przez sieć" in s:
         return f"sieć odrzuciła transakcję ({s.split(': ', 1)[-1][:80]})"
     return s[:200]
@@ -198,6 +206,18 @@ class SolEngine:
         pref = u["sol_notify"] if "sol_notify" in u.keys() and u["sol_notify"] else "all"
         if pref == "none" or (pref == "sells" and kind not in ("sell", "auto")):
             return
+        if kind in ("skip", "error") and buttons:
+            # ten sam token, ten sam rodzaj wiadomości – najwyżej raz na 15 min (wcześniej: 148× „nie weszło” w dobę)
+            tok = next((cb for row in buttons for _, cb in row if str(cb).startswith("tkn:")), None)
+            if tok:
+                seen = self.__dict__.setdefault("_said", {})
+                reason = re.sub(r"[\d.,]+", "", text.split("Powód:", 1)[-1])[:60]  # ten sam powód (bez liczb)
+                k = (u["tg_id"], kind, tok, reason)
+                if time.time() - seen.get(k, 0) < 15 * 60:
+                    return
+                seen[k] = time.time()
+                if len(seen) > 5000:
+                    seen.clear()
         try:
             await self.notify(u["tg_id"], text, html=True, buttons=buttons)
         except TypeError:  # prosty notify (np. w testach) – sam tekst
@@ -423,7 +443,13 @@ class SolEngine:
                            self.attributed_raw(u["tg_id"], lead["id"], sw.mint, not live, sw.decimals))
                 if held <= 0:
                     return "none"
-                amount = held if sw.fraction > 0.97 else int(held * sw.fraction)
+                if sw.fraction > 0.97:
+                    amount = held
+                    self.__dict__.setdefault("_pend", {}).pop((u["tg_id"], lead["id"], sw.mint), None)
+                else:
+                    amount = await self._batched_sell(u, lead["id"], sw, held)
+                    if not amount:
+                        return "batched"  # drobny kawałek – zbieramy, sprzedamy razem z kolejnymi
             basis = self.cost_basis(u["tg_id"], sw.mint, not live) if sw.side == "sell" else None
             if sw.side == "sell":
                 fill = await self.sell_with_retry(u, sw.mint, amount, t_recv, sw.decimals, sw)
@@ -456,6 +482,8 @@ class SolEngine:
             return "skipped"
         except Exception as e:  # noqa: BLE001
             why = friendly_error(e, u)
+            if is_frozen_error(str(e)):
+                self.__dict__.setdefault("_frozen", {})[sw.mint] = time.time()
             log.warning("Solana %s → %s: nie weszło – %s (%s)", lead["name"], u["tg_id"], why, str(e)[:160])
             self.record(u["tg_id"], lead["id"], sw.signature, sw.side, sw.mint, 0, 0, "error", why[:300], not live)
             await self.say(u, "error", f"❌ <b>NIE WESZŁO · {sym}</b>\n{trader}\nPowód: {html.escape(why)}", [token_btn])
@@ -477,6 +505,22 @@ class SolEngine:
             buttons = [token_btn + links]
         await self.say(u, sw.side, text, buttons)
         return "filled"
+
+    async def _batched_sell(self, u, lid: int, sw: Swap, held: int) -> int:
+        """Trader wychodzi małymi kawałkami (np. 30 sprzedaży po 3%) – każda kopia to osobna opłata sieci i napiwek.
+        Kawałki warte mniej niż ~15× opłata (0,002–0,02 SOL) zbieramy i sprzedajemy razem (gdy uzbiera się sensowna kwota albo
+        połowa pozycji). Zwraca ile sprzedać teraz (0 = jeszcze czekamy)."""
+        pend = self.__dict__.setdefault("_pend", {})
+        key = (u["tg_id"], lid, sw.mint)
+        frac = 1 - (1 - pend.get(key, 0.0)) * (1 - sw.fraction)  # łączny ułamek pozycji do sprzedania
+        per = await self._trader_price(sw)
+        fee = BASE_FEE + (self.priority(u) if self.turbo(u) else self.priority(u) // 2)  # realny koszt jednej transakcji
+        value = held * frac * per if per else None
+        if frac < 0.5 and value is not None and value < min(max(15 * fee, 2_000_000), 20_000_000):
+            pend[key] = frac
+            return 0
+        pend.pop(key, None)
+        return max(int(held * frac), 1)
 
     def _fresh(self, t_recv: float | None, side: str = "buy"):
         """Spóźniony ZAKUP (> SOL_MAX_DELAY_S) nie ma sensu – cena memecoina mogła już uciec.
@@ -625,8 +669,16 @@ class SolEngine:
             if len(last) >= streak and all(r["pnl"] < 0 for r in last) and now_ms() - last[0]["ts"] < 30 * 60_000:
                 left = 30 - (now_ms() - last[0]["ts"]) // 60_000
                 raise Skip(f"☕ przerwa po {streak} stratach z rzędu – bot wraca do kupowania za ok. {left} min")
+        frozen = self.__dict__.setdefault("_frozen", {})
+        if time.time() - frozen.get(sw.mint, 0) < 24 * 3600:
+            raise Skip("🧊 token zamrożony (twórca blokuje konta) – sieć odrzuca każdy zakup, nie próbuję")
+        bad = self.db._q("""SELECT COUNT(*) n FROM sol_trades WHERE tg_id = ? AND mint = ? AND status = 'error'
+                            AND ts >= ?""", (u["tg_id"], sw.mint, now_ms() - 30 * 60_000))[0]["n"]
+        if bad >= 2:
+            raise Skip(f"sieć odrzuciła ten token już {bad}× w 30 min – nie próbuję dalej (każda próba to opłata)")
         g = lambda k: u[k] if k in keys and u[k] else 0  # noqa: E731
-        if g("sol_safe") or g("sol_max_mcap") or g("sol_min_age") or g("sol_max_age") or g("sol_dev_exit"):
+        live_guard = self.is_live(u)  # na prawdziwych SOL token z prawem zamrażania odrzucamy zawsze
+        if g("sol_safe") or g("sol_max_mcap") or g("sol_min_age") or g("sol_max_age") or g("sol_dev_exit") or live_guard:
             try:  # jedno zapytanie (z pamięci 15 s) dla wszystkich filtrów tokena
                 info = await asyncio.wait_for(self.jup.token_full(sw.mint), 3)
             except Exception:  # noqa: BLE001
@@ -636,6 +688,11 @@ class SolEngine:
                 why = trap_reason(info)
                 if why:
                     raise Skip(f"🛡 pułapka – {why}")
+            elif live_guard and ((info or {}).get("audit") or {}).get("freezeAuthorityDisabled") is False:
+                # nawet z wyłączonym filtrem pułapek: twórca może zamrozić Twoje tokeny – na prawdziwych SOL to
+                # pewna strata całej kwoty (kupisz, a sprzedać już nie dasz rady)
+                raise Skip("🧊 twórca może zamrozić Twoje tokeny – na prawdziwych SOL takich nie kupuję "
+                           "(nawet przy wyłączonym filtrze pułapek)")
             if info:
                 mc = info.get("mcap")
                 if g("sol_max_mcap") and mc and mc > g("sol_max_mcap"):

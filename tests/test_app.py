@@ -1588,3 +1588,69 @@ def test_reports_api(tmp_path):
         st, j = await call(OWNER, "/api/sol/reports?day=zle")
         assert st == 400
     run(s, steps)
+
+
+def test_frozen_tokens_and_no_spam(tmp_path):
+    from copybot.sol.chain import ChainError
+    from copybot.sol.engine import friendly_error, is_frozen_error
+    s, _, sent = ready(tmp_path)
+    _two_leaders(s)
+    err = "transakcja odrzucona przez sieć: {'InstructionError': [5, {'Custom': 17}]}"
+    assert is_frozen_error(err) and "zamrożony" in friendly_error(ChainError(err))
+    calls = {"n": 0}
+
+    async def frozen_exec(*a, **k):
+        calls["n"] += 1
+        raise ChainError(err)
+    s.sol.execute = frozen_exec
+    r1 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "f1"), time.monotonic()))
+    r2 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "f2"), time.monotonic()))
+    r3 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "f3"), time.monotonic()))
+    assert r1.get("error") == 1 and r2.get("skipped") == 1 and r3.get("skipped") == 1
+    assert calls["n"] == 1  # po pierwszym „zamrożonym” nie wysyłamy już transakcji
+    # ten sam powód pominięcia – jedno powiadomienie, nie dwa
+    assert sum("zamrożony (twórca blokuje konta)" in t for _, t in sent) == 1
+    # inny token: 2 odrzucenia w 30 min → dalej nie próbujemy
+    s.sol._frozen = {}
+    s.db._q("UPDATE sol_trades SET status = 'error', info = 'sieć odrzuciła' WHERE tg_id = ?", (OWNER,))
+    r4 = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "f4"), time.monotonic()))
+    assert r4.get("skipped") == 1 and calls["n"] == 1
+
+
+def test_live_always_blocks_freeze_authority(tmp_path):
+    s, _, sent = ready(tmp_path)
+    _two_leaders(s)
+    s.db.update_user(OWNER, sol_safe=0, sol_live=1)
+
+    async def freezable(mint):
+        return {"id": mint, "audit": {"freezeAuthorityDisabled": False}, "liquidity": 50000}
+    s.sol.jup.token_full = freezable
+
+    async def none_held(u, mint):
+        return 0
+    s.sol.token_raw = none_held  # testowe RPC nie zna sald tokenów
+    res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "z1"), time.monotonic()))
+    assert res.get("skipped") == 1 and any("może zamrozić" in t for _, t in sent)
+
+
+def test_tiny_partial_sells_are_batched(tmp_path):
+    s, _, sent = ready(tmp_path)
+    _two_leaders(s)
+    s.db.update_user(OWNER, sol_buy_mode="fixed", sol_buy=0.02, sol_min_buy=0)
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "b1"), time.monotonic()))
+    import dataclasses
+    held0 = s.sol.paper(OWNER)[TOKEN]
+
+    def sell(frac, sig):  # cena tradera zgodna z testowym Jupiterem: 1 SOL = 1e9 jednostek
+        return dataclasses.replace(swap("sell", frac, sig), token_raw=1_000_000_000)
+    # trader sprzedaje po 5% – kopia warta grosze → czekamy
+    r = asyncio.run(s.sol.on_swap(WALLET, sell(0.05, "s1"), time.monotonic()))
+    assert r.get("batched") == 1 and s.sol.paper(OWNER)[TOKEN] == held0
+    for i in range(12):
+        asyncio.run(s.sol.on_swap(WALLET, sell(0.05, f"s{i + 2}"), time.monotonic()))
+    # po uzbieraniu ~połowy pozycji sprzedaje razem
+    left = s.sol.paper(OWNER).get(TOKEN, 0)
+    assert 0 < left < held0 * 0.6
+    # pełne wyjście tradera – sprzedaje wszystko od razu
+    r = asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "s99"), time.monotonic()))
+    assert r.get("filled") == 1 and s.sol.paper(OWNER).get(TOKEN, 0) == 0

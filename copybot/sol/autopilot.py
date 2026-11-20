@@ -60,8 +60,8 @@ def candidates(s) -> list[dict]:
 
 def _no_route_share(s, uid: int, lid: int) -> float:
     """Jaka część prób kopiowania tradera w 48 h skończyła się „brakiem trasy” (min. 5 takich prób)."""
-    r = s.db._q("""SELECT COUNT(*) n, SUM(info LIKE '%brak trasy%') nr FROM sol_trades
-                   WHERE tg_id = ? AND leader_id = ? AND ts >= ?""", (uid, lid, now_ms() - 2 * DAY_MS))[0]
+    r = s.db._q("""SELECT COUNT(*) n, SUM(info LIKE '%brak trasy%' OR info LIKE '%zamrożon%' OR status = 'error') nr
+                   FROM sol_trades WHERE tg_id = ? AND leader_id = ? AND ts >= ?""", (uid, lid, now_ms() - 2 * DAY_MS))[0]
     return (r["nr"] or 0) / r["n"] if r["n"] and (r["nr"] or 0) >= 5 else 0.0
 
 
@@ -94,7 +94,7 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
                 # ≥5 sprzedaży na minusie albo już ≥3 i trafia najwyżej co trzecią – nie czekamy na większą stratę
                 why = f"tracisz na nim {pnl:+.3f} SOL w 7 dni ({wins}/{sells} z zyskiem)"
             elif it["lid"] and _no_route_share(s, uid, it["lid"]) >= 0.5:
-                why = "handluje tokenami, których nie da się kupić (brak trasy wymiany)"
+                why = "większości jego zakupów nie da się skopiować (brak trasy / zamrożone tokeny / odrzucone przez sieć)"
             elif it["lid"]:
                 last = _his_last(s, it["lid"]) or 0
                 since = follows.get(it["lid"]) or now_ms()
