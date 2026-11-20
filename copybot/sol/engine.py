@@ -577,7 +577,12 @@ class SolEngine:
             cache[u["tg_id"]] = (time.monotonic(), hold)
         dead = self.__dict__.get("_unvaluable", {})
         now = time.monotonic()
-        return sum(1 for m in ledger if hold.get(m, 0) > 0 and now - dead.get(m, -1e9) >= 600)
+        # 🧊 zamrożonych tokenów nie da się sprzedać – nie mogą na zawsze blokować miejsc z limitu
+        frozen = {m for m, t in self.__dict__.get("_frozen", {}).items() if time.time() - t < 24 * 3600}
+        frozen |= {r["mint"] for r in self.db._q(
+            """SELECT DISTINCT mint FROM sol_trades WHERE tg_id = ? AND status = 'error' AND info LIKE '%zamrożon%'
+               AND ts >= ?""", (u["tg_id"], now_ms() - 7 * DAY_MS))}
+        return sum(1 for m in ledger if hold.get(m, 0) > 0 and now - dead.get(m, -1e9) >= 600 and m not in frozen)
 
     def note_buy(self, lid: int, mint: str):
         now = time.time()

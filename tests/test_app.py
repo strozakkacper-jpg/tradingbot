@@ -1215,6 +1215,14 @@ def test_open_positions_count_only_real_holdings(tmp_path):
     s.sol._unvaluable = {"MINTC": time.monotonic()}
     assert s.sol.open_positions(OWNER, paper) == 3  # stary sposób – liczył wszystkie
     assert asyncio.run(s.sol.open_positions_now(u)) == 1
+    # 🧊 zamrożony token (sieć odrzuca sprzedaż) też nie zajmuje miejsca – także po restarcie (z bazy)
+    s.sol.record(OWNER, None, None, "buy", "MINTD", 0.1, 1000, "filled", "x", paper)
+    s.sol.paper_apply(OWNER, {"MINTD": 1000})
+    s.sol._pos_cache = {}
+    assert asyncio.run(s.sol.open_positions_now(u)) == 2
+    s.sol.record(OWNER, None, None, "sell", "MINTD", 0, 0, "error", "🧊 token zamrożony – twórca", paper)
+    s.sol._pos_cache = {}
+    assert asyncio.run(s.sol.open_positions_now(u)) == 1
 
 
 def test_pct_rounds_up_to_minimum_and_autocfg_trusts_real_buys(tmp_path):
