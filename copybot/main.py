@@ -113,6 +113,7 @@ async def post_init(app: Application):
             (sol_autopilot.autopilot_job, 30 * 60, 1500),          # 🚀 autopilot: rotacja traderów (co ~6 h)
             (axiom.auto_rank_job, 6 * 3600, 600),                  # automatyczna ocena listy (co 3 dni)
             (sol_leaderboard.leaderboard_job, 6 * 3600, 600),      # ranking światowy i ranking bota
+            (sol_extras.dust_job, 6 * 3600, 300),                  # prawdziwe SOL: pył spalony, depozyty kont wracają
         ):
             app.job_queue.run_repeating(job, interval=every, first=first)
         # codziennie o stałej porze (czas użytkowników)

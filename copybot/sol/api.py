@@ -697,9 +697,9 @@ async def action(s, u, body: dict) -> dict:
     if act == "reclaim_rent":
         if not se.is_live(u):
             raise ApiError("Działa na prawdziwym portfelu (💰) – na ćwiczeniach depozyty wracają same")
-        n = await se.reclaim_rent(u)
-        return {"msg": f"🧹 Zamknięto {n} pustych kont tokenów – wróciło ok. {n * 0.00204:.4f} SOL" if n
-                else "Nie ma pustych kont tokenów do zamknięcia"}
+        n, back = await se.clean_dust(u)
+        return {"msg": f"🧹 Zamknięto {n} kont tokenów (puste i pył wart < 0,0005 SOL) – wróciło ok. {back:.4f} SOL"
+                if n else "Nie ma pustych kont ani pyłu do posprzątania"}
     if act in ("auto_settings", "autocfg_preview"):
         from . import autocfg
         from .axiom import portfolio

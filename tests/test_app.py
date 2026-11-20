@@ -1685,3 +1685,54 @@ def test_live_fill_uses_real_balance_change_and_paper_slip(tmp_path):
     for _ in range(6):
         s.sol.note_slip("buy", -0.08)
     assert abs(eng.paper_slip(s.sol, "buy") - 0.08) < 1e-9
+
+
+def test_live_costs_tip_floor_and_dust(tmp_path):
+    import dataclasses
+    from copybot.sol.engine import LIVE_MIN_BUY
+    s, _, _ = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, sol_priority=200_000)
+    u = s.db.get_user(OWNER)
+    # napiwek ~0,5% kwoty: sprzedaż za 0,002 SOL – 10 000 lamportów (a nie 200 000)
+    assert s.sol.trade_tip(u, 2_000_000) == 10_000
+    assert s.sol.trade_tip(u, 20_000_000) == 100_000 and s.sol.trade_tip(u, 5 * 10 ** 9) == 200_000
+    # prawdziwe SOL: zakup poniżej 0,01 SOL podniesiony do minimum (gdy blisko) albo pominięty (gdy groszowy)
+    s.db.update_user(OWNER, sol_live=1, sol_buy_mode="pct", sol_pct=1, sol_min_buy=0, sol_max=0)
+    u = s.db.get_user(OWNER)
+
+    async def bal(uu, max_age=0):
+        return 10 ** 9
+    s.sol.sol_lamports = bal
+
+    async def his(sw):
+        return his.v
+    s.sol.trader_sol = his
+    his.v = 0.5  # 1% = 0,005 SOL → do minimum 0,01 SOL
+    assert asyncio.run(s.sol.buy_amount(u, swap("buy", 0.5, "l1"))) == LIVE_MIN_BUY
+    his.v = 0.1  # 1% = 0,001 SOL – groszowe, pomijamy
+    import pytest
+    with pytest.raises(Exception):
+        asyncio.run(s.sol.buy_amount(u, swap("buy", 0.1, "l2")))
+    # pył: resztka warta < 0,0005 SOL i puste konto → spalone i zamknięte; zamrożone i świeże – nie
+    accs = [{"account": "A1", "program": "P", "mint": "DUST", "raw": 1000, "decimals": 6, "frozen": False},
+            {"account": "A2", "program": "P", "mint": "EMPTY", "raw": 0, "decimals": 6, "frozen": False},
+            {"account": "A3", "program": "P", "mint": "BIG", "raw": 10 ** 9, "decimals": 6, "frozen": False},
+            {"account": "A4", "program": "P", "mint": "ICE", "raw": 5, "decimals": 6, "frozen": True}]
+    burned = []
+
+    async def full(pub):
+        return accs
+
+    async def burn(kp, items):
+        burned.extend(i["mint"] for i in items)
+        return len(items)
+
+    async def px(mints):
+        from copybot.sol.parser import SOL_MINT
+        return {"DUST": 0.01, "BIG": 1.0, SOL_MINT: 100.0}
+    s.sol.rpc.token_accounts_full = full
+    s.sol.rpc.burn_and_close = burn
+    s.sol.jup.prices = px
+    n, back = asyncio.run(s.sol.clean_dust(s.db.get_user(OWNER)))
+    assert sorted(burned) == ["DUST", "EMPTY"] and n == 2 and back > 0.004

@@ -70,6 +70,8 @@ PAPER_TX_FEE = 200_000  # ~0,0002 SOL opłat sieci na transakcję (portfele wzor
 ATA_RENT = 2_039_280  # depozyt za konto tokena w sieci Solana – wraca po zamknięciu pustego konta
 BASE_FEE = 5_000  # podstawowa opłata sieci za transakcję
 MIN_BUY = 1_000_000  # 0,001 SOL
+LIVE_MIN_BUY = 10_000_000  # 0,01 SOL – mniejsze zakupy na prawdziwych SOL zjadają opłaty i depozyt konta
+DUST_SOL = 0.0005  # resztka tokena warta mniej – spalamy i odzyskujemy depozyt konta (0,002 SOL)
 DAY_MS = 24 * 3600 * 1000
 
 
@@ -163,17 +165,16 @@ class SolEngine:
             self.db.conn.execute("DELETE FROM sol_trades WHERE tg_id = ? AND paper = 1", (tg_id,))
         self.db._q("INSERT INTO sol_paper VALUES (?, ?, ?)", (tg_id, SOL_MINT, int(self.paper_start(tg_id) * LAMPORTS)))
 
-    def paper_fee(self, u) -> int:
-        """Ćwiczenia z prawdziwymi kosztami: opłata sieci + pełna opłata za szybkość / napiwek Jito
-        (tyle płaci prawdziwa transakcja – wcześniej ćwiczenia liczyły połowę i wychodziły za dobrze)."""
-        return BASE_FEE + self.priority(u)
+    def paper_fee(self, u, lamports: int | None = None) -> int:
+        """Ćwiczenia z prawdziwymi kosztami: opłata sieci + napiwek liczony jak na prawdziwej transakcji."""
+        return BASE_FEE + self.trade_tip(u, lamports)
 
     def paper_trade(self, u, side: str, mint: str, amount_raw: int, out_raw: int) -> tuple[int, int]:
         """Transakcja na ćwiczeniach z kosztami jak na prawdziwych SOL: opłaty + depozyt za nowe konto tokena
         (wraca po sprzedaży całości, bo bot zamyka puste konta). Zwraca (ilość, wynik) NAPRAWDĘ wykonane:
         sprzedaż nie może przekroczyć tego, co masz – dwie sprzedaże tego samego tokena naraz (trader sprzedaje
         w dwóch transakcjach) liczyły się wcześniej obie od pełnego stanu i dopisywały SOL za więcej tokenów."""
-        uid, fee = u["tg_id"], self.paper_fee(u)
+        uid, fee = u["tg_id"], self.paper_fee(u, amount_raw if side == "buy" else out_raw)
         held = self.paper(uid).get(mint, 0)
         if side == "buy":
             rent = ATA_RENT if held <= 0 else 0
@@ -773,6 +774,10 @@ class SolEngine:
         if want < MIN_BUY:
             raise Skip(f"za mało SOL na koncie (masz {bal / LAMPORTS:.4f} SOL)")
         floor = u["sol_min_buy"] if "sol_min_buy" in u.keys() else 0
+        if u["tg_id"] > 0:
+            # groszowe pozycje to pewna strata – depozyt konta tokena (0,002 SOL) i opłaty tam i z powrotem
+            # zjadały 15–30% kwoty (dane z łańcucha: mediana kupna 0,0065 SOL). Ćwiczenia liczą tak samo.
+            floor = max(floor or 0, LIVE_MIN_BUY / LAMPORTS)
         if floor and want < floor * LAMPORTS:
             # tylko trochę poniżej minimum (zwykłe wejście tradera) → kupujemy za minimum, jeśli starcza SOL;
             # dużo poniżej (jego zakup testowy za grosze) → pomijamy, bo opłaty zjadłyby zysk
@@ -840,7 +845,8 @@ class SolEngine:
         self._fresh(t_recv, side)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
         turbo = self.turbo(u) and self.jito is not None
         t_s = time.monotonic()
-        tx = await self.jup.swap(quote, kp, self.priority(u), jito_tip=self.priority(u) if turbo else None)
+        tip = self.trade_tip(u, sol_raw)  # kwota transakcji w SOL (kupno: wydane, sprzedaż: spodziewany wpływ)
+        tx = await self.jup.swap(quote, kp, tip, jito_tip=tip if turbo else None)
         t_b = time.monotonic()
         lat = int((t_b - t0) * 1000)  # do momentu wysłania transakcji
         self._bal.pop(pub, None)
@@ -899,6 +905,48 @@ class SolEngine:
             self._bal.pop(pub, None)
             log.info("Solana %s: zamknięto %d pustych kont tokenów (+%.4f SOL)", u["tg_id"], n, n * ATA_RENT / LAMPORTS)
         return n
+
+    async def clean_dust(self, u) -> tuple[int, float]:
+        """Prawdziwe SOL: resztki tokenów warte < 0,0005 SOL (i puste konta) – spala i zamyka konta, każde oddaje
+        ~0,002 SOL depozytu. Sprzedaż takiej resztki kosztowałaby więcej, niż jest warta. Nie rusza tokenów
+        kupionych w ostatnich 2 h ani zamrożonych. Zwraca (ile kont, ile SOL wróciło)."""
+        if not self.is_live(u):
+            return 0, 0.0
+        pub, kp = self.wallet(u["tg_id"])
+        accs = await self.rpc.token_accounts_full(pub)
+        accs = [a for a in accs if a["mint"] != SOL_MINT and not a["frozen"]]
+        if not accs:
+            return 0, 0.0
+        recent = {r["mint"] for r in self.db._q("SELECT DISTINCT mint FROM sol_trades WHERE tg_id = ? AND side = 'buy' "
+                                                "AND ts >= ?", (u["tg_id"], now_ms() - 2 * 3600 * 1000))}
+        need = [a for a in accs if a["raw"] > 0 and a["mint"] not in recent]
+        px = {}
+        if need:
+            try:
+                px = await asyncio.wait_for(self.jup.prices([a["mint"] for a in need][:49] + [SOL_MINT]), 8)
+            except Exception:  # noqa: BLE001
+                px = {}
+        sol_usd = px.get(SOL_MINT)
+        dust = []
+        for a in accs:
+            if a["raw"] == 0:
+                dust.append(a)  # puste konto
+            elif a["mint"] not in recent and sol_usd and a["mint"] in px:
+                value = a["raw"] / 10 ** a["decimals"] * px[a["mint"]] / sol_usd
+                if value < DUST_SOL:
+                    dust.append(a)
+        if not dust:
+            return 0, 0.0
+        n = await self.rpc.burn_and_close(kp, dust)
+        if n:
+            self._bal.pop(pub, None)
+            for a in dust[:n]:
+                if a["raw"] > 0:
+                    basis = self.cost_basis(u["tg_id"], a["mint"], False)
+                    self.record(u["tg_id"], None, None, "sell", a["mint"], 0.0, a["raw"] / 10 ** a["decimals"], "filled",
+                                "🧹 pył spalony – odzyskany depozyt konta", False, pnl=-(basis[0] if basis else 0))
+            log.info("Solana %s: spalono pył i zamknięto %d kont (+%.4f SOL)", u["tg_id"], n, n * ATA_RENT / LAMPORTS)
+        return n, n * ATA_RENT / LAMPORTS
 
     async def paper_close_unroutable(self, u) -> list[str]:
         """Ćwiczenia: zamyka pozycje w tokenach bez trasy wymiany (np. tokenizowane akcje kupione po cenie
@@ -979,6 +1027,14 @@ class SolEngine:
         log.info("Solana LIVE %s%s: przygotowanie %d ms · wycena %d ms · budowa %d ms · potwierdzenie %d ms",
                  side, " ⚡turbo" if turbo else "", tm["prep"], tm["quote"], tm["build"], tm["confirm"])
 
+    def trade_tip(self, u, lamports: int | None) -> int:
+        """Opłata za szybkość / napiwek dla JEDNEJ transakcji: ~0,5% jej kwoty (min. 10 000 lamportów, maks. Twoje
+        ustawienie „Szybkość”). Stały napiwek 0,0002 SOL przy sprzedaży za 0,002 SOL to było 10% kwoty."""
+        cap = self.priority(u)
+        if not lamports:
+            return cap
+        return int(min(cap, max(10_000, lamports * 0.005)))
+
     def priority(self, u) -> int:
         """Maks. opłata za szybkość (lamporty) – ustawienie użytkownika albo domyślna z konfiguracji."""
         v = u["sol_priority"] if "sol_priority" in u.keys() and u["sol_priority"] else self.cfg.sol_priority_max_lamports
@@ -995,7 +1051,7 @@ class SolEngine:
         self._fresh(t_recv, side)
         try:
             tx = await self.pump.tx(kp, side, mint, amount, in_sol, u["sol_slippage_bps"] / 100,
-                                    self.priority(u) / LAMPORTS)
+                                    self.trade_tip(u, amount_raw if side == "buy" else None) / LAMPORTS)
         except ChainError as e:
             raise Skip(f"brak trasy wymiany (Jupiter i Pump.fun): {e}") from e
         lat = int((time.monotonic() - t0) * 1000)

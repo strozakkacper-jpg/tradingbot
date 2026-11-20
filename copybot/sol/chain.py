@@ -88,6 +88,43 @@ class Rpc:
                     out[info["mint"]] = (prev + amt, int(info["tokenAmount"]["decimals"]))
         return out
 
+    async def token_accounts_full(self, owner: str) -> list[dict]:
+        """Każde konto tokena osobno: adres, program, mint, ilość, miejsca po przecinku, czy zamrożone."""
+        out = []
+        for program in TOKEN_PROGRAMS:
+            res = await self.call("getTokenAccountsByOwner", [owner, {"programId": program},
+                                                              {"encoding": "jsonParsed", "commitment": "confirmed"}])
+            for acc in res["value"]:
+                info = acc["account"]["data"]["parsed"]["info"]
+                out.append({"account": acc["pubkey"], "program": program, "mint": info["mint"],
+                            "raw": int(info["tokenAmount"]["amount"]), "decimals": int(info["tokenAmount"]["decimals"]),
+                            "frozen": info.get("state") == "frozen"})
+        return out
+
+    async def burn_and_close(self, kp: Keypair, items: list[dict]) -> int:
+        """Pył: spala resztkę tokenów (Burn) i zamyka konto (CloseAccount) – depozyt ~0,002 SOL wraca.
+        Po 4 konta w transakcji. Zwraca liczbę zamkniętych."""
+        owner = kp.pubkey()
+        done = 0
+        for i in range(0, len(items), 4):
+            ixs = []
+            for it in items[i:i + 4]:
+                prog, acc = Pubkey.from_string(it["program"]), Pubkey.from_string(it["account"])
+                if it["raw"] > 0:
+                    ixs.append(Instruction(prog, bytes([8]) + int(it["raw"]).to_bytes(8, "little"),
+                                           [AccountMeta(acc, False, True), AccountMeta(Pubkey.from_string(it["mint"]), False, True),
+                                            AccountMeta(owner, True, False)]))
+                ixs.append(Instruction(prog, bytes([9]), [AccountMeta(acc, False, True), AccountMeta(owner, False, True),
+                                                          AccountMeta(owner, True, False)]))
+            bh = (await self.call("getLatestBlockhash", [{"commitment": "confirmed"}]))["value"]["blockhash"]
+            tx = Transaction.new_signed_with_payer(ixs, owner, [kp], Hash.from_string(bh))
+            try:
+                await self.send_and_confirm(bytes(tx), timeout=30)
+                done += len(items[i:i + 4])
+            except ChainError as e:
+                log.info("Nie spalono pyłu: %s", e)
+        return done
+
     async def token_balance(self, owner: str, mint: str) -> int:
         try:
             res = await self.call("getTokenAccountsByOwner", [owner, {"mint": mint},

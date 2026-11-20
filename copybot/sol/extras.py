@@ -441,3 +441,18 @@ def register(app: Application):
     app.add_handler(CommandHandler("eksport", cmd_export))
     app.add_handler(CommandHandler("pin", cmd_pin))
     app.add_handler(CommandHandler("ustawpin", cmd_setpin))
+
+
+async def dust_job(ctx):
+    """Co 6 h: na prawdziwych SOL spala resztki tokenów warte grosze i zamyka puste konta – depozyty wracają."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None):
+        return
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1 AND u.sol_live = 1"):
+        try:
+            n, back = await s.sol.clean_dust(u)
+            if n:
+                await s.sol.say(u, "auto", f"🧹 <b>SPRZĄTANIE PORTFELA</b> – zamknąłem {n} kont tokenów (puste albo "
+                                f"resztki warte &lt; 0,0005 SOL). Wróciło ok. <b>{back:.4f} SOL</b> depozytu.")
+        except Exception:  # noqa: BLE001
+            log.exception("Sprzątanie pyłu %s", u["tg_id"])
