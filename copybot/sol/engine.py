@@ -125,6 +125,7 @@ class SolEngine:
         self._recent_buys: dict[str, dict[int, float]] = {}  # mint -> {trader: czas zakupu} – sygnał zbiorowy
         self.watcher = None  # SolWatcher (ustawiany w main)
         self.pump = None  # PumpPortal – zapasowa droga dla świeżych tokenów z Pump.fun (ustawiana w main)
+        self.raptor = None  # Raptor (Solana Tracker) – druga droga wymiany, gdy Jupiter nie ma trasy / limit (main)
         self.jito = None  # Jito Block Engine – wysyłka w trybie turbo (ustawiana w main)
         self.timings: list[dict] = []  # ostatnie pomiary etapów transakcji LIVE (do panelu admina)
 
@@ -803,12 +804,22 @@ class SolEngine:
             quote = await (prequote if prequote is not None else
                            self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"])))
         except ChainError as e:
-            if "Too many requests" in str(e) or "429" in str(e):
+            limited = "Too many requests" in str(e) or "429" in str(e)
+            quote = None
+            if not limited:
+                try:  # druga próba: szersze trasy (przez tokeny pośrednie)
+                    quote = await self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]), restrict=False)
+                except ChainError:
+                    quote = None
+            if quote is None and self.raptor is not None:
+                # druga droga: Raptor (71 giełd) – i na prawdziwych, i na ćwiczeniach (ta sama cena, te same zasady)
+                try:
+                    rq = await self.raptor.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]))
+                    quote = {"outAmount": rq["amountOut"], "_raptor": rq}
+                except ChainError:
+                    quote = None
+            if quote is None and limited:
                 raise Skip("limit zapytań Jupitera – za dużo transakcji naraz (wyższy plan Jupitera to zniesie)") from e
-            try:  # druga próba: szersze trasy (przez tokeny pośrednie)
-                quote = await self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]), restrict=False)
-            except ChainError:
-                quote = None
             if quote is None:
                 # ćwiczenia jak prawdziwe: zakup bez trasy tylko dla tokenów z platform startowych (na prawdziwych
                 # SOL kupimy je przez PumpPortal); np. tokenizowanych akcji bez trasy nie „kupujemy” na niby.
@@ -848,14 +859,17 @@ class SolEngine:
         turbo = self.turbo(u) and self.jito is not None
         t_s = time.monotonic()
         tip = self.trade_tip(u, sol_raw)  # kwota transakcji w SOL (kupno: wydane, sprzedaż: spodziewany wpływ)
-        tx = await self.jup.swap(quote, kp, tip, jito_tip=tip if turbo else None)
+        if "_raptor" in quote:
+            tx = await self.raptor.swap(quote["_raptor"], kp, tip, jito=turbo)
+        else:
+            tx = await self.jup.swap(quote, kp, tip, jito_tip=tip if turbo else None)
         t_b = time.monotonic()
         lat = int((t_b - t0) * 1000)  # do momentu wysłania transakcji
         self._bal.pop(pub, None)
         sig, confirm_s = await self.rpc.send_and_confirm(tx, also=[self.jito.send] if turbo else None)
         self.note_timing(side, turbo, t0, t_q, t_s, t_b, confirm_s)
         fill = Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s,
-                    note="⚡ turbo" if turbo else None)
+                    note=("przez Raptor" if "_raptor" in quote else None) or ("⚡ turbo" if turbo else None))
         return await self._actual(fill, pub, mint, side, decimals, sol_raw, tok_raw)
 
     async def _actual(self, fill: Fill, pub: str, mint: str, side: str, decimals: int, q_sol: int, q_tok: int) -> Fill:

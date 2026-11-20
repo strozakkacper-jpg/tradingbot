@@ -12,7 +12,7 @@ import aiohttp
 
 from . import demo, mirror, traders
 from .sol import admin as sol_admin, autocfg as sol_autocfg, autopilot as sol_autopilot, axiom, extras as sol_extras, leaderboard as sol_leaderboard, ui as sol_ui
-from .sol.chain import Jito, Jupiter, PumpPortal, Rpc
+from .sol.chain import Jito, Jupiter, PumpPortal, Raptor, Rpc
 from .sol.engine import SolEngine
 from .sol.watcher import SolWatcher
 from .live import live_job
@@ -76,6 +76,7 @@ async def post_init(app: Application):
                                  svc.sol.on_swap)
         svc.sol.watcher = sol_watcher
         svc.sol.pump = PumpPortal(session)
+        svc.sol.raptor = Raptor(session)
         svc.sol.jito = Jito(cfg.jito_url, session) if cfg.jito_url else None
         app.bot_data.update(sol_session=session, sol_task=asyncio.create_task(sol_watcher.run()))
         log.info("Solana: RPC %s · Jupiter %s · %s", "Helius" if cfg.helius_api_key else "publiczny (wolniejszy)",

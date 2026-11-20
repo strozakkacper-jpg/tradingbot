@@ -403,14 +403,63 @@ class PumpPortal:
         body = {"publicKey": str(kp.pubkey()), "action": action, "mint": mint, "amount": amount,
                 "denominatedInSol": "true" if in_sol else "false", "slippage": round(slippage_pct, 2),
                 "priorityFee": round(priority_sol, 6), "pool": "auto"}
-        async with self.session.post(self.URL, json=body, timeout=aiohttp.ClientTimeout(total=10)) as r:
-            data = await r.read()
-            if r.status != 200:
-                raise ChainError(f"PumpPortal: {data[:150].decode('utf-8', 'ignore') or r.status}")
+        try:
+            async with self.session.post(self.URL, json=body, timeout=aiohttp.ClientTimeout(total=10)) as r:
+                data = await r.read()
+                if r.status != 200:
+                    raise ChainError(f"PumpPortal: {data[:150].decode('utf-8', 'ignore') or r.status}")
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as e:
+            raise ChainError(f"PumpPortal niedostępny ({type(e).__name__})") from e
         try:
             raw = VersionedTransaction.from_bytes(data)
         except Exception as e:  # noqa: BLE001
             raise ChainError(f"PumpPortal: zła odpowiedź ({e})") from e
+        return bytes(VersionedTransaction(raw.message, [kp]))
+
+
+JITO_TIP_ACCOUNTS = ("96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5", "HFqU5x63VTqvQss8hp11i4wVV8bD44PvwucfZ2bU7gRe",
+                     "Cw8CFyM9FkoMi7K7Crf6HNQqf4uEMzpKw6QNghXLvLkY", "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49",
+                     "DfXygSm4jCyNCybVYYK6DwvWqjKee8pbDmJGcLWNDXjh", "ADuUkR4vqLUMWXxW9gh6D6L8pMSawimctcNZ5pGwDcEt",
+                     "DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL", "3AVi9Tg9Uo68tJfuvoKvqKNWKkC5wPdSSdeBnizKZ6jT")
+
+
+class Raptor:
+    """Druga droga wymiany (Solana Tracker Raptor, 71 giełd, bez klucza): gdy Jupiter nie ma trasy albo przytnie
+    limit zapytań. Serwer buduje transakcję, my ją podpisujemy i wysyłamy własnym RPC – klucz nie opuszcza bota."""
+
+    URL = "https://raptor.solanatracker.io"
+
+    def __init__(self, session: aiohttp.ClientSession):
+        self.session = session
+
+    async def _req(self, method: str, path: str, **kw) -> dict:
+        try:
+            async with self.session.request(method, self.URL + path, timeout=aiohttp.ClientTimeout(total=8), **kw) as r:
+                data = await r.json(content_type=None)
+                status = r.status
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError) as e:
+            raise ChainError(f"Raptor niedostępny ({type(e).__name__})") from e
+        if status != 200 or not isinstance(data, dict) or data.get("error"):
+            raise ChainError(f"Raptor: {(data or {}).get('error') or (data or {}).get('message') or status}")
+        return data
+
+    async def quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
+        q = await self._req("GET", "/quote", params={"inputMint": in_mint, "outputMint": out_mint, "amount": str(amount),
+                                                     "slippageBps": str(slippage_bps)})
+        if not int(q.get("amountOut") or 0):
+            raise ChainError("Raptor: brak trasy")
+        return q
+
+    async def swap(self, quote: dict, kp: Keypair, tip_lamports: int, jito: bool) -> bytes:
+        body = {"userPublicKey": str(kp.pubkey()), "quoteResponse": quote, "txVersion": "V0", "wrapUnwrapSol": True,
+                "priorityFee": "auto"}
+        if jito:
+            import random
+            body.update(tipAccount=random.choice(JITO_TIP_ACCOUNTS), tipLamports=int(tip_lamports))
+        data = await self._req("POST", "/swap", json=body)
+        if not data.get("swapTransaction"):
+            raise ChainError("Raptor: brak transakcji")
+        raw = VersionedTransaction.from_bytes(base64.b64decode(data["swapTransaction"]))
         return bytes(VersionedTransaction(raw.message, [kp]))
 
 

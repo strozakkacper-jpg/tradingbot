@@ -1736,3 +1736,62 @@ def test_live_costs_tip_floor_and_dust(tmp_path):
     s.sol.jup.prices = px
     n, back = asyncio.run(s.sol.clean_dust(s.db.get_user(OWNER)))
     assert sorted(burned) == ["DUST", "EMPTY"] and n == 2 and back > 0.004
+
+
+def test_raptor_fallback_pumpportal_down_and_trader_left(tmp_path):
+    from copybot.db import ref_id
+    from copybot.sol.chain import ChainError
+    s, ctx, sent = ready(tmp_path)
+    _two_leaders(s)
+    u = s.db.get_user(OWNER)
+
+    async def no_route(*a, **k):
+        raise ChainError("Jupiter: No routes found")
+    s.sol.jup.quote = no_route
+
+    class FakeRaptor:
+        calls = 0
+
+        async def quote(self, i, o, amount, slip):
+            FakeRaptor.calls += 1
+            return {"amountOut": str(amount * 1000 // 10 ** 6 if i.startswith("So111") else amount // 1000)}
+    s.sol.raptor = FakeRaptor()
+    # ćwiczenia: brak trasy w Jupiterze → wycena z Raptora (ta sama droga co na prawdziwych)
+    f = asyncio.run(s.sol.execute(u, "buy", TOKEN, 50_000_000, decimals=6))
+    assert FakeRaptor.calls == 1 and f.tokens > 0
+    # PumpPortal niedostępny → czytelne pominięcie, nie błąd aplikacji
+    s.sol.raptor = None
+
+    class DeadPump:
+        async def tx(self, *a, **k):
+            raise ChainError("PumpPortal niedostępny (ClientConnectorError)")
+    s.sol.pump = DeadPump()
+    s.db.update_user(OWNER, sol_live=1)
+
+    async def zero(*a, **k):
+        return 0
+    orig_raw = s.sol.token_raw
+    s.sol.token_raw = zero
+    s.sol.rpc.balance = lambda pub: asyncio.sleep(0, 10 ** 9)
+    import pytest
+    from copybot.sol.engine import Skip
+    with pytest.raises(Skip, match="brak trasy"):
+        asyncio.run(s.sol.execute(s.db.get_user(OWNER), "sell", TOKEN, 1000, decimals=6))
+    s.db.update_user(OWNER, sol_live=0)
+    s.sol.token_raw = orig_raw
+    # trader wyszedł: on sprzedał wszystko > 90 s temu, a u Ciebie coś zostało → tpsl sprzedaje resztę
+    from copybot.sol import axiom as AXm
+    lids = [r["id"] for r in s.db._q("SELECT id FROM leaders WHERE wallet = ?", (WALLET,))]
+    s.sol.jup.quote = __import__("test_sol").FakeJup().quote
+    asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1, "tl1"), time.monotonic()))
+    assert s.sol.paper(OWNER).get(TOKEN, 0) > 0
+    assert not AXm.trader_left(s, s.db.get_user(OWNER), TOKEN)  # trader dalej trzyma
+    for lid in lids:
+        rid = ref_id(lid)
+        s.sol.paper_apply(rid, {TOKEN: -s.sol.paper(rid).get(TOKEN, 0)})
+        s.sol.record(rid, lid, None, "sell", TOKEN, 1.0, 1000, "filled", "1", True)
+        s.db._q("UPDATE sol_trades SET ts = ts - 200000 WHERE tg_id = ? AND side = 'sell'", (rid,))
+    assert AXm.trader_left(s, s.db.get_user(OWNER), TOKEN)
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    asyncio.run(AXm.tpsl_job(jctx))
+    assert s.sol.paper(OWNER).get(TOKEN, 0) == 0 and any("TRADER WYSZEDŁ" in t for _, t in sent)

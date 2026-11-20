@@ -866,6 +866,26 @@ async def conv_cancel(update: Update, ctx):
 
 # ---------------- auto take-profit / stop-loss ----------------
 
+def trader_left(s, u, mint: str) -> bool:
+    """Wszyscy traderzy, za którymi kupiłeś ten token, już go całkiem sprzedali (ich portfele wzorcowe nie mają
+    go od ponad 90 s), a Ty wciąż trzymasz – sprzedaż kopii nie weszła, przerwa w połączeniu, restart bota albo
+    resztka po łączonych drobnych sprzedażach. Tokenów kupionych ręcznie nie rusza."""
+    from ..db import ref_id
+    rows = s.db._q("""SELECT DISTINCT leader_id FROM sol_trades WHERE tg_id = ? AND mint = ? AND side = 'buy'
+                      AND status = 'filled' AND paper = ? AND leader_id IS NOT NULL""",
+                   (u["tg_id"], mint, int(not s.sol.is_live(u))))
+    if not rows:
+        return False
+    for r in rows:
+        rid = ref_id(r["leader_id"])
+        if s.sol.paper(rid).get(mint, 0) > 0:
+            return False  # ten trader dalej trzyma
+        last = s.db._q("SELECT MAX(ts) t FROM sol_trades WHERE tg_id = ? AND mint = ? AND side = 'sell'", (rid, mint))[0]["t"]
+        if not last or now_ms() - last < 90_000:
+            return False  # trader nie sprzedawał (brak danych) albo zwykła kopia jeszcze może dojść
+    return True
+
+
 LADDER = (5.0, 10.0, 25.0)  # 🚀 drabinka zysku: przy tych wielokrotnościach kosztu sprzedaje 25% pozycji
 
 
@@ -874,9 +894,8 @@ async def tpsl_job(ctx):
     s = ctx.application.bot_data["svc"]
     if not getattr(s, "sol", None):
         return
-    users = s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id "
-                    "WHERE u.approved = 1 AND (u.sol_tp > 0 OR u.sol_sl > 0 OR u.sol_x2 > 0 OR u.sol_trail > 0 "
-                    "OR u.sol_time_exit > 0 OR u.sol_dev_exit > 0 OR u.sol_ladder > 0)")
+    # wszyscy z portfelem: „trader wyszedł” chroni każdego, nawet bez stop-lossa i innych opcji
+    users = s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1")
     for u in users:
         try:
             pf = await portfolio(s, u)
@@ -885,7 +904,10 @@ async def tpsl_job(ctx):
         for pos in pf["positions"]:
             pnl = pos["pnl"]
             if pnl is None:
-                continue
+                if trader_left(s, u, pos["mint"]):  # bez ceny, ale trader wyszedł – i tak sprzedajemy
+                    pnl = 0.0
+                else:
+                    continue
             # ruchomy stop-loss: pamiętamy szczyt (wielokrotność kosztu) i sprzedajemy po spadku o X% od szczytu,
             # ale dopiero gdy token był już ×2 (z „zwrotem wkładu”) albo ×1,5 – wcześniej to zwykłe wahania memecoina
             ratio, trail_hit = 1 + pnl / 100, False
@@ -923,7 +945,10 @@ async def tpsl_job(ctx):
                 lkey = f"lad:{u['tg_id']}:{pos['mint']}"
                 done = float(s.db.get_state(lkey) or 0)
                 step = next((m for m in LADDER if ratio >= m and done < m), None)
-            hit = ("🎯 <b>TAKE-PROFIT</b> – zysk osiągnięty" if u["sol_tp"] and pnl >= u["sol_tp"] else
+            exit_hit = trader_left(s, u, pos["mint"])
+            hit = ("🏃 <b>TRADER WYSZEDŁ</b> – on już sprzedał wszystko, a u Ciebie coś zostało (np. sprzedaż nie weszła)"
+                   if exit_hit else
+                   "🎯 <b>TAKE-PROFIT</b> – zysk osiągnięty" if u["sol_tp"] and pnl >= u["sol_tp"] else
                    f"🏃 <b>TWÓRCA UCIEKA</b> – miał {dev_hit[0]:.1f}% tokenów, teraz {dev_hit[1]:.1f}%" if dev_hit else
                    "🛑 <b>STOP-LOSS</b> – ucinam stratę" if u["sol_sl"] and pnl <= -u["sol_sl"] else
                    f"📉 <b>RUCHOMY STOP</b> – spadek o {u['sol_trail']:g}% od szczytu (było ×{peak:.2f})"

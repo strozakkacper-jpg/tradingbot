@@ -492,6 +492,13 @@ async def diagnostics_job(ctx):
     s = ctx.application.bot_data["svc"]
     if not getattr(s, "sol", None):
         return
+    from .parser import SOL_MINT, USDC_MINT
+    if getattr(s.sol, "raptor", None):  # czy druga droga wymiany działa z serwera
+        try:
+            q = await s.sol.raptor.quote(SOL_MINT, USDC_MINT, 10_000_000, 100)
+            log.info("Raptor (druga droga wymiany): OK – 0,01 SOL = %s USDC", int(q["amountOut"]) / 1e6)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Raptor (druga droga wymiany) niedostępny: %s", e)
     try:
         for d in diagnostics(s):
             log.info("DIAG %s", json.dumps(d, ensure_ascii=False))
