@@ -140,7 +140,7 @@ def test_buy_before_wallet_exists_keeps_position(tmp_path):
     asyncio.run(AX.on_button(u, ctx))
     bal = s.sol.paper(OWNER)
     from copybot.sol.engine import ATA_RENT, BASE_FEE
-    assert bal[TOKEN] == 100_000_000 and bal[SOL_MINT] == 5 * LAMPORTS - LAMPORTS // 10 - (BASE_FEE + 250_000) - ATA_RENT
+    assert bal[TOKEN] == 100_000_000 and bal[SOL_MINT] == 5 * LAMPORTS - LAMPORTS // 10 - (BASE_FEE + 500_000) - ATA_RENT
     assert "pozycje 1" in last_text(u)
 
 

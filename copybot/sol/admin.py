@@ -445,6 +445,10 @@ def diagnostics(s) -> list[dict]:
             lv = s.db._q("""SELECT side, COUNT(*) n, SUM(sol) sol FROM sol_trades WHERE tg_id = ? AND paper = 0
                             AND status = 'filled' GROUP BY side""", (uid,))
             d["live_summary"] = {r["side"]: {"n": r["n"], "sol": round(r["sol"] or 0, 4)} for r in lv}
+            rows = s.db._q("""SELECT side, sig, sol, tokens, ts FROM sol_trades WHERE tg_id = ? AND paper = 0
+                              AND status = 'filled' AND sig IS NOT NULL ORDER BY id DESC LIMIT 400""", (uid,))
+            d["live_fills"] = [[r["side"][0], r["sig"], round(r["sol"] or 0, 6), r["tokens"]] for r in rows]
+            d["slippage"] = {k: sorted(v)[len(v) // 2] if v else None for k, v in getattr(s.sol, "slips", {}).items()}
             d["live_errors"] = s.db._q("SELECT COUNT(*) n FROM sol_trades WHERE tg_id = ? AND paper = 0 AND status = 'error'",
                                        (uid,))[0]["n"]
         d["pnl_sum_all"] = round(s.db._q("SELECT COALESCE(SUM(pnl),0) p FROM sol_trades WHERE tg_id = ? AND paper = ? "

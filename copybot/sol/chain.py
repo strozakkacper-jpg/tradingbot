@@ -132,6 +132,32 @@ class Rpc:
                 last_send = time.monotonic()
         raise ChainError("brak potwierdzenia w 45 s (blockhash wygasł) – sprawdź saldo")
 
+    async def balance_change(self, sig: str, owner: str, mint: str) -> tuple[int, int, bool] | None:
+        """Co NAPRAWDĘ zmieniła transakcja na portfelu: (zmiana SOL w lamportach – z opłatą, napiwkiem i
+        depozytem konta, zmiana tokena w jednostkach, czy utworzono nowe konto tokena). None = brak danych."""
+        for delay in (0.3, 0.6, 1.0, 1.5, 2.5):
+            await asyncio.sleep(delay)
+            try:
+                tx = await self.call("getTransaction", [sig, {"encoding": "jsonParsed", "commitment": "confirmed",
+                                                              "maxSupportedTransactionVersion": TX_VERSION}])
+            except ChainError:
+                tx = None
+            if not tx or not tx.get("meta"):
+                continue
+            meta, keys = tx["meta"], tx["transaction"]["message"]["accountKeys"]
+            idx = next((i for i, k in enumerate(keys) if (k["pubkey"] if isinstance(k, dict) else k) == owner), None)
+            if idx is None:
+                return None
+            sol = meta["postBalances"][idx] - meta["preBalances"][idx]
+
+            def tok(rows):
+                return sum(int(r["uiTokenAmount"]["amount"]) for r in rows or []
+                           if r.get("owner") == owner and r.get("mint") == mint)
+            pre_rows = [r for r in meta.get("preTokenBalances") or [] if r.get("owner") == owner and r.get("mint") == mint]
+            post_rows = [r for r in meta.get("postTokenBalances") or [] if r.get("owner") == owner and r.get("mint") == mint]
+            return sol, tok(post_rows) - tok(pre_rows), bool(post_rows) and not pre_rows
+        return None
+
     async def empty_token_accounts(self, owner: str, mint: str | None = None) -> list[tuple[str, str]]:
         """Puste konta tokenów [(adres konta, program)] – każde blokuje ~0,002 SOL depozytu."""
         out = []

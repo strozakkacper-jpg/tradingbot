@@ -1654,3 +1654,34 @@ def test_tiny_partial_sells_are_batched(tmp_path):
     # pełne wyjście tradera – sprzedaje wszystko od razu
     r = asyncio.run(s.sol.on_swap(WALLET, swap("sell", 1.0, "s99"), time.monotonic()))
     assert r.get("filled") == 1 and s.sol.paper(OWNER).get(TOKEN, 0) == 0
+
+
+def test_live_fill_uses_real_balance_change_and_paper_slip(tmp_path):
+    from copybot.sol.chain import Rpc
+    from copybot.sol.engine import ATA_RENT, Fill
+    s, _, _ = ready(tmp_path)
+    OWNERW = "Own3r111111111111111111111111111111111111111"
+    tx = {"meta": {"preBalances": [1_000_000_000, 5], "postBalances": [1_000_000_000 - 100_000_000 - 205_000 - ATA_RENT, 5],
+                   "preTokenBalances": [],
+                   "postTokenBalances": [{"owner": OWNERW, "mint": TOKEN, "uiTokenAmount": {"amount": "45000000"}}]},
+          "transaction": {"message": {"accountKeys": [{"pubkey": OWNERW}, {"pubkey": "X"}]}}}
+
+    class R(Rpc):
+        def __init__(self):
+            pass
+
+        async def call(self, method, params=None):
+            return tx
+    ch = asyncio.run(R().balance_change("sig", OWNERW, TOKEN))
+    assert ch == (-(100_000_000 + 205_000 + ATA_RENT), 45_000_000, True)
+    # kupno: wynik z prawdziwej zmiany salda (z opłatą, bez zwrotnego depozytu), poślizg do statystyk
+    s.sol.rpc.balance_change = lambda *a: asyncio.sleep(0, ch)
+    f = asyncio.run(s.sol._actual(Fill(0.1, 50.0, "sig", 1), OWNERW, TOKEN, "buy", 6, 100_000_000, 50_000_000))
+    assert abs(f.sol - 0.100205) < 1e-9 and f.tokens == 45.0
+    assert abs(s.sol.slips["buy"][-1] + 0.1) < 1e-9  # 10% mniej tokenów niż w wycenie
+    # ćwiczenia: bez danych 2%, z danymi – mediana z prawdziwych (min. 1%, maks. 15%)
+    eng = type(s.sol)
+    assert eng.paper_slip(s.sol, "sell") == 0.02
+    for _ in range(6):
+        s.sol.note_slip("buy", -0.08)
+    assert abs(eng.paper_slip(s.sol, "buy") - 0.08) < 1e-9

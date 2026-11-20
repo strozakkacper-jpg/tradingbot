@@ -164,8 +164,9 @@ class SolEngine:
         self.db._q("INSERT INTO sol_paper VALUES (?, ?, ?)", (tg_id, SOL_MINT, int(self.paper_start(tg_id) * LAMPORTS)))
 
     def paper_fee(self, u) -> int:
-        """Ćwiczenia z prawdziwymi kosztami: opłata sieci + ok. połowa maks. opłaty za szybkość."""
-        return BASE_FEE + self.priority(u) // 2
+        """Ćwiczenia z prawdziwymi kosztami: opłata sieci + pełna opłata za szybkość / napiwek Jito
+        (tyle płaci prawdziwa transakcja – wcześniej ćwiczenia liczyły połowę i wychodziły za dobrze)."""
+        return BASE_FEE + self.priority(u)
 
     def paper_trade(self, u, side: str, mint: str, amount_raw: int, out_raw: int) -> tuple[int, int]:
         """Transakcja na ćwiczeniach z kosztami jak na prawdziwych SOL: opłaty + depozyt za nowe konto tokena
@@ -813,6 +814,9 @@ class SolEngine:
                     return await self._live_pumpportal(u, side, mint, amount_raw, t0, t_recv, decimals)
                 raise Skip(f"brak trasy wymiany – Jupiter jeszcze nie obsługuje tego tokena ({e})") from e
         out = int(quote["outAmount"])
+        if not self.is_live(u) and u["tg_id"] > 0:
+            # ćwiczenia: poślizg taki, jak wychodzi na prawdziwych transakcjach (cena rusza się, zanim wejdziemy)
+            out = int(out * (1 - self.paper_slip(side)))
         chase = u["sol_chase"] if "sol_chase" in u.keys() else 0
         if side == "buy" and chase and fallback is not None and out > 0 and u["tg_id"] > 0:
             his = await self._trader_price(fallback)  # lamporty za jednostkę tokena u tradera
@@ -842,8 +846,47 @@ class SolEngine:
         self._bal.pop(pub, None)
         sig, confirm_s = await self.rpc.send_and_confirm(tx, also=[self.jito.send] if turbo else None)
         self.note_timing(side, turbo, t0, t_q, t_s, t_b, confirm_s)
-        return Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s,
+        fill = Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s,
                     note="⚡ turbo" if turbo else None)
+        return await self._actual(fill, pub, mint, side, decimals, sol_raw, tok_raw)
+
+    async def _actual(self, fill: Fill, pub: str, mint: str, side: str, decimals: int, q_sol: int, q_tok: int) -> Fill:
+        """Prawdziwe SOL: wynik z TEGO, co naprawdę weszło (saldo przed/po w transakcji), a nie z wyceny sprzed
+        wysłania. Kupno = ile SOL wyszło (z opłatą i napiwkiem, bez zwrotnego depozytu konta), sprzedaż = ile
+        SOL wróciło po opłatach. Poślizg względem wyceny trafia do statystyk – ćwiczenia liczą z nim tak samo."""
+        try:
+            ch = await self.rpc.balance_change(fill.sig, pub, mint)
+        except Exception:  # noqa: BLE001
+            ch = None
+        if not ch:
+            return fill
+        sol_d, tok_d, new_acc = ch
+        if side == "buy":
+            spent = -sol_d - (ATA_RENT if new_acc else 0)
+            got = max(tok_d, 0)
+            if spent > 0 and got > 0:
+                self.note_slip("buy", got / q_tok - 1 if q_tok else 0)
+                fill.sol, fill.tokens = spent / LAMPORTS, got / 10 ** decimals
+        else:
+            back = max(sol_d, 0)
+            sold = max(-tok_d, 0)
+            if sold > 0:
+                self.note_slip("sell", back / q_sol - 1 if q_sol else 0)
+                fill.sol, fill.tokens = back / LAMPORTS, sold / 10 ** decimals
+        return fill
+
+    def note_slip(self, side: str, pct: float):
+        """Ile gorzej (ułamek) wyszła prawdziwa transakcja niż wycena – ostatnie 60 na stronę."""
+        s = self.__dict__.setdefault("slips", {"buy": [], "sell": []})
+        s[side] = (s[side] + [max(min(pct, 0.5), -0.9)])[-60:]
+
+    def paper_slip(self, side: str) -> float:
+        """Poślizg do ćwiczeń: mediana z prawdziwych transakcji (min. 1%, maks. 15%), bez danych – 2%."""
+        vals = sorted(self.__dict__.get("slips", {}).get(side, []))
+        if len(vals) < 5:
+            return 0.02
+        med = vals[len(vals) // 2]
+        return min(max(-med, 0.01), 0.15)
 
     async def reclaim_rent(self, u, mint: str | None = None) -> int:
         """Zamyka puste konta tokenów w prawdziwym portfelu – depozyt (~0,002 SOL za konto) wraca."""
@@ -958,7 +1001,18 @@ class SolEngine:
         lat = int((time.monotonic() - t0) * 1000)
         self._bal.pop(pub, None)
         sig, confirm_s = await self.rpc.send_and_confirm(tx)
-        try:  # rzeczywiste ilości z sald po transakcji
+        try:
+            ch = await self.rpc.balance_change(sig, pub, mint)
+        except Exception:  # noqa: BLE001
+            ch = None
+        if ch:
+            sol_d, tok_d, new_acc = ch
+            if side == "buy" and tok_d > 0:
+                return Fill((-sol_d - (ATA_RENT if new_acc else 0)) / LAMPORTS, tok_d / 10 ** decimals, sig, lat,
+                            confirm_s, note="przez Pump.fun")
+            if side == "sell" and tok_d < 0:
+                return Fill(max(sol_d, 0) / LAMPORTS, -tok_d / 10 ** decimals, sig, lat, confirm_s, note="przez Pump.fun")
+        try:  # zapas: rzeczywiste ilości z sald po transakcji
             post_tok, post_sol = await self.token_raw(u, mint), await self.rpc.balance(pub)
         except Exception:  # noqa: BLE001
             post_tok, post_sol = pre_tok, pre_sol
