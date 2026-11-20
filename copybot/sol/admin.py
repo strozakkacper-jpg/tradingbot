@@ -439,6 +439,14 @@ def diagnostics(s) -> list[dict]:
                                    "pnl": round(r["pnl"] or 0, 4), "info": (r["info"] or "")[:30],
                                    "trader": (r["name"] or "")[:20], "buys": b["n"], "buy_sol": round(b["sol"] or 0, 4),
                                    "buy_tok": b["tok"], "buy_info": (b["i"] or "")[:60]})
+        if not paper:
+            pub, _ = s.sol.wallet(uid)
+            d["wallet"] = pub  # publiczny adres – do analizy transakcji prosto z sieci
+            lv = s.db._q("""SELECT side, COUNT(*) n, SUM(sol) sol FROM sol_trades WHERE tg_id = ? AND paper = 0
+                            AND status = 'filled' GROUP BY side""", (uid,))
+            d["live_summary"] = {r["side"]: {"n": r["n"], "sol": round(r["sol"] or 0, 4)} for r in lv}
+            d["live_errors"] = s.db._q("SELECT COUNT(*) n FROM sol_trades WHERE tg_id = ? AND paper = 0 AND status = 'error'",
+                                       (uid,))[0]["n"]
         d["pnl_sum_all"] = round(s.db._q("SELECT COALESCE(SUM(pnl),0) p FROM sol_trades WHERE tg_id = ? AND paper = ? "
                                          "AND side = 'sell' AND status = 'filled'", (uid, int(paper)))[0]["p"], 4)
         d["paper_start"] = s.sol.paper_start(uid)
