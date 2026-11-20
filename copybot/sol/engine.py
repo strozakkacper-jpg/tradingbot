@@ -413,11 +413,14 @@ class SolEngine:
                 boosted = cons >= 2 and boost > 1 and not already
                 topup = boosted and holds  # dokładamy do pozycji kupionej za 1. traderem
                 if self.turbo(u):
-                    # turbo: kwotę liczymy od razu i wycenę z Jupitera puszczamy RÓWNOLEGLE z filtrami
+                    # turbo: najpierw tanie filtry z bazy (bez sieci) – odrzucony zakup nie zużywa limitu Jupitera;
+                    # potem kwota i wycena RÓWNOLEGLE z resztą filtrów (sieć)
+                    self.guard_db(u, sw, lead)
                     amount = await self.buy_amount(u, sw)
                     if not boosted:
-                        prequote = asyncio.create_task(self.jup.quote(SOL_MINT, sw.mint, amount,
-                                                                      int(u["sol_slippage_bps"])))
+                        prequote = asyncio.create_task(self.fast_quote(SOL_MINT, sw.mint, amount,
+                                                                       int(u["sol_slippage_bps"])))
+                        prequote.add_done_callback(lambda f: f.cancelled() or f.exception())
                     try:
                         await self.guard_buy(u, sw, lead, allow_add=topup)
                     except Exception:
@@ -635,6 +638,45 @@ class SolEngine:
         self._hold_cache[lid] = (time.monotonic(), out)
         return out
 
+    def guard_db(self, u, sw: Swap, lead=None):
+        """Tanie bezpieczniki – tylko baza i pamięć, bez zapytań do sieci (te same co w guard_buy). Turbo
+        sprawdza je PRZED wyceną, żeby odrzucone zakupy nie zjadały limitu zapytań Jupitera."""
+        keys = u.keys()
+        if lead is not None and "sol_min_hold" in keys and u["sol_min_hold"] > 0:
+            hs = self.hold_stats(lead["id"])
+            if hs["n"] >= 5 and hs["median_s"] is not None and hs["median_s"] < u["sol_min_hold"]:
+                raise Skip(f"⚡ flipper – trzyma tokeny zwykle ok. {hs['median_s']:.0f} s (Twój próg "
+                           f"{u['sol_min_hold']:g} s), kopiowanie nieopłacalne")
+        adds = u["sol_max_adds"] if "sol_max_adds" in keys else 0
+        if adds and adds > 0:
+            n = self.db._q("""SELECT COUNT(*) n FROM sol_trades WHERE tg_id = ? AND mint = ? AND side = 'buy'
+                              AND status = 'filled' AND paper = ? AND ts >= ?""",
+                           (u["tg_id"], sw.mint, int(not self.is_live(u)), now_ms() - 24 * 3600 * 1000))[0]["n"]
+            if n >= adds:
+                raise Skip(f"🛡 ten token kupiłeś już {n}× w 24 h (Twój limit {adds}) – trader dokupuje, "
+                           "a Ty nie pakujesz w jeden token coraz więcej")
+        limit = u["sol_day_limit"] if "sol_day_limit" in keys else 0
+        if limit and limit > 0:
+            pnl = self.day_pnl(u["tg_id"], not self.is_live(u))
+            if pnl <= -limit:
+                raise Skip(f"🛑 dzienny limit straty – dziś już −{-pnl:.3f} SOL (limit {limit:g} SOL), "
+                           "bot wraca do kupowania jutro")
+        streak = u["sol_streak"] if "sol_streak" in keys else 0
+        if streak and streak > 0:
+            last = self.db._q("""SELECT pnl, ts FROM sol_trades WHERE tg_id = ? AND paper = ? AND side = 'sell'
+                                 AND status = 'filled' AND pnl IS NOT NULL ORDER BY id DESC LIMIT ?""",
+                              (u["tg_id"], int(not self.is_live(u)), int(streak)))
+            if len(last) >= streak and all(r["pnl"] < 0 for r in last) and now_ms() - last[0]["ts"] < 30 * 60_000:
+                left = 30 - (now_ms() - last[0]["ts"]) // 60_000
+                raise Skip(f"☕ przerwa po {streak} stratach z rzędu – bot wraca do kupowania za ok. {left} min")
+        frozen = self.__dict__.setdefault("_frozen", {})
+        if time.time() - frozen.get(sw.mint, 0) < 24 * 3600:
+            raise Skip("🧊 token zamrożony (twórca blokuje konta) – sieć odrzuca każdy zakup, nie próbuję")
+        bad = self.db._q("""SELECT COUNT(*) n FROM sol_trades WHERE tg_id = ? AND mint = ? AND status = 'error'
+                            AND ts >= ?""", (u["tg_id"], sw.mint, now_ms() - 30 * 60_000))[0]["n"]
+        if bad >= 2:
+            raise Skip(f"sieć odrzuciła ten token już {bad}× w 30 min – nie próbuję dalej (każda próba to opłata)")
+
     async def guard_buy(self, u, sw: Swap, lead=None, allow_add: bool = False):
         """Bezpieczniki przed skopiowaniem zakupu: limit straty, filtry tradera, „nie dokupuj”, 🛡 ryzyko."""
         keys = u.keys()
@@ -794,6 +836,21 @@ class SolEngine:
             raise Skip(f"za mała kwota ({want / LAMPORTS:.4f} SOL) – opłaty zjadłyby zysk")
         return want
 
+    def _jup_busy(self) -> bool:
+        busy = getattr(self.jup, "busy", None)
+        return bool(busy and busy())
+
+    async def fast_quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
+        """Wycena bez stania w kolejce: gdy okno zapytań Jupitera jest pełne (transakcja czekałaby do ~10 s),
+        od razu pytamy Raptora; gdy Raptor nie ma trasy – i tak Jupiter."""
+        if self.raptor is not None and self._jup_busy():
+            try:
+                rq = await self.raptor.quote(in_mint, out_mint, amount, slippage_bps)
+                return {"outAmount": rq["amountOut"], "_raptor": rq}
+            except ChainError:
+                pass
+        return await self.jup.quote(in_mint, out_mint, amount, slippage_bps)
+
     async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,
                       decimals: int | None = None, fallback: Swap | None = None, prequote=None) -> Fill:
         """Kupno: amount_raw = lamporty SOL. Sprzedaż: jednostki tokena."""
@@ -807,7 +864,7 @@ class SolEngine:
         t_q = time.monotonic()
         try:
             quote = await (prequote if prequote is not None else
-                           self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"])))
+                           self.fast_quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"])))
         except ChainError as e:
             limited = "Too many requests" in str(e) or "429" in str(e)
             quote = None
@@ -864,6 +921,13 @@ class SolEngine:
         turbo = self.turbo(u) and self.jito is not None
         t_s = time.monotonic()
         tip = self.trade_tip(u, sol_raw)  # kwota transakcji w SOL (kupno: wydane, sprzedaż: spodziewany wpływ)
+        if "_raptor" not in quote and self.raptor is not None and self._jup_busy():
+            # budowa transakcji u Jupitera stałaby w kolejce limitu – budujemy przez Raptora (świeża wycena)
+            try:
+                rq = await self.raptor.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]))
+                quote = {"outAmount": rq["amountOut"], "_raptor": rq}
+            except ChainError:
+                pass
         if "_raptor" in quote:
             tx = await self.raptor.swap(quote["_raptor"], kp, tip, jito=turbo)
         else:

@@ -1837,3 +1837,64 @@ def test_planned_balance_and_wikix_plan(tmp_path):
     assert u["sol_max_pos"] == 8 and u["sol_max"] == 0.12 and u["sol_autopilot"] == 1
     assert u["sol_autocfg_bal"] == 0.75
     assert AC.planned_balance(s, AP.WIKIX, 0.02) == 0.75
+
+
+def test_speed_raptor_when_jupiter_busy_cheap_guards_first_and_jito_regions(tmp_path):
+    import pytest
+    from copybot.sol.chain import ChainError, Jito, Jupiter
+    from copybot.sol.engine import Skip
+    s, ctx, sent = ready(tmp_path)
+    u = s.db.get_user(OWNER)
+    calls = {"jup": 0, "raptor": 0}
+    orig = s.sol.jup.quote
+
+    async def jq(*a, **k):
+        calls["jup"] += 1
+        return await orig(*a, **k)
+    s.sol.jup.quote = jq
+
+    class FakeRaptor:
+        async def quote(self, i, o, amount, slip):
+            calls["raptor"] += 1
+            return {"amountOut": "123"}
+    s.sol.raptor = FakeRaptor()
+    s.sol.jup.busy = lambda: True   # okno Jupitera pełne → od razu Raptor, bez stania w kolejce
+    q = asyncio.run(s.sol.fast_quote("So11111111111111111111111111111111111111112", TOKEN, 10_000_000, 1500))
+    assert "_raptor" in q and calls == {"jup": 0, "raptor": 1}
+    s.sol.jup.busy = lambda: False
+    asyncio.run(s.sol.fast_quote("So11111111111111111111111111111111111111112", TOKEN, 10_000_000, 1500))
+    assert calls["jup"] == 1
+
+    # tanie filtry (baza) odrzucają zakup bez żadnej wyceny
+    s.db.update_user(OWNER, sol_max_adds=1)
+    s.sol.record(OWNER, None, None, "buy", TOKEN, 0.1, 1000, "filled", "x", not s.sol.is_live(u))
+    with pytest.raises(Skip):
+        s.sol.guard_db(s.db.get_user(OWNER), swap("buy", 0.1, "gd1"))
+
+    # Jito: jeden adres block-engine → wysyłka do kilku regionów naraz, wygrywa pierwszy udany
+    j = Jito("https://amsterdam.mainnet.block-engine.jito.wtf/api/v1/transactions", None)
+    assert len(j.urls) == 4 and j.urls[0].startswith("https://amsterdam.") and any("frankfurt" in x for x in j.urls)
+    assert all(x.endswith("/api/v1/transactions") for x in j.urls)
+
+    async def one(url, body):
+        if "amsterdam" in url:
+            raise ChainError("Jito: rate limited")
+        return "SIG"
+    j._send_one = one
+    assert asyncio.run(j.send(b"tx")) == "SIG"
+    assert len(Jito("https://example.com/tx", None).urls) == 1
+
+    # ceny: DexScreener najpierw, Jupiter tylko dla brakujących
+    jup = Jupiter("https://api.jup.ag", "", None)
+
+    class Dex:
+        async def prices(self, mints):
+            return {"A": 1.5}
+    jup.dex = Dex()
+    asked = []
+
+    async def req(method, path, bg=False, **kw):
+        asked.append(kw["params"]["ids"])
+        return 200, {"B": {"usdPrice": 2.0}}
+    jup._request = req
+    assert asyncio.run(jup.prices(["A", "B"])) == {"A": 1.5, "B": 2.0} and asked == ["B"]

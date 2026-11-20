@@ -233,6 +233,44 @@ class Rpc:
         return sig
 
 
+class DexPrices:
+    """Ceny tokenów z DexScreenera (darmowe, ~300 zapytań/min, do 30 tokenów naraz). Cena z najpłynniejszej puli
+    tokena na Solanie. Błąd = pusty wynik (wtedy cenę daje Jupiter)."""
+
+    URL = "https://api.dexscreener.com/tokens/v1/solana/"
+
+    def __init__(self, session: aiohttp.ClientSession):
+        self.session = session
+        self.fail_until = 0.0
+
+    async def prices(self, mints: list[str]) -> dict[str, float]:
+        if not mints or time.monotonic() < self.fail_until:
+            return {}
+        out: dict[str, tuple[float, float]] = {}  # mint -> (płynność, cena)
+        try:
+            for i in range(0, len(mints), 30):
+                async with self.session.get(self.URL + ",".join(mints[i:i + 30]),
+                                            timeout=aiohttp.ClientTimeout(total=4)) as r:
+                    if r.status != 200:
+                        raise ChainError(f"DexScreener {r.status}")
+                    data = await r.json(content_type=None)
+                for p in data if isinstance(data, list) else []:
+                    m = (p.get("baseToken") or {}).get("address")
+                    if m not in mints or not p.get("priceUsd"):
+                        continue
+                    liq = float((p.get("liquidity") or {}).get("usd") or 0)
+                    if m not in out or liq > out[m][0]:
+                        out[m] = (liq, float(p["priceUsd"]))
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError, ChainError) as e:
+            log.info("DexScreener: brak cen (%s) – ceny z Jupitera przez 60 s", type(e).__name__)
+            self.fail_until = time.monotonic() + 60
+            return {m: v[1] for m, v in out.items()}
+        if not self.__dict__.get("_ok_logged"):
+            self._ok_logged = True
+            log.info("DexScreener: ceny działają (%d/%d tokenów) – limit Jupitera zostaje na transakcje", len(out), len(mints))
+        return {m: v[1] for m, v in out.items()}
+
+
 class Jupiter:
     def __init__(self, base: str, api_key: str, session: aiohttp.ClientSession):
         self.base, self.session = base.rstrip("/"), session
@@ -245,11 +283,16 @@ class Jupiter:
         self.window_limit = int(os.getenv("JUP_LIMIT_PER_10S", "10"))
         self._stamps: list[float] = []
         self._no_route: dict[tuple, float] = {}  # token „not tradable” / bez trasy – nie pytamy co chwilę
+        self.dex = DexPrices(session)  # ceny do wyświetlania i automatycznej sprzedaży – poza limitem Jupitera
 
     def _budget(self) -> int:
         now = time.monotonic()
         self._stamps = [t for t in self._stamps if now - t < 10]
         return self.window_limit - len(self._stamps)
+
+    def busy(self) -> bool:
+        """Okno zapytań pełne – transakcja czekałaby w kolejce (do ~10 s). Wtedy lepiej od razu inną drogą."""
+        return self._budget() <= 0
 
     async def _slot(self, bg: bool):
         """Czeka na wolne miejsce w oknie 10 s. Tło (ceny) zostawia ~40% okna dla transakcji."""
@@ -370,8 +413,15 @@ class Jupiter:
             return hit[1]  # okno prawie pełne – ceny sprzed chwili wystarczą, miejsce zostaje dla transakcji
 
         async def fetch():
-            _, data = await self._request("GET", "/price/v3", bg=True, params={"ids": ",".join(mints)})
-            return {m: float(v["usdPrice"]) for m, v in (data or {}).items() if isinstance(v, dict) and v.get("usdPrice")}
+            # najpierw DexScreener (osobny, duży limit) – limit Jupitera zostaje na zakupy i sprzedaże;
+            # Jupiter tylko dla tokenów, których DexScreener nie zna
+            out = await self.dex.prices(mints) if self.dex is not None else {}
+            rest = [m for m in mints if m not in out]
+            if rest:
+                _, data = await self._request("GET", "/price/v3", bg=True, params={"ids": ",".join(rest)})
+                out.update({m: float(v["usdPrice"]) for m, v in (data or {}).items()
+                            if isinstance(v, dict) and v.get("usdPrice")})
+            return out
         return await self._cached(key, 10, fetch)
 
     async def trending(self, interval: str = "1h", limit: int = 10) -> list[dict]:
@@ -467,14 +517,35 @@ class Jito:
     """Wysyłka transakcji przez Jito Block Engine – trafia bezpośrednio do walidatorów Jito (ok. 90% sieci).
     Transakcja musi zawierać napiwek dla Jito (dokłada go Jupiter w trybie turbo)."""
 
+    REGIONS = ("amsterdam", "frankfurt", "ny", "slc")
+
     def __init__(self, url: str, session: aiohttp.ClientSession):
-        self.url, self.session = url, session
+        self.session = session
+        urls = [u.strip() for u in url.split(",") if u.strip()]
+        if len(urls) == 1 and ".block-engine.jito.wtf" in urls[0]:
+            # ta sama transakcja do kilku regionów naraz – wchodzi przez ten, który najszybciej trafi do lidera
+            # bloku; limit zapytań Jito liczy się osobno w każdym regionie
+            path = urls[0].split(".block-engine.jito.wtf", 1)[1]
+            urls += [f"https://{r}.mainnet.block-engine.jito.wtf{path}" for r in self.REGIONS]
+        self.urls = list(dict.fromkeys(urls))
+        self.url = self.urls[0]
+
+    async def _send_one(self, url: str, body: dict) -> str:
+        try:
+            async with self.session.post(url, json=body, timeout=aiohttp.ClientTimeout(total=5)) as r:
+                data = await r.json(content_type=None)
+        except (aiohttp.ClientError, OSError, asyncio.TimeoutError, ValueError) as e:
+            raise ChainError(f"Jito niedostępne ({type(e).__name__})") from e
+        if not isinstance(data, dict) or "error" in data:
+            err = (data or {}).get("error") if isinstance(data, dict) else data
+            raise ChainError(f"Jito: {err.get('message', err) if isinstance(err, dict) else err}")
+        return data["result"]
 
     async def send(self, tx_bytes: bytes) -> str:
         body = {"jsonrpc": "2.0", "id": 1, "method": "sendTransaction",
                 "params": [base64.b64encode(tx_bytes).decode(), {"encoding": "base64"}]}
-        async with self.session.post(self.url, json=body, timeout=aiohttp.ClientTimeout(total=5)) as r:
-            data = await r.json(content_type=None)
-        if "error" in data:
-            raise ChainError(f"Jito: {data['error'].get('message', data['error'])}")
-        return data["result"]
+        res = await asyncio.gather(*(self._send_one(u, body) for u in self.urls), return_exceptions=True)
+        sig = next((r for r in res if isinstance(r, str)), None)
+        if sig is None:
+            raise res[0] if isinstance(res[0], Exception) else ChainError("Jito: nie wysłano")
+        return sig

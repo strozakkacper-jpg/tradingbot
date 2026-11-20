@@ -21,7 +21,7 @@ sieć Solana ──► sol/watcher.py ──► sol/parser.py ──► sol/engi
 | `watcher.py` | nasłuch portfeli traderów (WebSocket), ponowne łączenie, nadrabianie ruchów po przerwie |
 | `parser.py` | z transakcji odczytuje: kto, kupno/sprzedaż, token, ile SOL/USDC, jaki % salda |
 | `engine.py` | **serce kopiowania**: filtry (`guard_buy`), kwota (`buy_amount`), wykonanie (`execute`), ćwiczenia (`paper_*`), portfel wzorcowy tradera (`_reference`), wyniki |
-| `chain.py` | klienci sieci: RPC (Helius), Jupiter (wyceny, wymiany, limit zapytań), PumpPortal, Jito |
+| `chain.py` | klienci sieci: RPC (Helius), Jupiter (wyceny, wymiany, limit zapytań), Raptor (druga droga – gdy Jupiter zajęty), DexScreener (ceny poza limitem Jupitera), PumpPortal, Jito (kilka regionów naraz) |
 | `axiom.py` | pulpit w czacie, ręczne kupno/sprzedaż, **automatyczna sprzedaż** (`tpsl_job`: TP/SL, drabinka zysku, ruchomy stop, wyjście po czasie, ucieczka twórcy) |
 | `api.py` | API aplikacji (`/api/sol/*`): stan, akcje (`h_action`), traderzy, ranking, raporty, admin |
 | `autocfg.py` | **✨ Ustaw za mnie / 🤖 Auto** – kwoty pod saldo, osobny % dla każdego tradera, poziomy ryzyka; nie rusza bezpieczników (`SAFETY_KEYS`) |
