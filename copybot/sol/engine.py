@@ -771,7 +771,7 @@ class SolEngine:
             want = min(want, bal - keep)
             if want < MIN_BUY:
                 raise Skip(f"🛡 rezerwa {rpct:g}% kapitału zostaje wolna – na ten zakup już nie starcza")
-        if want < MIN_BUY:
+        if bal - reserve < MIN_BUY:
             raise Skip(f"za mało SOL na koncie (masz {bal / LAMPORTS:.4f} SOL)")
         floor = u["sol_min_buy"] if "sol_min_buy" in u.keys() else 0
         if u["tg_id"] > 0:
@@ -783,7 +783,9 @@ class SolEngine:
             # dużo poniżej (jego zakup testowy za grosze) → pomijamy, bo opłaty zjadłyby zysk
             if why and want >= floor * LAMPORTS * 0.3 and floor * LAMPORTS <= bal - reserve:
                 return int(floor * LAMPORTS)
-            raise Skip(f"za mała kwota ({want / LAMPORTS:.4f} SOL, Twoje minimum {floor:g} SOL) – opłaty zjadłyby zysk")
+            raise Skip(f"za mała kwota ({want / LAMPORTS:.4f} SOL, minimum {floor:g} SOL) – opłaty zjadłyby zysk")
+        if want < MIN_BUY:
+            raise Skip(f"za mała kwota ({want / LAMPORTS:.4f} SOL) – opłaty zjadłyby zysk")
         return want
 
     async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,
