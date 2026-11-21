@@ -343,10 +343,13 @@ class SolEngine:
             jup_none = any(x in str(e) for x in no_route)
         return False if jup_none and (raptor_none or self.raptor is None) else None
 
-    async def check_dead(self, holdings: dict[str, int], limit: int = 8) -> list[str]:
-        """Sprawdza trasy sprzedaży tokenów nie sprawdzanych od 30 min. Zwraca nowo wykryte martwe."""
+    async def check_dead(self, holdings: dict[str, int], limit: int = 8, first: set | None = None) -> list[str]:
+        """Sprawdza trasy sprzedaży tokenów nie sprawdzanych od 30 min. Kolejność: podejrzane (1. raz bez trasy),
+        potem `first` (np. tokeny na prawdziwych SOL), potem reszta. Zwraca nowo wykryte martwe."""
         reg, now, new, checked = self._dead_reg(), now_ms(), [], 0
-        for m, raw in holdings.items():
+        first = first or set()
+        order = sorted(holdings.items(), key=lambda kv: (not (reg.get(kv[0]) or {}).get("d"), kv[0] not in first))
+        for m, raw in order:
             was = reg.get(m) or {}
             every = 5 * 60_000 if was.get("d") and was.get("n", 0) < 2 else self.DEAD_RECHECK_MS  # podejrzany – szybciej
             if m == SOL_MINT or raw <= 0 or now - was.get("t", 0) < every:
@@ -363,6 +366,9 @@ class SolEngine:
                 new.append(m)
         if checked:
             self._dead_save()
+            sus = sum(1 for v in reg.values() if v.get("d") and v.get("n", 0) < 2)
+            if sus or new:
+                log.info("💀 martwe tokeny: sprawdzono %d, podejrzane %d, nowe martwe %d", checked, sus, len(new))
         if new:
             log.info("💀 martwe tokeny (brak trasy sprzedaży): %s", ", ".join(m[:8] for m in new))
         return new

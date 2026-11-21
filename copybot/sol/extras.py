@@ -469,6 +469,7 @@ async def dead_job(ctx):
         return
     owners: dict[str, list] = {}
     amount: dict[str, int] = {}
+    live_mints: set[str] = set()
     for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
         try:
             hold = await asyncio.wait_for(se.holdings(u), 10)
@@ -479,8 +480,10 @@ async def dead_job(ctx):
             if raw > 0 and se.cost_basis(u["tg_id"], m, paper):  # tylko tokeny kupione przez bota (nie spam)
                 owners.setdefault(m, []).append(u)
                 amount[m] = max(amount.get(m, 0), raw)
+                if not paper:
+                    live_mints.add(m)
     try:
-        new = await se.check_dead(amount, limit=10)
+        new = await se.check_dead(amount, limit=30, first=live_mints)
     except Exception:  # noqa: BLE001
         log.exception("Martwe tokeny")
         return
