@@ -334,10 +334,10 @@ class SolEngine:
                 return True
             except Exception as e:  # noqa: BLE001
                 raptor_none = any(x in str(e) for x in no_route)
-        if self._jup_busy():
-            return None
-        try:
-            await asyncio.wait_for(self.jup.quote(mint, SOL_MINT, raw, 3000, restrict=False), 6)
+        if not raptor_none and self._jup_busy():
+            return None  # Raptor nie odpowiedział, Jupiter zajęty – sprawdzimy następnym razem
+        try:  # zadanie w tle – może poczekać na miejsce w limicie Jupitera
+            await asyncio.wait_for(self.jup.quote(mint, SOL_MINT, raw, 3000, restrict=False), 15)
             return True
         except Exception as e:  # noqa: BLE001
             jup_none = any(x in str(e) for x in no_route)
@@ -367,8 +367,8 @@ class SolEngine:
         if checked:
             self._dead_save()
             sus = sum(1 for v in reg.values() if v.get("d") and v.get("n", 0) < 2)
-            if sus or new:
-                log.info("💀 martwe tokeny: sprawdzono %d, podejrzane %d, nowe martwe %d", checked, sus, len(new))
+            log.info("💀 martwe tokeny: sprawdzono %d z %d, podejrzane %d, martwe razem %d, nowe %d",
+                     checked, len(holdings), sus, len(self.dead_mints()), len(new))
         if new:
             log.info("💀 martwe tokeny (brak trasy sprzedaży): %s", ", ".join(m[:8] for m in new))
         return new
