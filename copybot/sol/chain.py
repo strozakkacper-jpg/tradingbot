@@ -17,6 +17,14 @@ log = logging.getLogger(__name__)
 # Solana ma już transakcje w wersji 1 (np. trasy Jupitera) – z „0” RPC odrzuca je błędem -32015
 TX_VERSION = 1
 TOKEN_PROGRAMS = ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+ATA_PROGRAM = "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+
+
+def ata_address(owner: str, mint: str, program: str) -> str:
+    """Adres konta tokena (Associated Token Account) – liczony lokalnie, bez pytania sieci."""
+    return str(Pubkey.find_program_address(
+        [bytes(Pubkey.from_string(owner)), bytes(Pubkey.from_string(program)), bytes(Pubkey.from_string(mint))],
+        Pubkey.from_string(ATA_PROGRAM))[0])
 
 
 class ChainError(Exception):
@@ -46,10 +54,17 @@ class Rpc:
         self.url, self.session = url, session
         self._id = 0
         self.limit = RateLimiter(rps)
+        # „pokaż wszystkie tokeny portfela” – ciężkie zapytanie z niższym limitem u Helius (darmowy plan odrzucał je
+        # przy kilku kontach naraz, a odrzucenie przerywało kopię) – osobny, wolniejszy licznik + krótka pamięć
+        self.heavy = RateLimiter(float(os.getenv("SOL_RPC_HEAVY_RPS", "2")))
+        self._accs: dict[str, tuple[float, asyncio.Future]] = {}
         self.auth_error: str | None = None
 
     async def call(self, method: str, params: list | None = None):
+        heavy = method == "getTokenAccountsByOwner"
         for attempt in range(4):
+            if heavy:
+                await self.heavy.wait()
             await self.limit.wait()
             self._id += 1
             try:
@@ -58,7 +73,7 @@ class Rpc:
                     if r.status in (401, 403):
                         self.auth_error = f"HTTP {r.status}"
                     if r.status == 429:
-                        await asyncio.sleep(0.5 * (attempt + 1))
+                        await asyncio.sleep((1.0 if heavy else 0.5) * (attempt + 1))
                         continue
                     data = await r.json(content_type=None)
             except (aiohttp.ClientConnectionError, ConnectionResetError, asyncio.TimeoutError) as e:
@@ -75,7 +90,18 @@ class Rpc:
     async def balance(self, pubkey: str) -> int:
         return (await self.call("getBalance", [pubkey, {"commitment": "processed"}]))["value"]
 
-    async def token_accounts(self, owner: str) -> dict[str, tuple[int, int]]:
+    async def token_accounts(self, owner: str, max_age: float = 3.0) -> dict[str, tuple[int, int]]:
+        """Wszystkie tokeny portfela. Te same zapytania w ciągu kilku sekund (aplikacja, auto-sprzedaż, limit
+        pozycji) = jedno zapytanie do sieci."""
+        hit = self._accs.get(owner)
+        if hit and time.monotonic() - hit[0] < max_age and not (hit[1].done() and hit[1].exception()):
+            return dict(await asyncio.shield(hit[1]))
+        fut = asyncio.ensure_future(self._token_accounts(owner))
+        fut.add_done_callback(lambda f: f.cancelled() or f.exception())
+        self._accs[owner] = (time.monotonic(), fut)
+        return dict(await asyncio.shield(fut))
+
+    async def _token_accounts(self, owner: str) -> dict[str, tuple[int, int]]:
         out: dict[str, tuple[int, int]] = {}
         for program in TOKEN_PROGRAMS:
             res = await self.call("getTokenAccountsByOwner", [owner, {"programId": program},
@@ -126,14 +152,29 @@ class Rpc:
         return done
 
     async def token_balance(self, owner: str, mint: str) -> int:
+        """Ile tokena ma portfel. Lekkie zapytanie o konto tokena (adres liczony lokalnie, obie wersje programu
+        tokenów naraz); tylko gdy takiego konta nie ma – pełna lista tokenów (z pamięci kilku sekund)."""
         try:
-            res = await self.call("getTokenAccountsByOwner", [owner, {"mint": mint},
-                                                              {"encoding": "jsonParsed", "commitment": "processed"}])
+            addrs = [ata_address(owner, mint, p) for p in TOKEN_PROGRAMS]
+        except (ValueError, TypeError):
+            addrs = []
+        if addrs:
+            res = await self.call("getMultipleAccounts", [addrs, {"encoding": "base64", "commitment": "processed"}])
+            found, total = False, 0
+            for v in res.get("value") or []:
+                if not v:
+                    continue
+                data = base64.b64decode(v["data"][0])
+                if len(data) >= 72:  # mint(32) + właściciel(32) + ilość(u64) – ten sam układ w Token i Token-2022
+                    found, total = True, total + int.from_bytes(data[64:72], "little")
+            if found:
+                return total
+        try:  # rzadko: tokeny na koncie innym niż standardowe
+            return (await self.token_accounts(owner, max_age=10)).get(mint, (0, 0))[0]
         except ChainError as e:
             if "could not find mint" in str(e):
-                return 0  # świeży token, którego RPC jeszcze nie widzi – na pewno go nie mamy
+                return 0
             raise
-        return sum(int(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]) for a in res["value"])
 
     async def transaction(self, sig: str) -> dict | None:
         return await self.call("getTransaction", [sig, {"encoding": "jsonParsed", "commitment": "confirmed",

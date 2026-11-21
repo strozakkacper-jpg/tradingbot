@@ -1,6 +1,5 @@
 """Dodatki: kopia zapasowa bazy, alerty o problemach, raport dzienny/tygodniowy, eksport CSV,
 inteligentne kwoty na traderów i PIN do wypłat."""
-import asyncio
 import csv
 import gzip
 import hashlib
@@ -470,18 +469,26 @@ async def dead_job(ctx):
     owners: dict[str, list] = {}
     amount: dict[str, int] = {}
     live_mints: set[str] = set()
-    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
-        try:
-            hold = await asyncio.wait_for(se.holdings(u), 10)
-        except Exception:  # noqa: BLE001
+    # pozycje z bazy bota (bez zapytań do sieci – pełne listy tokenów zjadały limit RPC i psuły kopie)
+    users = {u["tg_id"]: u for u in s.db._q(
+        "SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1")}
+    rows = s.db._q("""SELECT tg_id, paper, mint, SUM(CASE WHEN side = 'buy' THEN tokens ELSE -tokens END) left_tok
+                      FROM sol_trades WHERE status = 'filled' AND tg_id > 0 AND ts >= ?
+                      GROUP BY tg_id, paper, mint HAVING left_tok > 0""", (now_ms() - 14 * 86_400_000,))
+    for r in rows:
+        u = users.get(r["tg_id"])
+        if not u or bool(r["paper"]) == se.is_live(u):
+            continue  # inny tryb niż obecny (np. stare ćwiczenia konta, które gra na prawdziwych)
+        tok = se.cached_token(r["mint"])
+        if not tok:
             continue
-        paper = not se.is_live(u)
-        for m, raw in hold.items():
-            if raw > 0 and se.cost_basis(u["tg_id"], m, paper):  # tylko tokeny kupione przez bota (nie spam)
-                owners.setdefault(m, []).append(u)
-                amount[m] = max(amount.get(m, 0), raw)
-                if not paper:
-                    live_mints.add(m)
+        raw = int(r["left_tok"] * 10 ** tok[1])
+        if raw <= 0:
+            continue
+        owners.setdefault(r["mint"], []).append(u)
+        amount[r["mint"]] = max(amount.get(r["mint"], 0), raw)
+        if not r["paper"]:
+            live_mints.add(r["mint"])
     try:
         new = await se.check_dead(amount, limit=30, first=live_mints)
     except Exception:  # noqa: BLE001

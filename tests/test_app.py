@@ -1911,6 +1911,7 @@ def test_dead_tokens_rug_pull_zero_value_hidden_and_cleanable(tmp_path):
     for m in (RUG, OK):
         s.sol.record(OWNER, None, None, "buy", m, 0.1, 1000, "filled", "x", paper)
     s.sol.paper_apply(OWNER, {RUG: 1_000_000_000, OK: 1_000_000_000})
+    s.db._q("INSERT OR REPLACE INTO sol_tokens (mint, symbol, decimals) VALUES (?, 'RUG', 6)", (RUG,))
 
     class Raptor:
         async def quote(self, i, o, amount, slip):
@@ -1944,3 +1945,29 @@ def test_dead_tokens_rug_pull_zero_value_hidden_and_cleanable(tmp_path):
     n, back, names = asyncio.run(s.sol.clean_dead(s.db.get_user(OWNER)))
     assert n == 1 and s.sol.paper(OWNER).get(RUG, 0) == 0 and s.sol.paper(OWNER).get(OK, 0) > 0
     assert asyncio.run(AX.portfolio(s, s.db.get_user(OWNER)))["dead"] == []
+
+
+
+def test_rpc_token_balance_light_query_and_cached_full_list():
+    import base64 as b64
+    from copybot.sol.chain import Rpc, ata_address
+    owner, mint = "GJY7jKMHWjtZCesQJdVGykWAaE4affdXJdH4geesLMmu", "2cHbrFdA3qHPA6gcoeg9qxs5CrWCkSZ7DbuE91zCZYWM"
+    r = Rpc("http://x", None, 0)
+    calls = []
+    data = bytes(64) + (935305020454).to_bytes(8, "little") + bytes(93)
+
+    async def call(method, params=None):
+        calls.append(method)
+        if method == "getMultipleAccounts":
+            assert params[0][0] == ata_address(owner, mint, "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            return {"value": [{"data": [b64.b64encode(data).decode(), "base64"]}, None]}
+        return {"value": []}
+    r.call = call
+    assert asyncio.run(r.token_balance(owner, mint)) == 935305020454
+    assert calls == ["getMultipleAccounts"]          # bez ciężkiego getTokenAccountsByOwner
+
+    async def both():
+        return await asyncio.gather(r.token_accounts(owner), r.token_accounts(owner))
+    calls.clear()
+    asyncio.run(both())
+    assert calls.count("getTokenAccountsByOwner") == 2   # 2 programy tokenów, ale jedno pobranie dla obu wywołań
