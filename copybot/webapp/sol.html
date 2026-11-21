@@ -248,6 +248,9 @@ html,body{overscroll-behavior-y:contain}
 #ptr.spin .ptrar{animation:ptrspin .8s linear infinite}
 @keyframes ptrspin{to{transform:rotate(360deg)}}
 #view.ptrpull{transition:none}
+details.dead summary{cursor:pointer;list-style:none}
+details.dead summary::-webkit-details-marker{display:none}
+details.dead{border-color:rgba(239,68,68,.25)}
 #view.ptrback{transition:transform .25s ease}
 </style>
 </head>
@@ -886,6 +889,23 @@ async function rename() {
 }
 
 // ---------- tokeny ----------
+function deadHtml() {
+  const dead = S.dead || [];
+  if (!dead.length) return '';
+  const lost = dead.reduce((a, p) => a + (p.cost || 0), 0);
+  return `<details class="card dead"><summary><b>💀 Martwe tokeny (${dead.length})</b> <span class="mut tiny">rug pull – nie da się sprzedać${lost ? ` · stracone ${num(lost, 3)} SOL` : ''}</span></summary>
+    <div class="mut tiny" style="margin:8px 0">Twórca albo właściciele wyciągnęli płynność – żadna giełda nie ma już trasy sprzedaży.
+      Liczą się jako <b>0 SOL</b>, nie zajmują miejsca w limicie pozycji. Bot sprawdza je co 30 min – gdyby trasa wróciła, wrócą do listy.</div>
+    ${dead.map(p => `<div class="item" onclick="openToken('${esc(p.mint)}')">${avatar(p.symbol)}
+      <div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
+      <div style="text-align:right"><div class="b r">0 SOL</div><div class="tiny mut">${p.cost ? 'kupione za ' + num(p.cost, 3) : ''}</div></div></div>`).join('')}
+    <button class="btn ghost" style="margin-top:10px" onclick="cleanDead()">🔥 Spal martwe tokeny${S.live ? ' i odzyskaj depozyt (~0,002 SOL za każdy)' : ''}</button></details>`;
+}
+async function cleanDead() {
+  if (!confirm('Usunąć martwe tokeny z portfela? Tego nie da się cofnąć (i tak nie da się ich sprzedać).')) return;
+  const r = await act('clean_dead', {}, {quiet: true});
+  if (r && r.msg) toast(r.msg, 4000);
+}
 function tokens() {
   const pos = S.positions;
   return `
@@ -898,6 +918,7 @@ function tokens() {
       <div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
       <div style="text-align:right"><div class="b">${p.value != null ? num(p.value, 3) + ' SOL' : 'brak ceny'}</div><div class="tiny">${pct(p.pnl)} <span class="mut">${inUsd(p.value)}</span></div></div></div>`).join('')
     : '<div class="empty">Nie masz jeszcze tokenów – pojawią się, gdy bot skopiuje czyjś zakup.</div>'}</div>
+  ${deadHtml()}
   <h2>🔥 Popularne teraz</h2>
   <div class="card" id="trend">${TREND ? trendHtml() : '<div class="loader"></div>'}</div>
   <div class="mut tiny c">Popularny ≠ bezpieczny. Zawsze sprawdź ocenę ryzyka.</div>`;
@@ -1768,7 +1789,7 @@ async function openUser(id) {
         ${d.wallets.length && d.id !== S.user.id ? `<button class="btn" style="margin-top:10px" onclick="admCopy(${d.id}, null, true)">📋 Kopiuj wszystkich, których kopiuje (${d.wallets.filter(w => w.copy).length})</button>
           <button class="btn ghost" style="margin-top:8px" onclick="admCopy(${d.id}, null, false, true)">➕ Tylko dodaj wszystkich do mojej listy (${d.wallets.length})</button>` : ''}</div>
       <h2>Tokeny (${d.positions_list.length})</h2><div class="card">${d.positions_list.length ? d.positions_list.map(p => `<div class="item" onclick="openToken('${esc(p.mint)}')">${avatar(p.symbol)}<div class="sp"><div class="b">${esc(p.symbol)}</div><div class="mut tiny">${fmtTok(p.tokens)} szt.</div></div>
-        <div style="text-align:right"><div class="b">${p.value != null ? num(p.value, 3) + ' SOL' : '—'}</div><div class="tiny">${pct(p.pnl)}</div></div></div>`).join('') : '<div class="empty">brak</div>'}</div>
+        <div style="text-align:right"><div class="b">${p.dead ? '<span class="r">💀 0 SOL</span>' : p.value != null ? num(p.value, 3) + ' SOL' : '—'}</div><div class="tiny">${p.dead ? '<span class="mut">rug pull</span>' : pct(p.pnl)}</div></div></div>`).join('') : '<div class="empty">brak</div>'}</div>
       <h2>Ostatnie ruchy</h2><div class="card">${d.history.length ? d.history.map(feedItem).join('') : '<div class="empty">brak</div>'}</div>
       <button class="btn ghost" style="margin-bottom:8px" onclick="renameUser(${d.id}, '${esc((d.nickname || '').replace(/'/g, ''))}')">✏️ Zmień nazwę${d.username ? ` <span class="mut tiny">(@${esc(d.username)})</span>` : ''}</button>
       ${d.active ? `<button class="btn r" onclick="adminStop(${d.id})">⏸ Zatrzymaj mu kopiowanie</button>` : ''}

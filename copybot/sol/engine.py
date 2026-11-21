@@ -292,6 +292,81 @@ class SolEngine:
         self._dec.update({m: dec for m, (_, dec) in accs.items()})  # miejsca po przecinku bez pytania Jupitera
         return {m: raw for m, (raw, _) in accs.items() if m != SOL_MINT}
 
+    # ---------- 💀 martwe tokeny (rug pull: płynność wyciągnięta, nie da się sprzedać) ----------
+    DEAD_RECHECK_MS = 30 * 60_000
+
+    def _dead_reg(self) -> dict:
+        """mint -> {"d": martwy?, "t": ostatnie sprawdzenie (ms), "since": od kiedy martwy (ms)} – w bazie,
+        żeby przetrwało restart."""
+        reg = self.__dict__.get("_dead")
+        if reg is None:
+            try:
+                reg = json.loads(self.db.get_state("dead_tokens") or "{}")
+            except ValueError:
+                reg = {}
+            self._dead = reg
+        return reg
+
+    def _dead_save(self):
+        reg = self._dead_reg()
+        old = now_ms() - 14 * DAY_MS
+        for m in [m for m, v in reg.items() if v.get("t", 0) < old]:
+            reg.pop(m, None)
+        self.db.set_state("dead_tokens", json.dumps(reg))
+
+    def is_dead(self, mint: str) -> bool:
+        """Martwy = brak trasy w 2 kolejnych sprawdzeniach (≥ 5 min odstępu) – świeży token bez trasy przez
+        chwilę nie trafi od razu do martwych."""
+        v = self._dead_reg().get(mint) or {}
+        return bool(v.get("d")) and v.get("n", 0) >= 2
+
+    def dead_mints(self) -> set[str]:
+        return {m for m, v in self._dead_reg().items() if v.get("d") and v.get("n", 0) >= 2}
+
+    async def sell_route(self, mint: str, raw: int) -> bool | None:
+        """Czy ten token da się sprzedać za SOL? Najpierw Raptor (poza limitem Jupitera), potem Jupiter.
+        True = jest trasa, False = żadna droga nie ma trasy (martwy), None = nie wiadomo (błąd sieci)."""
+        no_route = ("No routes", "no route", "not tradable", "ROUTE", "TRADABLE", "brak trasy", "multi-hop")
+        raptor_none = False
+        if self.raptor is not None:
+            try:
+                await asyncio.wait_for(self.raptor.quote(mint, SOL_MINT, raw, 3000), 6)
+                return True
+            except Exception as e:  # noqa: BLE001
+                raptor_none = any(x in str(e) for x in no_route)
+        if self._jup_busy():
+            return None
+        try:
+            await asyncio.wait_for(self.jup.quote(mint, SOL_MINT, raw, 3000, restrict=False), 6)
+            return True
+        except Exception as e:  # noqa: BLE001
+            jup_none = any(x in str(e) for x in no_route)
+        return False if jup_none and (raptor_none or self.raptor is None) else None
+
+    async def check_dead(self, holdings: dict[str, int], limit: int = 8) -> list[str]:
+        """Sprawdza trasy sprzedaży tokenów nie sprawdzanych od 30 min. Zwraca nowo wykryte martwe."""
+        reg, now, new, checked = self._dead_reg(), now_ms(), [], 0
+        for m, raw in holdings.items():
+            was = reg.get(m) or {}
+            every = 5 * 60_000 if was.get("d") and was.get("n", 0) < 2 else self.DEAD_RECHECK_MS  # podejrzany – szybciej
+            if m == SOL_MINT or raw <= 0 or now - was.get("t", 0) < every:
+                continue
+            if checked >= limit:
+                break
+            checked += 1
+            ok = await self.sell_route(m, raw)
+            if ok is None:
+                continue
+            n = (was.get("n", 0) + 1) if not ok else 0
+            reg[m] = {"d": not ok, "t": now, "n": n, "since": (was.get("since") or now) if not ok else None}
+            if n == 2:
+                new.append(m)
+        if checked:
+            self._dead_save()
+        if new:
+            log.info("💀 martwe tokeny (brak trasy sprzedaży): %s", ", ".join(m[:8] for m in new))
+        return new
+
     async def value_in_sol(self, mint: str, raw: int) -> float | None:
         dead = self.__dict__.setdefault("_unvaluable", {})
         if time.monotonic() - dead.get(mint, -1e9) < 600:
@@ -308,7 +383,8 @@ class SolEngine:
         """Wartość pozycji w SOL – ceny paczkami (Jupiter price v3) zamiast wyceny każdego tokena osobno.
         Tokeny bez ceny (np. spam wrzucany na portfele) wyceniamy trasą wymiany tylko w kilku sztukach –
         inaczej portfel z setką śmieciowych tokenów zjadałby cały limit Jupitera."""
-        mints = [m for m in holdings if m != SOL_MINT]
+        dead = self.dead_mints()
+        mints = [m for m in holdings if m != SOL_MINT and m not in dead]  # 💀 rug pull – cena z API to fikcja
         if not mints:
             return {}
         px: dict[str, float] = {}
@@ -585,6 +661,7 @@ class SolEngine:
         frozen |= {r["mint"] for r in self.db._q(
             """SELECT DISTINCT mint FROM sol_trades WHERE tg_id = ? AND status = 'error' AND info LIKE '%zamrożon%'
                AND ts >= ?""", (u["tg_id"], now_ms() - 7 * DAY_MS))}
+        frozen |= self.dead_mints()  # 💀 rug pull – też nie do sprzedania
         return sum(1 for m in ledger if hold.get(m, 0) > 0 and now - dead.get(m, -1e9) >= 600 and m not in frozen)
 
     def note_buy(self, lid: int, mint: str):
@@ -990,6 +1067,33 @@ class SolEngine:
             self._bal.pop(pub, None)
             log.info("Solana %s: zamknięto %d pustych kont tokenów (+%.4f SOL)", u["tg_id"], n, n * ATA_RENT / LAMPORTS)
         return n
+
+    async def clean_dead(self, u) -> tuple[int, float, list[str]]:
+        """💀 Martwe tokeny (brak trasy sprzedaży): prawdziwe SOL – spala i zamyka konta (wraca ~0,002 SOL depozytu
+        z każdego), ćwiczenia – usuwa z portfela. Strata zapisuje się w historii. Zwraca (ile, SOL, symbole)."""
+        hold = await self.holdings(u)
+        dead = [m for m in hold if hold[m] > 0 and self.is_dead(m)]
+        if not dead:
+            return 0, 0.0, []
+        names = [(self.cached_token(m) or (m[:4], 0))[0] for m in dead]
+        paper = not self.is_live(u)
+        if paper:
+            self.paper_apply(u["tg_id"], {m: -hold[m] for m in dead})
+            done, back = dead, 0.0
+        else:
+            pub, kp = self.wallet(u["tg_id"])
+            accs = [a for a in await self.rpc.token_accounts_full(pub) if a["mint"] in dead and not a["frozen"]]
+            n = await self.rpc.burn_and_close(kp, accs) if accs else 0
+            done = [a["mint"] for a in accs[:n]]
+            back = n * ATA_RENT / LAMPORTS
+            self._bal.pop(pub, None)
+        for m in done:
+            basis = self.cost_basis(u["tg_id"], m, paper)
+            dec = self._dec.get(m) or (self.cached_token(m) or ("", 0))[1]
+            self.record(u["tg_id"], None, None, "sell", m, 0.0, hold[m] / 10 ** dec, "filled",
+                        "💀 martwy token (rug pull) usunięty" + ("" if paper else " – odzyskany depozyt konta"), paper,
+                        pnl=-(basis[0] if basis else 0))
+        return len(done), back, names
 
     async def clean_dust(self, u) -> tuple[int, float]:
         """Prawdziwe SOL: resztki tokenów warte < 0,0005 SOL (i puste konta) – spala i zamyka konta, każde oddaje

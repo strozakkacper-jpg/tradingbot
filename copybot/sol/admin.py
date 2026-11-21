@@ -155,6 +155,8 @@ async def user_detail(s, uid: int) -> dict | None:
             pf = await asyncio.wait_for(portfolio(s, u), 10)
             d["positions_list"] = [{"symbol": p["symbol"], "mint": p["mint"], "tokens": p["tokens"],
                                     "value": p["value"], "pnl": p["pnl"]} for p in pf["positions"][:15]]
+            d["positions_list"] += [{"symbol": p["symbol"], "mint": p["mint"], "tokens": p["tokens"], "value": 0.0,
+                                     "pnl": -100.0, "dead": True} for p in pf.get("dead", [])]
         except Exception:  # noqa: BLE001
             pass
     d["history"] = [{"ts": r["ts"], "side": r["side"], "mint": r["mint"], "symbol": r["symbol"] or short(r["mint"]),

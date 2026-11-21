@@ -430,6 +430,7 @@ async def state(s, u) -> dict:
         "today_pnl": se.day_pnl(uid, not live),
         "today": today_stats(s, uid, not live),
         "positions": [{k: p[k] for k in ("mint", "symbol", "tokens", "value", "pnl", "cost")} for p in pf["positions"]],
+        "dead": [{k: p[k] for k in ("mint", "symbol", "tokens", "cost")} for p in pf.get("dead", [])],
         "wallets": wallets, "feed": [_trade(s, r) for r in se.history(uid, 30)],
         "series": [[t, v] for t, v in series], "last_latency_ms": last[0]["latency_ms"] if last else None,
         "settings": settings_of(u),
@@ -694,6 +695,12 @@ async def action(s, u, body: dict) -> dict:
         if not pub:
             raise ApiError("Nie ma poprzedniego portfela do przywrócenia")
         return {"msg": f"↩️ Wrócono do portfela {short(pub)}", "address": pub}
+    if act == "clean_dead":
+        n, back, names = await se.clean_dead(u)
+        if not n:
+            return {"msg": "Nie ma martwych tokenów do usunięcia"}
+        return {"msg": f"🔥 Usunięto {n} martwych tokenów ({', '.join(names[:6])})"
+                       + (f" – wróciło ok. {back:.4f} SOL depozytu" if back else "")}
     if act == "reclaim_rent":
         if not se.is_live(u):
             raise ApiError("Działa na prawdziwym portfelu (💰) – na ćwiczeniach depozyty wracają same")

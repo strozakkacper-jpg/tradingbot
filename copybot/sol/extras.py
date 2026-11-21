@@ -1,5 +1,6 @@
 """Dodatki: kopia zapasowa bazy, alerty o problemach, raport dzienny/tygodniowy, eksport CSV,
 inteligentne kwoty na traderów i PIN do wypłat."""
+import asyncio
 import csv
 import gzip
 import hashlib
@@ -456,3 +457,37 @@ async def dust_job(ctx):
                                 f"resztki warte &lt; 0,0005 SOL). Wróciło ok. <b>{back:.4f} SOL</b> depozytu.")
         except Exception:  # noqa: BLE001
             log.exception("Sprzątanie pyłu %s", u["tg_id"])
+
+
+async def dead_job(ctx):
+    """Co 5 min: 💀 które trzymane tokeny straciły trasę sprzedaży (rug pull – płynność wyciągnięta). Takie mają
+    wartość 0 w saldzie i aplikacji, nie zajmują limitu pozycji; właściciel dostaje jedną wiadomość z przyciskiem
+    w aplikacji do spalenia (prawdziwe SOL: wraca depozyt konta ~0,002 SOL)."""
+    s = ctx.application.bot_data["svc"]
+    se = getattr(s, "sol", None)
+    if not se:
+        return
+    owners: dict[str, list] = {}
+    amount: dict[str, int] = {}
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        try:
+            hold = await asyncio.wait_for(se.holdings(u), 10)
+        except Exception:  # noqa: BLE001
+            continue
+        paper = not se.is_live(u)
+        for m, raw in hold.items():
+            if raw > 0 and se.cost_basis(u["tg_id"], m, paper):  # tylko tokeny kupione przez bota (nie spam)
+                owners.setdefault(m, []).append(u)
+                amount[m] = max(amount.get(m, 0), raw)
+    try:
+        new = await se.check_dead(amount, limit=10)
+    except Exception:  # noqa: BLE001
+        log.exception("Martwe tokeny")
+        return
+    for m in new:
+        sym = html.escape((se.cached_token(m) or (m[:6], 0))[0])
+        for u in owners.get(m, []):
+            await se.say(u, "auto", f"💀 <b>{sym} – RUG PULL</b>\nTwórca albo właściciele wyciągnęli płynność – tego tokena "
+                         "nie da się już sprzedać na żadnej giełdzie. Liczę go jako 0 SOL (wcześniej aplikacja pokazywała "
+                         "ostatnią cenę). W aplikacji: 🪙 Tokeny → 💀 Martwe → <b>🔥 Spal</b>"
+                         + (" – wróci ok. 0,002 SOL depozytu konta." if se.is_live(u) else "."))

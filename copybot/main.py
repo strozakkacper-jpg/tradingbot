@@ -115,6 +115,7 @@ async def post_init(app: Application):
             (axiom.auto_rank_job, 6 * 3600, 600),                  # automatyczna ocena listy (co 3 dni)
             (sol_leaderboard.leaderboard_job, 6 * 3600, 600),      # ranking światowy i ranking bota
             (sol_extras.dust_job, 6 * 3600, 300),                  # prawdziwe SOL: pył spalony, depozyty kont wracają
+            (sol_extras.dead_job, 300, 45),                        # 💀 rug pull: tokeny bez trasy sprzedaży = 0 SOL
         ):
             app.job_queue.run_repeating(job, interval=every, first=first)
         # codziennie o stałej porze (czas użytkowników)

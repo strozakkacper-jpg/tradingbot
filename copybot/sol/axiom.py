@@ -87,24 +87,29 @@ async def portfolio(s, u) -> dict:
         sol_usd = (await se.jup.prices([SOL_MINT])).get(SOL_MINT)
     except Exception:  # noqa: BLE001
         sol_usd = None
-    positions = []
+    positions, dead = [], []
     lookups = 0
     for mint, raw in hold.items():
         val = values.get(mint)
         basis = se.cost_basis(u["tg_id"], mint, not se.is_live(u))
-        if not basis and (val is None or val < 0.0001):
+        is_dead = se.is_dead(mint)
+        if not basis and (is_dead or val is None or val < 0.0001):
             continue  # pył i spam bez wartości (np. tokeny wrzucane na portfel z Axiom) – nie pokazujemy
         known = se.cached_token(mint)
         if not known and lookups < 5:
             lookups += 1
             known = await se.token_info(mint)
         sym, dec = known or (short(mint), se._dec.get(mint, 0))
+        if is_dead:  # 💀 rug pull – nie da się sprzedać, wartość 0, osobna lista
+            dead.append({"mint": mint, "symbol": sym, "tokens": raw / 10 ** dec, "value": 0.0, "pnl": -100.0,
+                         "cost": basis[0] if basis else None, "dead": True})
+            continue
         pnl = (val / basis[0] - 1) * 100 if (val is not None and basis and basis[0] > 0) else None
         positions.append({"mint": mint, "symbol": sym, "tokens": raw / 10 ** dec, "value": val, "pnl": pnl,
                           "cost": basis[0] if basis else None})
     positions.sort(key=lambda p: -(p["value"] or 0))
     total = lam / LAMPORTS + sum(p["value"] or 0 for p in positions)
-    return {"sol": lam / LAMPORTS, "positions": positions, "total": total, "sol_usd": sol_usd}
+    return {"sol": lam / LAMPORTS, "positions": positions, "dead": dead, "total": total, "sol_usd": sol_usd}
 
 
 # ---------------- teksty po ludzku ----------------

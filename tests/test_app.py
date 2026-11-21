@@ -1898,3 +1898,49 @@ def test_speed_raptor_when_jupiter_busy_cheap_guards_first_and_jito_regions(tmp_
         return 200, {"B": {"usdPrice": 2.0}}
     jup._request = req
     assert asyncio.run(jup.prices(["A", "B"])) == {"A": 1.5, "B": 2.0} and asked == ["B"]
+
+
+def test_dead_tokens_rug_pull_zero_value_hidden_and_cleanable(tmp_path):
+    from copybot.sol import axiom as AX, extras as EX
+    from copybot.sol.chain import ChainError
+    s, ctx, sent = ready(tmp_path)
+    u = s.db.get_user(OWNER)
+    s.sol.wallet(OWNER)
+    paper = not s.sol.is_live(u)
+    RUG, OK = "RUGmint1111111111111111111111111111111111111", TOKEN
+    for m in (RUG, OK):
+        s.sol.record(OWNER, None, None, "buy", m, 0.1, 1000, "filled", "x", paper)
+    s.sol.paper_apply(OWNER, {RUG: 1_000_000_000, OK: 1_000_000_000})
+
+    class Raptor:
+        async def quote(self, i, o, amount, slip):
+            if i == RUG:
+                raise ChainError("Raptor: Failed to get quote: No multi-hop route found")
+            return {"amountOut": "1"}
+    s.sol.raptor = Raptor()
+    orig = s.sol.jup.quote
+
+    async def jq(i, o, amount, slip, restrict=True):
+        if i == RUG:
+            raise ChainError("Jupiter: No routes found")
+        return await orig(i, o, amount, slip)
+    s.sol.jup.quote = jq
+    jctx = SimpleNamespace(application=ctx.application, bot=AsyncMock())
+    asyncio.run(EX.dead_job(jctx))
+    assert not s.sol.is_dead(RUG)            # 1. sprawdzenie – dopiero podejrzany (świeży token bez trasy)
+    reg = s.sol._dead_reg()
+    reg[RUG]["t"] -= 6 * 60_000              # minęło 5 min
+    asyncio.run(EX.dead_job(jctx))
+    assert s.sol.is_dead(RUG) and not s.sol.is_dead(OK)
+    assert any("RUG PULL" in t for _, t in sent)
+    # po restarcie – z bazy
+    s.sol.__dict__.pop("_dead", None)
+    assert s.sol.is_dead(RUG)
+    pf = asyncio.run(AX.portfolio(s, s.db.get_user(OWNER)))
+    assert RUG not in [p["mint"] for p in pf["positions"]] and [p["mint"] for p in pf["dead"]] == [RUG]
+    assert RUG not in asyncio.run(s.sol.values_sol({RUG: 1_000_000_000}))
+    s.sol._pos_cache = {}
+    assert asyncio.run(s.sol.open_positions_now(s.db.get_user(OWNER))) == 1
+    n, back, names = asyncio.run(s.sol.clean_dead(s.db.get_user(OWNER)))
+    assert n == 1 and s.sol.paper(OWNER).get(RUG, 0) == 0 and s.sol.paper(OWNER).get(OK, 0) > 0
+    assert asyncio.run(AX.portfolio(s, s.db.get_user(OWNER)))["dead"] == []
