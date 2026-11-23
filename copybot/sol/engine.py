@@ -980,10 +980,13 @@ class SolEngine:
             if quote is None and limited:
                 raise Skip("limit zapytań Jupitera – za dużo transakcji naraz (wyższy plan Jupitera to zniesie)") from e
             if quote is None:
-                # ćwiczenia jak prawdziwe: zakup bez trasy tylko dla tokenów z platform startowych (na prawdziwych
-                # SOL kupimy je przez PumpPortal); np. tokenizowanych akcji bez trasy nie „kupujemy” na niby.
-                # Sprzedaż – zawsze (pozycja już jest, trader wyszedł), także gdy on sprzedał za USDC.
-                if not self.is_live(u) and fallback and fallback.token_raw > 0 and (side == "sell" or is_launchpad(mint)):
+                # ćwiczenia jak prawdziwe: bez trasy po cenie tradera TYLKO, gdy na prawdziwych SOL dałoby się to
+                # zrobić zapasową drogą (PumpPortal działał w ostatnich 6 h) i tylko dla tokenów z platform startowych.
+                # Wcześniej ćwiczenia „kupowały” świeże tokeny po cenie snajpera z 1. sekundy (np. 50× taniej niż
+                # prawdziwe SOL chwilę później) – stąd fikcyjne 5 → 400 SOL. Bez działającej drogi: pominięte jak na
+                # prawdziwych (zakup), a sprzedaż zostaje pozycją bez trasy (💀 martwy token, jeśli tak zostanie).
+                pump_ok = time.time() - self.__dict__.get("_pump_ok", 0) < 6 * 3600
+                if not self.is_live(u) and pump_ok and fallback and fallback.token_raw > 0 and is_launchpad(mint):
                     per = await self._trader_price(fallback)
                     if per:
                         return self._paper_at_trader_price(u, side, mint, amount_raw, fallback, t0, decimals, per)
@@ -1269,6 +1272,7 @@ class SolEngine:
         lat = int((time.monotonic() - t0) * 1000)
         self._bal.pop(pub, None)
         sig, confirm_s = await self.rpc.send_and_confirm(tx)
+        self._pump_ok = time.time()  # zapasowa droga działa – ćwiczenia mogą liczyć takie kopie po cenie tradera
         try:
             ch = await self.rpc.balance_change(sig, pub, mint)
         except Exception:  # noqa: BLE001

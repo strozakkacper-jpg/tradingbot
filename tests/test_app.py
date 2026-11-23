@@ -385,7 +385,11 @@ def test_demo_fallback_at_trader_price_when_no_route(tmp_path):
     # zwykły token bez trasy – na ćwiczeniach też pomijamy (na prawdziwych SOL nie dałoby się go kupić)
     res = asyncio.run(s.sol.on_swap(WALLET, swap("buy", 0.1), time.monotonic()))
     assert res.get("skipped") == 1 and TOKEN not in s.sol.paper(OWNER)
-    # token z Pump.fun bez trasy – po cenie tradera (na prawdziwych SOL kupimy go przez PumpPortal)
+    # token z Pump.fun bez trasy, a PumpPortal nie działa – na prawdziwych SOL nie da się kupić, więc i tu pomijamy
+    res = asyncio.run(s.sol.on_swap(WALLET, dataclasses.replace(swap("buy", 0.1, "pX"), mint=PUMP), time.monotonic()))
+    assert res.get("skipped") == 1 and PUMP not in s.sol.paper(OWNER)
+    # PumpPortal działa – po cenie tradera (na prawdziwych SOL kupimy go przez PumpPortal)
+    s.sol._pump_ok = time.time()
     res = asyncio.run(s.sol.on_swap(WALLET, dataclasses.replace(swap("buy", 0.1, "p0"), mint=PUMP), time.monotonic()))
     # trader: 1 SOL za 1000 jednostek → 0,05 SOL = 50 jednostek, −2% = 49
     assert res["filled"] == 1 and s.sol.paper(OWNER)[PUMP] == 49
@@ -1471,6 +1475,10 @@ def test_demo_realism_unroutable_tokens(tmp_path):
     with pytest.raises(Exception, match="brak trasy"):
         asyncio.run(s.sol.execute(u, "buy", STOCK, 50_000_000, decimals=6, fallback=buy))
     pbuy = dataclasses.replace(swap("buy", 0.5, "z2"), mint=PUMP)
+    with pytest.raises(Exception, match="brak trasy"):  # PumpPortal nie działa – jak na prawdziwych SOL
+        asyncio.run(s.sol.execute(u, "buy", PUMP, 50_000_000, decimals=6, fallback=pbuy))
+    import time as _t
+    s.sol._pump_ok = _t.time()
     f = asyncio.run(s.sol.execute(u, "buy", PUMP, 50_000_000, decimals=6, fallback=pbuy))
     assert f.note == "po cenie tradera"
     # sprzedaż, gdy trader sprzedał za USDC – po jego cenie przeliczonej na SOL
