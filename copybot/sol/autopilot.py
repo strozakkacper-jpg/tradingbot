@@ -380,3 +380,38 @@ async def chase_v2_once(ctx):
             s.db.update_user(u["tg_id"], **upd)
             n += 1
     log.info("Nie goń ceny 10%% / flipper 45 s: zmienione konta %d", n)
+
+
+async def safety_v3_once(ctx):
+    """Jednorazowo (23.11, na prośbę właściciela – zmiana bezpieczników dla wszystkich): dzienny limit straty 18%
+    salda i przerwa po 5 stratach z rzędu. Ćwiczenia: limit od kapitału startowego (saldo demo było zawyżone przez
+    fikcyjne zakupy po cenie snajpera). Każdy dostaje wiadomość."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("safety_v3"):
+        return
+    s.db.set_state("safety_v3", str(now_ms()))
+    from .axiom import portfolio
+    done = 0
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        try:
+            live = s.sol.is_live(u)
+            total = (await portfolio(s, u))["total"] or 0
+            start = u["sol_paper_start"] if "sol_paper_start" in u.keys() and u["sol_paper_start"] else 5.0
+            base = total if live else min(total or start, start)
+            if base <= 0:
+                continue
+            limit = round(max(base * 0.18, 0.02), 3)
+            s.db.update_user(u["tg_id"], sol_day_limit=limit, sol_streak=5)
+            done += 1
+            await s.sol.say(s.db.get_user(u["tg_id"]), "auto",
+                            "🛡 <b>NOWE BEZPIECZNIKI</b> (ustawione przez admina)\n"
+                            f"• dzienny limit straty: <b>{limit:g} SOL</b> (18% salda"
+                            + ("" if live else " startowego ćwiczeń") + ") – po nim bot nie kupuje do jutra\n"
+                            "• przerwa 30 min po <b>5 stratach z rzędu</b>\n"
+                            "• nie goń ceny: pomija zakup droższy o > 10% niż u tradera\n"
+                            "• pauza tradera na 2 h po 3 stratach z rzędu na jego kopiach\n"
+                            "• flipperzy (trzymają &lt; 45 s) nie są kopiowani\n"
+                            "Zmienisz w ⚙️ Opcje → 🛡 Bezpieczniki.")
+        except Exception:  # noqa: BLE001
+            log.exception("Bezpieczniki v3 %s", u["tg_id"])
+    log.info("Bezpieczniki v3 (limit dnia 18%%, przerwa po 5 stratach): kont %d", done)

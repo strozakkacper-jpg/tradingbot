@@ -2006,3 +2006,16 @@ def test_trader_pause_after_3_losses_and_chase_v2(tmp_path):
     s.db.update_user(OWNER, sol_chase=50)
     asyncio.run(AP.chase_v2_once(SimpleNamespace(application=ctx.application)))  # tylko raz
     assert s.db.get_user(OWNER)["sol_chase"] == 50
+
+
+def test_safety_v3_once_sets_limits_for_everyone(tmp_path):
+    from copybot.sol import autopilot as AP
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    s.db.update_user(OWNER, sol_day_limit=0, sol_streak=0)
+    s.sol.paper_apply(OWNER, {"So11111111111111111111111111111111111111112": 400 * 10**9})  # zawyżone demo
+    asyncio.run(AP.safety_v3_once(SimpleNamespace(application=ctx.application)))
+    u = s.db.get_user(OWNER)
+    start = u["sol_paper_start"] or 5.0
+    assert u["sol_streak"] == 5 and abs(u["sol_day_limit"] - round(start * 0.18, 3)) < 1e-9
+    assert any("NOWE BEZPIECZNIKI" in t for _, t in sent)
