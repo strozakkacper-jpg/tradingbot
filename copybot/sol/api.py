@@ -76,10 +76,10 @@ def recommended(balance: float, typical_buy: float = 1.0, live: bool = False) ->
     return {"sol_buy_mode": "pct", "sol_pct": pct, "sol_buy": r(target), "sol_max": r(usable * 0.12),
             "sol_min_buy": min_buy, "sol_max_pos": int(min(max(usable / max(target, min_buy), 4), 15)),
             "sol_day_limit": r(max(usable * 0.25, 0.005)), "sol_streak": 5,
-            "sol_no_add": 0, "sol_min_lead": 0, "sol_min_hold": 20, "sol_safe": 1,
+            "sol_no_add": 0, "sol_min_lead": 0, "sol_min_hold": 45, "sol_safe": 1,
             "sol_x2": 1, "sol_tp": 0, "sol_sl": 60, "sol_trail": 40, "sol_slippage_bps": 2000,
             "sol_priority": tip, "sol_turbo": 1 if live else 0,
-            "sol_boost": 2, "sol_consensus": 0, "sol_auto_rank": 1, "sol_ladder": 1, "sol_chase": 30}
+            "sol_boost": 2, "sol_consensus": 0, "sol_auto_rank": 1, "sol_ladder": 1, "sol_chase": 10}
 
 
 def typical_trader_buy(s, uid: int) -> float:

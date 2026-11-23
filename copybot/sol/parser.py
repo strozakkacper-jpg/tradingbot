@@ -24,6 +24,7 @@ class Swap:
     quote_amount: float
     fraction: float  # jaki ułamek salda użyto (SOL przy kupnie, tokena przy sprzedaży)
     ts: int
+    slot: int = 0  # blok transakcji tradera – do pomiaru, o ile bloków jesteśmy za nim
 
 
 def _keys(tx: dict) -> list[str]:
@@ -82,4 +83,5 @@ def parse_swap(tx: dict | None, wallet: str, min_sol: float = 0.0005, min_usd: f
         fraction = -tok_delta / pre if pre > 0 else 1.0
     return Swap(signature=tx["transaction"]["signatures"][0], wallet=wallet, side=side, mint=mint,
                 token_raw=abs(tok_delta), decimals=decimals, quote_symbol=q_symbol, quote_amount=q_amount,
-                fraction=min(max(fraction, 0.0), 1.0), ts=int(tx.get("blockTime") or 0))
+                fraction=min(max(fraction, 0.0), 1.0), ts=int(tx.get("blockTime") or 0),
+                slot=int(tx.get("slot") or 0))

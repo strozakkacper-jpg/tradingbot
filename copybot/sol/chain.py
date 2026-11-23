@@ -202,6 +202,10 @@ class Rpc:
             if st and st.get("err"):
                 raise ChainError(f"transakcja odrzucona przez sieć: {st['err']}")
             if st and st.get("confirmationStatus") in ("confirmed", "finalized"):
+                slots = self.__dict__.setdefault("slots", {})
+                slots[sig] = int(st.get("slot") or 0)
+                if len(slots) > 500:
+                    slots.pop(next(iter(slots)))
                 return sig, time.monotonic() - t0
             if time.monotonic() - last_send >= 0.4:  # rebroadcast – zwiększa szansę szybkiego wejścia do bloku
                 rounds += 1

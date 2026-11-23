@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 DAY_MS = 24 * 3600 * 1000
 COMBO = "score,active,green"
 PROFIT_SETTINGS = {"sol_time_exit": 90, "sol_dev_exit": 1, "sol_smart": 1, "sol_auto_rank": 0, "sol_autocfg": 1,
-                   "sol_x2": 1, "sol_trail": 40, "sol_min_hold": 30, "sol_min_lead": 0, "sol_ladder": 1, "sol_chase": 30}  # 🛡 bezpieczników nie rusza
+                   "sol_x2": 1, "sol_trail": 40, "sol_min_hold": 45, "sol_min_lead": 0, "sol_ladder": 1, "sol_chase": 10}  # 🛡 bezpieczników nie rusza
 
 
 def target_count(balance: float) -> int:
@@ -358,3 +358,25 @@ async def wikix_plan_once(ctx):
                         "Doładuj na adres portfela z 👛 Portfel.")
     except Exception:  # noqa: BLE001
         log.exception("Wikix: plan 200 zł")
+
+
+
+async def chase_v2_once(ctx):
+    """Jednorazowo (23.11): „nie goń ceny” 30% → 10% i próg flippera 30 → 45 s u wszystkich, którzy mieli wartości
+    ustawione przez automat. Analiza Draqs: trader zarabiał 6–12%, a kopia wchodziła 12–29% drożej (jego zakup +
+    szybsze boty podbijają cenę w ~3 s) – każda taka kopia to pewna strata. Bezpieczników nie zmienia."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("chase_v2"):
+        return
+    s.db.set_state("chase_v2", str(now_ms()))
+    n = 0
+    for u in s.db._q("SELECT tg_id, sol_chase, sol_min_hold FROM users WHERE approved = 1"):
+        upd = {}
+        if u["sol_chase"] in (0, 30):
+            upd["sol_chase"] = 10
+        if u["sol_min_hold"] in (0, 20, 30):
+            upd["sol_min_hold"] = 45
+        if upd:
+            s.db.update_user(u["tg_id"], **upd)
+            n += 1
+    log.info("Nie goń ceny 10%% / flipper 45 s: zmienione konta %d", n)

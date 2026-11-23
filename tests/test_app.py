@@ -1971,3 +1971,30 @@ def test_rpc_token_balance_light_query_and_cached_full_list():
     calls.clear()
     asyncio.run(both())
     assert calls.count("getTokenAccountsByOwner") == 2   # 2 programy tokenów, ale jedno pobranie dla obu wywołań
+
+
+def test_trader_pause_after_3_losses_and_chase_v2(tmp_path):
+    import pytest
+    from copybot.sol import autopilot as AP
+    from copybot.sol.engine import Skip
+    s, ctx, sent = ready(tmp_path)
+    u = s.db.get_user(OWNER)
+    paper = not s.sol.is_live(u)
+    lid = s.db.create_leader("Wieloryb", "sol", OWNER, "active", wallet=WALLET)
+    lead = {"id": lid, "name": "Wieloryb"}
+    sw = swap("buy", 0.1, "p1")
+    for i in range(2):
+        s.sol.record(OWNER, lid, f"x{i}", "sell", TOKEN, 0.05, 100, "filled", "x", paper, pnl=-0.02)
+    s.sol.guard_db(u, sw, lead)                      # 2 straty – jeszcze kopiujemy
+    s.sol.record(OWNER, lid, "x3", "sell", TOKEN, 0.05, 100, "filled", "x", paper, pnl=-0.01)
+    with pytest.raises(Skip, match="pauza tradera"):
+        s.sol.guard_db(u, sw, lead)
+    s.sol.record(OWNER, lid, "x4", "sell", TOKEN, 0.05, 100, "filled", "x", paper, pnl=0.03)
+    s.sol.guard_db(u, sw, lead)                      # zysk przerywa serię
+    s.db.update_user(OWNER, sol_chase=30, sol_min_hold=30)
+    asyncio.run(AP.chase_v2_once(SimpleNamespace(application=ctx.application)))
+    u = s.db.get_user(OWNER)
+    assert u["sol_chase"] == 10 and u["sol_min_hold"] == 45
+    s.db.update_user(OWNER, sol_chase=50)
+    asyncio.run(AP.chase_v2_once(SimpleNamespace(application=ctx.application)))  # tylko raz
+    assert s.db.get_user(OWNER)["sol_chase"] == 50
