@@ -409,6 +409,24 @@ def diagnostics(s) -> list[dict]:
         uid = u["tg_id"]
         paper = not s.sol.is_live(u)
         d = {"uid": uid, "name": display_name(u), "live": not paper, "active": bool(u["active"])}
+        # wynik od poprawki realizmu ćwiczeń (23.11 10:25 UTC) – tylko tokeny kupione PO niej (bez fikcyjnych cen)
+        fix = 1795429529000
+        r = s.db._q("""SELECT COUNT(*) n, SUM(pnl > 0) w, COALESCE(SUM(pnl), 0) p, COALESCE(SUM(sol), 0) back
+                       FROM sol_trades t WHERE tg_id = ? AND paper = ? AND side = 'sell' AND status = 'filled'
+                       AND pnl IS NOT NULL AND ts >= ? AND NOT EXISTS (SELECT 1 FROM sol_trades b WHERE b.tg_id = t.tg_id
+                       AND b.mint = t.mint AND b.paper = t.paper AND b.side = 'buy' AND b.status = 'filled' AND b.ts < ?)""",
+                    (uid, int(paper), fix, fix))[0]
+        b = s.db._q("""SELECT COUNT(*) n, COALESCE(SUM(sol), 0) spent, COUNT(DISTINCT mint) tokens FROM sol_trades
+                       WHERE tg_id = ? AND paper = ? AND side = 'buy' AND status = 'filled' AND ts >= ?""",
+                    (uid, int(paper), fix))[0]
+        o = s.db._q("""SELECT COUNT(*) n, COALESCE(SUM(cost), 0) c FROM (SELECT mint,
+                         SUM(CASE WHEN side = 'buy' THEN tokens ELSE -tokens END) left_tok,
+                         SUM(CASE WHEN side = 'buy' THEN sol ELSE 0 END) cost, MIN(ts) first
+                         FROM sol_trades WHERE tg_id = ? AND paper = ? AND status = 'filled' GROUP BY mint)
+                       WHERE first >= ? AND left_tok > 1e-9""", (uid, int(paper), fix))[0]
+        d["since_fix_open"] = {"positions": o["n"], "cost": round(o["c"], 4)}
+        d["since_fix"] = {"sells": r["n"], "wins": r["w"] or 0, "pnl": round(r["p"], 4), "buys": b["n"],
+                          "spent": round(b["spent"], 4), "tokens": b["tokens"], "hours": round((now - fix) / 3600_000, 1)}
         for days in (1, 3, 7):
             r = s.db._q("""SELECT COALESCE(SUM(pnl), 0) p, COUNT(*) n, SUM(pnl > 0) w FROM sol_trades
                            WHERE tg_id = ? AND paper = ? AND side = 'sell' AND status = 'filled' AND pnl IS NOT NULL
