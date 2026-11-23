@@ -25,6 +25,7 @@ class Swap:
     fraction: float  # jaki ułamek salda użyto (SOL przy kupnie, tokena przy sprzedaży)
     ts: int
     slot: int = 0  # blok transakcji tradera – do pomiaru, o ile bloków jesteśmy za nim
+    pump: dict | None = None  # ⚡ instrukcja Pump.fun tradera (szablon do szybkiej kopii składanej w bocie)
 
 
 def _keys(tx: dict) -> list[str]:
@@ -81,7 +82,9 @@ def parse_swap(tx: dict | None, wallet: str, min_sol: float = 0.0005, min_usd: f
         fraction = q_raw / q_pre if q_pre > 0 else 0.0
     else:
         fraction = -tok_delta / pre if pre > 0 else 1.0
+    from .fastswap import template_from_tx
     return Swap(signature=tx["transaction"]["signatures"][0], wallet=wallet, side=side, mint=mint,
                 token_raw=abs(tok_delta), decimals=decimals, quote_symbol=q_symbol, quote_amount=q_amount,
                 fraction=min(max(fraction, 0.0), 1.0), ts=int(tx.get("blockTime") or 0),
-                slot=int(tx.get("slot") or 0))
+                slot=int(tx.get("slot") or 0),
+                pump=template_from_tx(tx, wallet, mint) if q_symbol == "SOL" else None)

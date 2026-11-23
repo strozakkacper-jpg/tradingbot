@@ -448,6 +448,8 @@ class SolEngine:
         # nazwa tokena tylko do powiadomień – pobieramy ją RÓWNOLEGLE, kopiowanie rusza od razu
         # (miejsca po przecinku znamy z samej transakcji tradera)
         info_task = asyncio.create_task(self.token_info(sw.mint, sw.decimals))
+        if sw.pump:
+            self.note_pump_template(sw)
         if sw.side == "buy":
             self.note_buy(lead["id"], sw.mint)
         followers = []
@@ -457,6 +459,12 @@ class SolEngine:
                 fr = self.db.follow_row(u["tg_id"], lead["id"])
                 followers.append(dict(u, follow_sol_buy=fr["sol_buy"] if fr else None,
                                       follow_sol_pct=fr["sol_pct"] if fr else None))
+
+        if sw.pump and any(self.is_live(u) for u in followers):
+            try:
+                self._bh().warm()  # świeży blockhash już teraz, równolegle z filtrami (tylko gdy ktoś gra na prawdziwych)
+            except Exception:  # noqa: BLE001
+                pass
 
         async def run(u):
             async with self.sem:
@@ -500,7 +508,7 @@ class SolEngine:
                     # potem kwota i wycena RÓWNOLEGLE z resztą filtrów (sieć)
                     self.guard_db(u, sw, lead)
                     amount = await self.buy_amount(u, sw)
-                    if not boosted:
+                    if not boosted and not sw.pump:
                         prequote = asyncio.create_task(self.fast_quote(SOL_MINT, sw.mint, amount,
                                                                        int(u["sol_slippage_bps"])))
                         prequote.add_done_callback(lambda f: f.cancelled() or f.exception())
@@ -933,6 +941,92 @@ class SolEngine:
             raise Skip(f"za mała kwota ({want / LAMPORTS:.4f} SOL) – opłaty zjadłyby zysk")
         return want
 
+    # ---------- ⚡ szybka kopia na krzywej Pump.fun (transakcja składana w bocie) ----------
+    def note_pump_template(self, sw: Swap):
+        """Zapamiętuje instrukcję Pump.fun z ruchu tradera – przyda się też auto-sprzedaży (bez ruchu tradera)."""
+        if sw.pump:
+            cache = self.__dict__.setdefault("_pump_tpl", {})
+            cache[(sw.mint, "sell" if sw.pump["kind"] == "sell" else "buy")] = (time.monotonic(), sw.pump)
+            if len(cache) > 3000:
+                for k in sorted(cache, key=lambda k: cache[k][0])[:1000]:
+                    cache.pop(k, None)
+
+    def _pump_template(self, mint: str, side: str, fallback: Swap | None) -> dict | None:
+        want = "sell" if side == "sell" else "buy"
+        if fallback is not None and fallback.pump and fallback.mint == mint and \
+                ("sell" if fallback.pump["kind"] == "sell" else "buy") == want:
+            return fallback.pump
+        hit = self.__dict__.get("_pump_tpl", {}).get((mint, want))
+        return hit[1] if hit and time.monotonic() - hit[0] < 6 * 3600 else None
+
+    def _bh(self):
+        from .fastswap import Blockhash
+        if self.__dict__.get("_blockhash") is None:
+            self._blockhash = Blockhash(self.rpc)
+        return self._blockhash
+
+    async def _fast_pump(self, u, side, mint, amount_raw, t0, t_recv, decimals, fallback, tpl) -> "Fill | None":
+        """Kopia na krzywej Pump.fun bez Jupitera: cena z krzywej, instrukcja tradera z naszymi kontami.
+        None = ta droga nie pasuje (token już na giełdzie, brak danych) – engine użyje zwykłej drogi."""
+        from . import fastswap as F
+        try:
+            c = await asyncio.wait_for(F.curve(self.rpc, mint), 2)
+        except Exception:  # noqa: BLE001
+            return None
+        if not c or c["complete"]:
+            return None
+        slip = int(u["sol_slippage_bps"])
+        if side == "buy":
+            out = F.tokens_for_sol(c, amount_raw)
+            if out <= 0:
+                return None
+            chase = u["sol_chase"] if "sol_chase" in u.keys() else 0
+            if chase and fallback is not None:
+                his = await self._trader_price(fallback)
+                if his and amount_raw / out > his * (1 + chase / 100):
+                    raise Skip(f"🏃 cena uciekła: płaciłbyś o {(amount_raw / out / his - 1) * 100:.0f}% drożej niż trader "
+                               f"(Twój limit {chase:g}%) – nie gonię ceny")
+            sol_raw, tok_raw = amount_raw, out
+        else:
+            out = F.sol_for_tokens(c, amount_raw)
+            if out <= 0:
+                return None
+            sol_raw, tok_raw = out, amount_raw
+        limit = int(out * (1 - slip / 10_000))
+        if not self.is_live(u):  # ćwiczenia: ta sama cena z krzywej co na prawdziwych SOL (+ poślizg z prawdziwych)
+            got = int(out * (1 - self.paper_slip(side)))
+            a, o = self.paper_trade(u, side, mint, amount_raw, got)
+            s_raw, t_raw = (a, o) if side == "buy" else (o, a)
+            return Fill(s_raw / LAMPORTS, t_raw / 10 ** decimals, None, int((time.monotonic() - t0) * 1000),
+                        note="⚡ Pump.fun w bocie")
+        pub, kp = self.wallet(u["tg_id"])
+        self._fresh(t_recv, side)
+        turbo = self.turbo(u) and self.jito is not None
+        tip = self.trade_tip(u, sol_raw, side)
+        t_s = time.monotonic()
+        try:
+            import random
+            from .chain import JITO_TIP_ACCOUNTS
+            bh = await self._bh().get()
+            tx = F.build(tpl, kp, side, amount_raw, limit, bh, tip_lamports=tip if turbo else 0,
+                         tip_account=random.choice(JITO_TIP_ACCOUNTS) if turbo else None,
+                         cu_price=0 if turbo else tip * 1_000_000 // 150_000)
+        except Exception as e:  # noqa: BLE001
+            log.info("Pump.fun w bocie: nie złożono transakcji (%s) – zwykła droga", str(e)[:120])
+            return None
+        if tx is None:
+            return None
+        t_b = time.monotonic()
+        lat = int((t_b - t0) * 1000)
+        self._bal.pop(pub, None)
+        sig, confirm_s = await self.rpc.send_and_confirm(tx, also=[self.jito.send] if turbo else None)
+        self.note_timing(side, turbo, t0, t_s, t_s, t_b, confirm_s)
+        fill = Fill(sol_raw / LAMPORTS, tok_raw / 10 ** decimals, sig, lat, confirm_s, note="⚡ Pump.fun w bocie")
+        mine = (getattr(self.rpc, "slots", None) or {}).get(sig)
+        if mine and fallback is not None and fallback.slot:
+            fill.lag_slots = max(mine - fallback.slot, 0)
+        return await self._actual(fill, pub, mint, side, decimals, sol_raw, tok_raw)
+
     def _jup_busy(self) -> bool:
         busy = getattr(self.jup, "busy", None)
         return bool(busy and busy())
@@ -958,6 +1052,13 @@ class SolEngine:
         if decimals is None:  # bez zapytania do sieci, jeśli znamy token
             cached = self.cached_token(mint)
             decimals = cached[1] if cached else (await self.token_info(mint))[1]
+        tpl = self._pump_template(mint, side, fallback)
+        if tpl is not None and u["tg_id"] > 0:
+            fill = await self._fast_pump(u, side, mint, amount_raw, t0, t_recv, decimals, fallback, tpl)
+            if fill is not None:
+                if prequote is not None and hasattr(prequote, "cancel"):
+                    prequote.cancel()
+                return fill
         t_q = time.monotonic()
         try:
             quote = await (prequote if prequote is not None else
@@ -1020,7 +1121,7 @@ class SolEngine:
         self._fresh(t_recv, side)  # wycena mogła czekać w kolejce limitu – sprawdzamy jeszcze raz przed wysłaniem
         turbo = self.turbo(u) and self.jito is not None
         t_s = time.monotonic()
-        tip = self.trade_tip(u, sol_raw)  # kwota transakcji w SOL (kupno: wydane, sprzedaż: spodziewany wpływ)
+        tip = self.trade_tip(u, sol_raw, side)  # kwota transakcji w SOL (kupno: wydane, sprzedaż: spodziewany wpływ)
         if "_raptor" not in quote and self.raptor is not None and self._jup_busy():
             # budowa transakcji u Jupitera stałaby w kolejce limitu – budujemy przez Raptora (świeża wycena)
             try:
@@ -1242,13 +1343,14 @@ class SolEngine:
         log.info("Solana LIVE %s%s: przygotowanie %d ms · wycena %d ms · budowa %d ms · potwierdzenie %d ms",
                  side, " ⚡turbo" if turbo else "", tm["prep"], tm["quote"], tm["build"], tm["confirm"])
 
-    def trade_tip(self, u, lamports: int | None) -> int:
+    def trade_tip(self, u, lamports: int | None, side: str | None = None) -> int:
         """Opłata za szybkość / napiwek dla JEDNEJ transakcji: ~0,5% jej kwoty (min. 10 000 lamportów, maks. Twoje
-        ustawienie „Szybkość”). Stały napiwek 0,0002 SOL przy sprzedaży za 0,002 SOL to było 10% kwoty."""
+        ustawienie „Szybkość”). Stały napiwek 0,0002 SOL przy sprzedaży za 0,002 SOL to było 10% kwoty.
+        Zakup: 1% kwoty (wejście w najbliższy blok liczy się najbardziej – każdy blok później to wyższa cena)."""
         cap = self.priority(u)
         if not lamports:
             return cap
-        return int(min(cap, max(10_000, lamports * 0.005)))
+        return int(min(cap, max(10_000, lamports * (0.01 if side == "buy" else 0.005))))
 
     def priority(self, u) -> int:
         """Maks. opłata za szybkość (lamporty) – ustawienie użytkownika albo domyślna z konfiguracji."""

@@ -2019,3 +2019,49 @@ def test_safety_v3_once_sets_limits_for_everyone(tmp_path):
     start = u["sol_paper_start"] or 5.0
     assert u["sol_streak"] == 5 and abs(u["sol_day_limit"] - round(start * 0.18, 3)) < 1e-9
     assert any("NOWE BEZPIECZNIKI" in t for _, t in sent)
+
+
+def test_fastswap_pump_template_build_and_paper_curve(tmp_path):
+    import base64 as b64
+    import struct
+    from solders.keypair import Keypair
+    from solders.transaction import VersionedTransaction
+    from copybot.sol import fastswap as F
+    from copybot.sol.parser import parse_swap
+    tx = json.load(open(Path(__file__).parent / "fixtures" / "pump_buy_tx.json"))
+    trader, mint = "GLSCB2DeQAKcSD79nSSXm4F4qAheWDuJswiT8xXUZ6TN", "B6CP6Edh4rGKKH7Q9KUQUSKX8UU614nW3sfWmh92pump"
+    sw = parse_swap(tx, trader)
+    assert sw and sw.side == "buy" and sw.mint == mint and sw.slot == 472881317
+    tpl = sw.pump
+    assert tpl["kind"] == "buy_exact_sol_in" and len(tpl["accounts"]) == 18
+    kp = Keypair()
+    me = str(kp.pubkey())
+    accs = F._swap_accounts(tpl, me)
+    keys = [str(a.pubkey) for a in accs]
+    assert trader not in keys and me in keys
+    assert str(F.ata(me, mint, tpl["token_program"])) in keys and str(F.user_volume(me)) in keys
+    assert keys[16] == tpl["accounts"][16] and keys[17] == tpl["accounts"][17]  # konta niezależne od portfela – bez zmian
+    raw = F.build(tpl, kp, "buy", 10_000_000, 1, "11111111111111111111111111111111", tip_lamports=50_000,
+                  tip_account="96gYZGLnJYVFmbjzopPSU6QiEV5fGqZNyN9nmNhvrZU5")
+    vt = VersionedTransaction.from_bytes(raw)
+    ixs = vt.message.instructions
+    assert len(ixs) == 5  # 2× compute budget, konto tokena, Pump.fun, napiwek
+    assert bytes(ixs[3].data)[:8] == F.BUY_EXACT_SOL and struct.unpack_from("<Q", bytes(ixs[3].data), 8)[0] == 10_000_000
+    assert F.build(tpl, kp, "sell", 1, 1, "11111111111111111111111111111111") is None  # zła strona szablonu
+    # cena z krzywej: więcej SOL → więcej tokenów, ale drożej za sztukę
+    c = {"vt": 891236679678553, "vs": 36118352779, "rt": 611336679678553, "rs": 6118352779, "complete": False}
+    a, b = F.tokens_for_sol(c, 10**8), F.tokens_for_sol(c, 10**9)
+    assert 0 < a < b and 10**9 / b > 10**8 / a
+    # ćwiczenia: ta sama cena z krzywej co na prawdziwych SOL
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    data = bytes(8) + struct.pack("<5Q", c["vt"], c["vs"], c["rt"], c["rs"], 10**15) + b"\x00" + bytes(117)
+
+    async def call(method, params=None):
+        assert method == "getAccountInfo"
+        return {"value": {"data": [b64.b64encode(data).decode(), "base64"]}}
+    s.sol.rpc.call = call
+    s.db.update_user(OWNER, sol_chase=0)
+    f = asyncio.run(s.sol.execute(s.db.get_user(OWNER), "buy", mint, 50_000_000, decimals=6, fallback=sw))
+    exp = F.tokens_for_sol(c, 50_000_000)
+    assert f.note == "⚡ Pump.fun w bocie" and abs(f.tokens * 10**6 - exp * (1 - s.sol.paper_slip("buy"))) / exp < 0.001
