@@ -91,6 +91,10 @@ def health_problems(s) -> list[tuple[str, str]]:
         err = str(w.last_error or "")
         if any(x in err for x in ("401", "Unauthorized", "invalid api key")):
             out.append(("helius", "🔑 Helius odrzuca klucz (HELIUS_API_KEY) – sprawdź plan / klucz na Railway"))
+    if getattr(se.rpc, "degraded", False) or (w is not None and getattr(w, "mode", "") == "zapasowy"):
+        out.append(("helius429", "🛟 Helius odrzuca zapytania (429 – najpewniej wyczerpany limit darmowego planu). Bot "
+                                 "działa przez zapasowy, publiczny węzeł Solany – wolniej, 🧪 laboratorium wstrzymane. "
+                                 "Pomoże płatny plan Helius albo odnowienie limitu na początku miesiąca."))
     if getattr(se.rpc, "auth_error", None):
         out.append(("rpc", f"🔑 RPC (Helius) odrzuca zapytania: {se.rpc.auth_error} – sprawdź HELIUS_API_KEY"))
     if getattr(se.jup, "auth_error", None):

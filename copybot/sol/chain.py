@@ -59,8 +59,37 @@ class Rpc:
         self.heavy = RateLimiter(float(os.getenv("SOL_RPC_HEAVY_RPS", "2")))
         self._accs: dict[str, tuple[float, asyncio.Future]] = {}
         self.auth_error: str | None = None
+        # 🛟 zapasowa droga: gdy główny RPC (Helius) odrzuca wszystko (429 – np. wyczerpany limit planu), zapytania
+        # idą przez publiczny węzeł Solany, a co jakiś czas sprawdzamy, czy główny wrócił
+        self.fallback = os.getenv("SOL_RPC_FALLBACK", "https://api.mainnet-beta.solana.com")
+        self.degraded_until = 0.0
+        self.degraded_since: float | None = None
+
+    @property
+    def degraded(self) -> bool:
+        return bool(self.fallback) and self.fallback != self.url and time.monotonic() < self.degraded_until
+
+    def _mark_degraded(self):
+        if not self.degraded:
+            log.warning("RPC: główny węzeł odrzuca zapytania (429) – przełączam na zapasowy (publiczny) na 5 min")
+        self.degraded_until = time.monotonic() + 300
+        self.degraded_since = self.degraded_since or time.time()
 
     async def call(self, method: str, params: list | None = None):
+        degraded = self.degraded
+        try:
+            res = await self._call(method, params, self.fallback if degraded else self.url)
+            if not degraded and self.degraded_since:
+                log.info("RPC: główny węzeł znowu działa – wracam z zapasowego")
+                self.degraded_since = None
+            return res
+        except ChainError as e:
+            if "limit zapytań RPC" in str(e) and self.fallback and self.fallback != self.url and not self.degraded:
+                self._mark_degraded()
+                return await self._call(method, params, self.fallback)
+            raise
+
+    async def _call(self, method: str, params: list | None, url: str):
         heavy = method == "getTokenAccountsByOwner"
         for attempt in range(4):
             if heavy:
@@ -68,8 +97,8 @@ class Rpc:
             await self.limit.wait()
             self._id += 1
             try:
-                async with self.session.post(self.url, json={"jsonrpc": "2.0", "id": self._id, "method": method,
-                                                             "params": params or []}) as r:
+                async with self.session.post(url, json={"jsonrpc": "2.0", "id": self._id, "method": method,
+                                                        "params": params or []}) as r:
                     if r.status in (401, 403):
                         self.auth_error = f"HTTP {r.status}"
                     if r.status == 429:
@@ -85,7 +114,7 @@ class Rpc:
             if "error" in data:
                 raise ChainError(f"{method}: {data['error'].get('message', data['error'])}")
             return data["result"]
-        raise ChainError(f"{method}: limit zapytań RPC – ustaw HELIUS_API_KEY")
+        raise ChainError(f"{method}: limit zapytań RPC (429)")
 
     async def balance(self, pubkey: str) -> int:
         return (await self.call("getBalance", [pubkey, {"commitment": "processed"}]))["value"]

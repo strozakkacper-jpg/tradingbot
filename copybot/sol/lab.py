@@ -46,8 +46,17 @@ class Lab:
         self.sem = asyncio.Semaphore(2)
         self.stats_cache: dict = {"members": [], "updated": None}
 
+    def paused(self) -> bool:
+        """Główny węzeł RPC odmawia (bot jedzie na zapasowym) – laboratorium nie nasłuchuje: cały limit dla prawdziwych
+        kopii."""
+        se = self.s.sol
+        w = getattr(se, "watcher", None)
+        return bool(getattr(se.rpc, "degraded", False) or (w is not None and getattr(w, "mode", "") == "zapasowy"))
+
     # ---------- członkowie ----------
     def wallets(self) -> set[str]:
+        if self.paused():
+            return set()
         at, ws = self._wallets
         if time.monotonic() - at > 30:
             ws = {r["wallet"] for r in self.s.db._q("SELECT wallet FROM lab WHERE active = 1")}
@@ -104,6 +113,8 @@ class Lab:
                       status, gap, (info or "")[:200]))
 
     async def on_swap(self, wallet: str, sw: Swap, t_recv: float | None = None):
+        if self.paused():
+            return
         m = self.member(wallet)
         if not m or not m["active"]:
             return

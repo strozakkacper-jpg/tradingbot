@@ -68,11 +68,19 @@ class SolWatcher:
         self.disconnected_at: float | None = None  # kiedy zerwało połączenie – po powrocie nadrabiamy ruchy
         self.backfilled = 0
 
+    FALLBACK_WS = os.getenv("SOL_WS_FALLBACK", "wss://api.mainnet-beta.solana.com")
+
     async def run(self):
         backoff = 1
+        refused = 0  # odmowy z rzędu (429) głównego węzła
+        self.fallback_until = 0.0
         while True:
             try:
-                if not self.enhanced_failed:
+                if time.monotonic() < self.fallback_until:
+                    # 🛟 główny węzeł odmawia (np. wyczerpany limit planu Helius) – nasłuch przez publiczny węzeł Solany
+                    self.mode = "zapasowy"
+                    await self._session(self.FALLBACK_WS, enhanced=False)
+                elif not self.enhanced_failed:
                     self.mode = "enhanced"
                     await self._session(self.enhanced_url, enhanced=True)
                 else:
@@ -90,6 +98,14 @@ class SolWatcher:
                                 e.status)
                     continue
                 log.warning("Solana WebSocket (%s): odmowa połączenia %s – ponawiam za %ss", self.mode, e.status, backoff)
+                if self.mode != "zapasowy":
+                    refused += 1
+                    if refused >= 3 and self.FALLBACK_WS and self.FALLBACK_WS != self.ws_url:
+                        log.warning("Solana: główny węzeł odmawia %d× z rzędu – nasłuch przez zapasowy (publiczny) "
+                                    "węzeł na 15 min", refused)
+                        self.fallback_until = time.monotonic() + 15 * 60
+                        refused, backoff = 0, 1
+                        continue
             except Exception as e:  # noqa: BLE001
                 self.last_error = str(e)[:200]
                 if self.connected:
@@ -153,6 +169,9 @@ class SolWatcher:
                 try:
                     msg = await ws.receive(timeout=max(next_sync - loop.time(), 0.1))
                 except asyncio.TimeoutError:
+                    if self.mode == "zapasowy" and time.monotonic() > self.fallback_until:
+                        log.info("Solana: sprawdzam, czy główny węzeł już działa (powrót z zapasowego)")
+                        return
                     await sync()
                     next_sync = loop.time() + 5
                     continue

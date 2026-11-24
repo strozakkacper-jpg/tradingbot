@@ -2239,3 +2239,49 @@ def test_close_skips_vanished_accounts_and_lab_stops_bots(tmp_path):
     assert WALLET not in lab.wallets()
     d = asyncio.run(lab.compute())["members"][0]
     assert d["verdict"] == "reject" and "bot" in d["reason"]
+
+
+def test_rpc_and_watcher_fallback_when_helius_refuses(tmp_path):
+    from copybot.sol import lab as LABM
+    from copybot.sol.chain import Rpc
+    calls = []
+
+    class Resp:
+        def __init__(self, status, data=None):
+            self.status, self._d = status, data
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def json(self, content_type=None):
+            return self._d
+
+    class Sess:
+        def post(self, url, json=None):
+            calls.append(url)
+            return Resp(429) if "helius" in url else Resp(200, {"result": {"value": 7}})
+
+    r = Rpc("https://mainnet.helius-rpc.com/?api-key=x", Sess(), 0)
+    r.fallback = "https://public.example"
+    import copybot.sol.chain as C
+    orig = C.asyncio.sleep
+
+    async def fast(_):
+        return None
+    C.asyncio.sleep = fast
+    try:
+        assert asyncio.run(r.balance("x")) == 7 and r.degraded            # główny 429 → zapasowy
+        n = len(calls)
+        assert asyncio.run(r.balance("x")) == 7 and calls[n:] == ["https://public.example"]  # od razu zapasowy
+    finally:
+        C.asyncio.sleep = orig
+    # laboratorium wstrzymane, gdy RPC jedzie na zapasowym
+    s, ctx, sent = ready(tmp_path)
+    lab = s.sol.lab = LABM.Lab(s)
+    lab.sync([{"wallet": WALLET, "name": "T", "source": "ranking"}])
+    assert WALLET in lab.wallets()
+    s.sol.rpc.degraded = True
+    assert lab.wallets() == set()
