@@ -415,3 +415,37 @@ async def safety_v3_once(ctx):
         except Exception:  # noqa: BLE001
             log.exception("Bezpieczniki v3 %s", u["tg_id"])
     log.info("Bezpieczniki v3 (limit dnia 18%%, przerwa po 5 stratach): kont %d", done)
+
+
+async def reset_demo_2sol_once(ctx):
+    """Jednorazowo (24.11, na prośbę właściciela): ćwiczenia od nowa – każdy 2 wirtualne SOL (stare wyniki były
+    zawyżone przez zakupy po cenie snajpera). Na kontach grających na ćwiczeniach: autopilot dobiera najlepszych
+    aktywnych traderów i ustawia kwoty pod 2 SOL, bezpieczniki pod 2 SOL. Prawdziwych SOL nie rusza."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("reset_demo_2sol"):
+        return
+    s.db.set_state("reset_demo_2sol", str(now_ms()))
+    done = []
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        uid = u["tg_id"]
+        try:
+            s.db.update_user(uid, sol_paper_start=2.0)
+            s.sol.paper_reset(uid)
+            s.db._q("DELETE FROM sol_equity WHERE tg_id = ? AND paper = 1", (uid,))
+            if s.sol.is_live(u):
+                continue  # prawdziwe SOL – tylko czyste ćwiczenia w tle, traderzy bez zmian
+            s.db.update_user(uid, session_sol0=2.0, session_start=now_ms() if u["active"] else u["session_start"])
+            res = await enable(s, s.db.get_user(uid), 2.0)
+            s.db.update_user(uid, sol_day_limit=0.36, sol_streak=5, sol_safe=1)
+            u2 = s.db.get_user(uid)
+            done.append((uid, len(res["on"]), len(res["off"])))
+            await s.sol.say(u2, "auto",
+                            "🧪 <b>ĆWICZENIA OD NOWA – 2 SOL</b>\n"
+                            "Stare wyniki ćwiczeń były zawyżone (zakupy świeżych tokenów po cenie snajpera, niemożliwe na "
+                            "prawdziwych SOL) – od teraz ćwiczenia liczą dokładnie jak prawdziwe pieniądze.\n"
+                            "🚀 Autopilot dobrał najlepszych aktywnych traderów i ustawił kwoty pod 2 SOL "
+                            f"(ok. {u2['sol_buy']:g} SOL na zakup).\n🛡 Limit straty dnia 0,36 SOL · przerwa po 5 stratach.\n"
+                            + html.escape(summary({**res, "kept": []})))
+        except Exception:  # noqa: BLE001
+            log.exception("Ćwiczenia od nowa %s", uid)
+    log.info("Ćwiczenia od nowa (2 SOL): konta z traderami %s", done)

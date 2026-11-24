@@ -2091,3 +2091,21 @@ def test_trader_health_overview_states_and_issues(tmp_path):
     items = [{"name": "Top 5 ocena", "wallet": WALLET}, {"name": "Top 5 ocena", "wallet": W2}]
     HL.unique_names(items)
     assert items[0]["name"] != items[1]["name"] and items[0]["name"].endswith(WALLET[-4:])
+
+
+def test_reset_demo_2sol_once(tmp_path):
+    from copybot.db import now_ms
+    from copybot.sol import autopilot as AP
+    from copybot.sol.parser import SOL_MINT
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    s.sol.paper_apply(OWNER, {SOL_MINT: 400 * 10**9, TOKEN: 5000})
+    s.sol.record(OWNER, None, None, "sell", TOKEN, 29.0, 1, "filled", "fikcja", True, pnl=28.0)
+    s.db._q("INSERT INTO sol_equity VALUES (?,?,?,1)", (OWNER, now_ms() - 3600_000, 438.0))
+    asyncio.run(AP.reset_demo_2sol_once(SimpleNamespace(application=ctx.application)))
+    u = s.db.get_user(OWNER)
+    assert s.sol.paper(OWNER) == {SOL_MINT: 2 * 10**9}
+    assert not s.db._q("SELECT 1 FROM sol_trades WHERE tg_id = ? AND paper = 1 AND info = 'fikcja'", (OWNER,))
+    assert not s.db._q("SELECT 1 FROM sol_equity WHERE tg_id = ? AND paper = 1", (OWNER,))
+    assert u["sol_paper_start"] == 2.0 and u["sol_autopilot"] == 1 and u["sol_day_limit"] == 0.36 and u["sol_streak"] == 5
+    assert any("OD NOWA" in t for _, t in sent)
