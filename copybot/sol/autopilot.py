@@ -42,6 +42,7 @@ def candidates(s, why: Counter | None = None) -> list[dict]:
         return []
     m30 = {r["wallet"]: r for r in LB.top(s, 30, "score", kind=kind)}
     now = time.time()
+    seen = _bot_seen(s, [r["wallet"] for r in rows])
     out = []
     for r in rows:
         pnl = r["pnl"] if r["pnl"] is not None else r["pnl_usd"]
@@ -54,6 +55,9 @@ def candidates(s, why: Counter | None = None) -> list[dict]:
             why["mało aktywny"] += 1  # rzadko handluje – mało okazji
         elif r.get("last") and now - r["last"] > 36 * 3600:
             why["cisza >36h"] += 1
+        elif r["wallet"] in seen and seen[r["wallet"]][0] < now_ms() - 2 * DAY_MS and \
+                (seen[r["wallet"]][1] or 0) < now_ms() - 2 * DAY_MS:
+            why["bot nie widzi ruchów >48h"] += 1  # ranking mówi „aktywny”, a bot śledzi go od 2+ dni i nic
         elif r.get("win_rate") is not None and r["win_rate"] < 0.3:
             why["skuteczność <30%"] += 1
         elif r30 is not None and ((r30["pnl"] if r30["pnl"] is not None else r30["pnl_usd"]) or 0) <= 0:
@@ -62,6 +66,19 @@ def candidates(s, why: Counter | None = None) -> list[dict]:
             out.append(r)
     why[f"ok ({kind})"] += len(out)
     return out
+
+
+def _bot_seen(s, wallets: list[str]) -> dict[str, tuple[int, int | None]]:
+    """wallet → (od kiedy bot go śledzi, ostatni ruch, który bot zobaczył) – własna obserwacja zamiast danych rankingu
+    (Solana Tracker podaje „ostatni ruch” z opóźnieniem albo wcale)."""
+    if not wallets:
+        return {}
+    q = ",".join("?" * len(wallets))
+    rows = s.db._q(f"""SELECT l.wallet, MIN(f.created_at) since, MAX(t.ts) last FROM leaders l
+                       JOIN follows f ON f.leader_id = l.id
+                       LEFT JOIN sol_trades t ON t.tg_id = -l.id AND t.status = 'filled'
+                       WHERE l.source = 'sol' AND l.wallet IN ({q}) GROUP BY l.wallet""", tuple(wallets))
+    return {r["wallet"]: (r["since"] or now_ms(), r["last"]) for r in rows}
 
 
 def _no_route_share(s, uid: int, lid: int) -> float:
@@ -483,9 +500,9 @@ async def rebuild_demo_traders_once(ctx):
     czołówki (aktywni ≤ 36 h, na plusie 7 i 30 dni, nie flipperzy). Wyłącza traderów spoza czołówki – także z ⭐,
     bo zostawały nieaktywne od kilku dni. Prawdziwych SOL nie rusza."""
     s = ctx.application.bot_data["svc"]
-    if not getattr(s, "sol", None) or s.db.get_state("rebuild_demo_traders"):
+    if not getattr(s, "sol", None) or s.db.get_state("rebuild_demo_traders_v2"):
         return
-    s.db.set_state("rebuild_demo_traders", str(now_ms()))
+    s.db.set_state("rebuild_demo_traders_v2", str(now_ms()))
     from .api import saved_list, switch
     why = Counter()
     cands = candidates(s, why)

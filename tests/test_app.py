@@ -2124,3 +2124,18 @@ def test_rebuild_demo_traders_once(tmp_path, monkeypatch):
     copy = [it["wallet"] for it in saved_list(s, OWNER) if it["status"] == "copy"]
     assert WALLET in copy and W2 not in copy
     assert any("NOWY SKŁAD" in t for _, t in sent)
+
+
+def test_candidates_skip_traders_bot_sees_idle(tmp_path, monkeypatch):
+    from copybot.db import now_ms
+    from copybot.sol import autopilot as AP
+    s, ctx, sent = ready(tmp_path)
+    rows = [{"wallet": WALLET, "pnl": 5.0, "pnl_usd": None, "activity": 90, "last": None},
+            {"wallet": W2, "pnl": 5.0, "pnl_usd": None, "activity": 90, "last": None}]
+    monkeypatch.setattr(AP.LB, "top", lambda s, period, sort, kind=None, limit=None: rows if period == 7 else [])
+    lid = s.db.create_leader("Cichy", "sol", OWNER, "active", wallet=W2)
+    s.db.follow(OWNER, lid, True)
+    s.db._q("UPDATE follows SET created_at = ? WHERE leader_id = ?", (now_ms() - 5 * 86_400_000, lid))
+    why = AP.Counter()
+    out = [r["wallet"] for r in AP.candidates(s, why)]
+    assert out == [WALLET] and why["bot nie widzi ruchów >48h"] == 1   # śledzony 5 dni, zero ruchów
