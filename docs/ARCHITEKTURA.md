@@ -22,6 +22,7 @@ sieć Solana ──► sol/watcher.py ──► sol/parser.py ──► sol/engi
 | `parser.py` | z transakcji odczytuje: kto, kupno/sprzedaż, token, ile SOL/USDC, jaki % salda |
 | `engine.py` | **serce kopiowania**: filtry (`guard_buy`), kwota (`buy_amount`), wykonanie (`execute`), ćwiczenia (`paper_*`), portfel wzorcowy tradera (`_reference`), wyniki |
 | `chain.py` | klienci sieci: RPC (Helius), Jupiter (wyceny, wymiany, limit zapytań), Raptor (druga droga – gdy Jupiter zajęty), DexScreener (ceny poza limitem Jupitera), PumpPortal, Jito (kilka regionów naraz) |
+| `health.py` | 🩺 stan kopiowanych traderów: czy bot naprawdę kopiuje i dlaczego nie (pauza, flipper, brak handlu, straty, brak tras, pominięcia), Twój wynik na każdym |
 | `fastswap.py` | ⚡ szybka kopia na krzywej Pump.fun: instrukcja tradera z podmienionymi kontami, cena z krzywej, bez Jupitera (sprawdzone symulacją na sieci) |
 | `axiom.py` | pulpit w czacie, ręczne kupno/sprzedaż, **automatyczna sprzedaż** (`tpsl_job`: TP/SL, drabinka zysku, ruchomy stop, wyjście po czasie, ucieczka twórcy) |
 | `api.py` | API aplikacji (`/api/sol/*`): stan, akcje (`h_action`), traderzy, ranking, raporty, admin |
@@ -53,7 +54,7 @@ sieć Solana ──► sol/watcher.py ──► sol/parser.py ──► sol/engi
 ## Aplikacja (`webapp/sol.html`) – układ
 
 - **Pulpit** – saldo, wykres, status bota, kopiowani traderzy (rozwijani), ostatnie ruchy
-- **Traderzy** – Moi traderzy (lista → narzędzia → dodawanie) / 🌍 Ranking top 100 (świat / od bota, filtry łączone)
+- **Traderzy** – Moi traderzy w grupach (🟢 bot kopiuje / ⏸ wstrzymani z powodem / 👁 obserwujesz / 📋 zapisani), przy każdym Twój wynik 7 dni i problem; karta tradera: stan, Twój wynik, powody pominięć, Twoje kopie, jego wynik, kwota / 🌍 Ranking top 100
 - **Tokeny** – sprawdzanie tokena, moje tokeny, popularne
 - **Historia** – wynik dnia, raport sesji, 📑 raporty, CSV, wszystkie ruchy
 - **Czat** – czat grupowy

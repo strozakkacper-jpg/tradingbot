@@ -249,6 +249,10 @@ html,body{overscroll-behavior-y:contain}
 @keyframes ptrspin{to{transform:rotate(360deg)}}
 #view.ptrpull{transition:none}
 details.dead summary{cursor:pointer;list-style:none}
+.ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item.tr .pill{font-size:11px;padding:1px 7px}
+.iss{padding:8px 10px;border-radius:10px;margin-top:6px;font-size:13px;background:var(--card2)}
+.iss.warn{background:var(--rbg)}.iss.pause,.iss.block{background:var(--ybg)}
 details.dead summary::-webkit-details-marker{display:none}
 details.dead{border-color:rgba(239,68,68,.25)}
 #view.ptrback{transition:transform .25s ease}
@@ -609,18 +613,43 @@ function home() {
     ${S.wallets.length > 4 ? `<div class="row" style="justify-content:center;gap:18px;padding-top:10px"><a class="g small" style="cursor:pointer" onclick="DASH_ALL=!DASH_ALL;render()">${DASH_ALL ? 'Zwiń ▴' : `Pokaż wszystkich (${S.wallets.length}) ▾`}</a>
       <a class="mut small" style="cursor:pointer" onclick="go('traders')">Zarządzaj →</a></div>` : ''}</div>
   <h2>Ostatnie ruchy</h2>
-  <div class="card">${S.feed.length ? S.feed.slice(0, 5).map(feedItem).join('') : '<div class="empty">Jeszcze nic – ruchy pojawią się, gdy trader coś kupi.</div>'}</div>
+  <div class="card">${S.feed.length ? feedGrouped(S.feed, 6) : '<div class="empty">Jeszcze nic – ruchy pojawią się, gdy trader coś kupi.</div>'}</div>
   <div class="c mut small" style="margin:14px 0">SOL ${usd(S.sol_usd)} ${S.sol_change != null ? '· ' + pct(S.sol_change) + ' w 24 h' : ''}</div>`;
 }
 
 let DASH_ALL = false;
 function ownTxt(o) { return o.sol ? o.sol + ' SOL' : o.pct ? o.pct + '% jego kwoty' : ''; }
 function walletItem(w) {
+  const s = w.state || (w.copy ? 'copy' : 'watch');
+  const lbl = {copy: '<span class="g">🟢 kopiuje</span>', paused: '<span class="y">⏸ wstrzymany</span>', watch: '👁 obserwujesz'}[s] || '';
+  const m = w.me;
+  const me = m && (m.sells || m.buys) ? ` · Ty 7 dni: <b class="${m.pnl >= 0 ? 'g' : 'r'}">${m.pnl >= 0 ? '+' : ''}${m.pnl.toFixed(3)}</b>` : '';
+  const idle = w.copy && !w.his24 && !w.issue ? `😴 ${w.his_last ? 'nie handluje od ' + ago(w.his_last).replace(' temu', '') : 'jeszcze nic nie zrobił, odkąd go kopiujesz'}` : '';
   return `<div class="item" onclick="openWallet(${w.id})">${avatar(w.name)}
-    <div class="sp" style="min-width:0"><div class="b" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word;line-height:1.25">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
-      <div class="mut tiny">${w.copy ? '✅ kopiujesz' : '👁 obserwujesz'} · kopii 24h: ${w.n24}${w.his24 != null ? ` (jego ruchów: ${w.his24})` : ''}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}${holdTxt(w.hold) ? ' · ' + holdTxt(w.hold) : ''}</div>
-      ${w.copy && !w.his24 ? `<div class="tiny y">😴 ${w.his_last ? 'trader nie handluje od ' + ago(w.his_last).replace(' temu', '') : 'trader jeszcze nic nie zrobił, odkąd go kopiujesz'}</div>` : ''}</div>
-    <div style="width:64px">${chart(w.spark, 28, true)}</div><div style="min-width:58px;text-align:right">${pct(w.result)}</div></div>`;
+    <div class="sp" style="min-width:0"><div class="b ell">${w.priority ? '⭐ ' : ''}${esc(w.name)}</div>
+      <div class="tiny" style="margin-top:2px">${lbl}${me} <span class="mut">· jego ruchy 24 h: ${w.his24 || 0}${ownTxt(w.own) ? ' · ' + esc(ownTxt(w.own)) : ''}</span></div>
+      ${w.issue || idle ? `<div class="tiny ${w.issue && w.issue.startsWith('📉') ? 'r' : 'y'} ell" style="margin-top:2px">${esc(w.issue || idle)}</div>` : ''}</div>
+    <div style="width:56px">${chart(w.spark, 28, true)}</div><div style="min-width:54px;text-align:right"><div>${pct(w.result)}</div><div class="mut tiny">jego</div></div></div>`;
+}
+function feedGrouped(feed, limit) {
+  // kolejne pominięte / nieudane ruchy = jeden wiersz (inaczej zasłaniają prawdziwe kupna i sprzedaże)
+  const out = [];
+  for (const f of feed) {
+    const last = out[out.length - 1];
+    if (f.status !== 'filled' && last && last.group) { last.items.push(f); continue; }
+    out.push(f.status !== 'filled' ? {group: true, items: [f]} : f);
+  }
+  return out.slice(0, limit).map(x => {
+    if (!x.group) return feedItem(x);
+    if (x.items.length === 1) return feedItem(x.items[0]);
+    const why = {};
+    x.items.forEach(f => { const k = (f.info || f.status).split(' – ')[0].replace(/\d+([.,]\d+)?/g, 'X').slice(0, 60); why[k] = (why[k] || 0) + 1; });
+    const top = Object.entries(why).sort((a, b) => b[1] - a[1])[0];
+    const syms = [...new Set(x.items.map(f => f.symbol))].slice(0, 3).join(', ');
+    return `<div class="item" style="cursor:default"><div class="av">⚪</div><div class="sp" style="min-width:0">
+      <div class="b">Pominięto ${x.items.length} ${x.items.length % 10 >= 2 && x.items.length % 10 <= 4 && (x.items.length % 100 < 12 || x.items.length % 100 > 14) ? 'ruchy' : 'ruchów'} <span class="mut tiny">${hhmm(x.items[x.items.length - 1].ts)}–${hhmm(x.items[0].ts)}</span></div>
+      <div class="mut tiny">${esc(syms)} · najczęściej: ${esc(top[0])}${top[1] > 1 ? ` (${top[1]}×)` : ''}</div></div></div>`;
+  }).join('');
 }
 function feedItem(f) {
   const click = f.mint ? `onclick="openToken('${esc(f.mint)}')"` : 'style="cursor:default"';
@@ -703,28 +732,26 @@ function agoTxt(it) {
   return `<span class="${m < 1440 ? 'g' : m < 10080 ? 'y' : 'r'}">aktywny ${t}</span>`;
 }
 const DAY = 864e5;
-function savedFiltered() {
-  const q = SAVED_Q.toLowerCase();
-  return SAVED.items.filter(it => (!q || (it.name || '').toLowerCase().includes(q) || it.wallet.toLowerCase().includes(q))
-    && (SAVED_F === 'all' || (SAVED_F === 'on' && it.status === 'copy') || (SAVED_F === 'star' && it.priority)
-        || (SAVED_F === 'active' && it.last_active && SAVED.now - it.last_active < DAY)
-        || (SAVED_F === 'best' && it.label === '🏆 dobry')));
-}
 function savedHtml() {
   if (!SAVED) return '<div class="card"><div class="loader"></div></div>';
   if (!SAVED.items.length) return '<div class="card"><div class="empty">Nikogo jeszcze nie ma – dodaj portfel albo zaimportuj listę z Axiom.</div></div>';
   const sc = SAVED.scan, rs = SAVED.research;
   const chip = (k, l) => `<button class="chip ${SAVED_F === k ? 'on' : ''}" onclick="SAVED_F='${k}';SAVED_N=40;$('#saved').innerHTML=savedHtml()">${l}</button>`;
-  // chip „🏆 Najlepsi” – tylko gdy są wyniki badania
+  const its = SAVED.items, st = it => it.health ? it.health.state : null;
+  const nCopy = its.filter(it => st(it) === 'copy').length, nPause = its.filter(it => st(it) === 'paused').length;
+  const nWarn = its.filter(it => it.status === 'copy' && it.health && it.health.issues.some(i => i.level === 'warn')).length;
+  const pnl7 = its.reduce((a, it) => a + (it.health ? it.health.me.pnl : 0), 0);
+  const anyCopies = its.some(it => it.health && it.health.me.sells);
   return `<div class="card">
     <div class="row"><div class="sp"><div class="b">Kopiujesz ${SAVED.copied}/${SAVED.max_copied}</div>
-      <div class="mut tiny">🟢 = bot powtarza jego ruchy · ⭐ = priorytet, zawsze na górze</div></div>
+      <div class="tiny" style="margin-top:3px"><span class="g">🟢 ${nCopy} kopiuje</span>${nPause ? ` · <span class="y">⏸ ${nPause} wstrzymanych</span>` : ''}${nWarn ? ` · <span class="r">⚠️ ${nWarn} z problemem</span>` : ''}</div>
+      ${anyCopies ? `<div class="tiny" style="margin-top:3px">Twój wynik 7 dni na wszystkich: <b class="${pnl7 >= 0 ? 'g' : 'r'}">${pnl7 >= 0 ? '+' : ''}${pnl7.toFixed(3)} SOL</b></div>` : ''}</div>
       <button class="chip ${SEL ? 'on' : ''}" style="padding:6px 11px;font-size:12.5px" onclick="toggleSelect()">☑️ ${SEL ? 'Gotowe' : 'Zaznacz'}</button></div>
     <input style="margin-top:10px" placeholder="🔍 Szukaj po nazwie albo adresie" value="${esc(SAVED_Q)}" oninput="SAVED_Q=this.value;SAVED_N=40;$('#savedl').innerHTML=savedRows()">
     ${SEL ? `<button class="chip" style="margin-top:8px" onclick="selectAll()">Zaznacz widoczne (${savedFiltered().length})</button>` : ''}
-    <div class="chips" style="margin-top:10px">${chip('all', 'Wszyscy')}${chip('on', '🟢 Włączeni')}${chip('star', '⭐ Priorytet')}${chip('active', '🔥 Aktywni 24 h')}${chip('best', '🏆 Najlepsi')}</div>
+    <div class="chips" style="margin-top:10px">${chip('all', 'Wszyscy')}${chip('on', '🟢 Włączeni')}${chip('issue', '⚠️ Problemy')}${chip('star', '⭐ Priorytet')}${chip('active', '🔥 Aktywni 24 h')}${chip('best', '🏆 Najlepsi')}</div>
   </div>
-  <div class="card" id="savedl">${savedRows()}</div>
+  <div id="savedl">${savedRows()}</div>
   <details class="sec" ${(rs && rs.running) || (sc && sc.running) ? 'open' : ''}><summary><div><div class="t">🛠 Narzędzia listy</div>
     <div class="s">${rs && rs.running ? `🏆 badam traderów… ${rs.done}/${rs.total}` : sc && sc.running ? `🔍 sprawdzam aktywność… ${sc.done}/${sc.total}` : 'zbadaj wyniki, włącz najlepszych, usuń nieaktywnych'}</div></div></summary>
   <div class="card">
@@ -739,22 +766,66 @@ function savedHtml() {
     <div class="mut tiny" style="margin-top:8px">🏆 dobry = zarabia na zamkniętych pozycjach · ⚡ flipper = trzyma sekundy (kopia nie zdąży) · 📉 traci · 😴 nie handluje</div>
   </div></details>`;
 }
+function savedFiltered() {
+  const q = SAVED_Q.toLowerCase();
+  return SAVED.items.filter(it => (!q || (it.name || '').toLowerCase().includes(q) || it.wallet.toLowerCase().includes(q))
+    && (SAVED_F === 'all' || (SAVED_F === 'on' && it.status === 'copy') || (SAVED_F === 'star' && it.priority)
+        || (SAVED_F === 'issue' && it.health && it.health.issues.some(i => i.level !== 'info'))
+        || (SAVED_F === 'active' && ((it.last_active && SAVED.now - it.last_active < DAY) || (it.health && it.health.his_last && SAVED.now - it.health.his_last < DAY)))
+        || (SAVED_F === 'best' && it.label === '🏆 dobry')));
+}
+const STATE = {copy: ['g', '🟢 kopiuje'], paused: ['y', '⏸ wstrzymany'], watch: ['', '👁 obserwujesz']};
+function stateChip(it) {
+  const s = it.health ? it.health.state : it.status === 'copy' ? 'copy' : it.status === 'watch' ? 'watch' : null;
+  if (!s) return '<span class="pill" style="opacity:.7">⚪ wyłączony</span>';
+  const [c, l] = STATE[s]; return `<span class="pill ${c}">${l}</span>`;
+}
+function hisAgo(it) {
+  const t = it.health && it.health.his_last;
+  if (t) { const m = Math.round((SAVED.now - t) / 60000); return `<span class="${m < 1440 ? 'g' : m < 2880 ? 'y' : 'r'}">ruch ${m < 60 ? m + ' min' : m < 2880 ? Math.round(m / 60) + ' h' : Math.round(m / 1440) + ' dni'} temu</span>`; }
+  return agoTxt(it);
+}
+function meTxt(it) {
+  const h = it.health; if (!h) return '';
+  const m = h.me;
+  if (!m.sells && !m.buys) return it.status === 'copy' ? '<span class="mut">Ty: brak kopii w 7 dni</span>' : '';
+  return `Ty 7 dni: <b class="${m.pnl >= 0 ? 'g' : 'r'}">${m.pnl >= 0 ? '+' : ''}${m.pnl.toFixed(3)} SOL</b>${m.sells ? ` <span class="mut">· ${m.wins}/${m.sells} na plus</span>` : ` <span class="mut">· ${m.buys} kupn.</span>`}`;
+}
+function issueTxt(it) {
+  const iss = (it.health && it.health.issues || []).filter(i => i.level !== 'info');
+  if (!iss.length) return '';
+  const c = iss[0].level === 'warn' ? 'r' : 'y';
+  return `<div class="tiny ${c}" style="margin-top:3px">${esc(iss[0].text)}${iss.length > 1 ? ` <span class="mut">(+${iss.length - 1})</span>` : ''}</div>`;
+}
+function savedRow(it) {
+  const on = it.status === 'copy', w = esc(it.wallet);
+  const open = SEL ? `toggleSel('${w}')` : it.lid ? `openWallet(${it.lid})` : `openLink('https://gmgn.ai/sol/address/${w}')`;
+  return `<div class="item tr" style="cursor:default">
+    ${SEL ? `<div class="ck ${SEL.has(it.wallet) ? 'on' : ''}" onclick="toggleSel('${w}')">${SEL.has(it.wallet) ? '✓' : ''}</div>` : ''}
+    <div class="av" onclick="${open}">${esc(it.emoji || avText(it.name || it.wallet))}</div>
+    <div class="sp" onclick="${open}" style="cursor:pointer;min-width:0">
+      <div class="b ell">${esc(it.name || short(it.wallet))}</div>
+      <div class="tiny" style="margin-top:2px">${stateChip(it)} <span class="mut">${short(it.wallet)}</span>${hisAgo(it) ? ' · ' + hisAgo(it) : ''}</div>
+      ${meTxt(it) ? `<div class="tiny" style="margin-top:3px">${meTxt(it)}</div>` : ''}
+      ${issueTxt(it)}${!it.health || it.status !== 'copy' ? statsTxt(it) : ''}</div>
+    <button class="chip" style="padding:6px 10px;${it.priority ? 'color:var(--y);border-color:var(--y)' : ''}" onclick="setPrio('${w}', ${!it.priority})">${it.priority ? '⭐' : '☆'}</button>
+    <label class="toggle"><input type="checkbox" ${on ? 'checked' : ''} onchange="setSwitch('${w}', this.checked, this)"><span></span></label></div>`;
+}
 function savedRows() {
   const list = savedFiltered();
-  const rows = list.slice(0, SAVED_N).map(it => {
-    const on = it.status === 'copy', w = esc(it.wallet);
-    const open = SEL ? `toggleSel('${w}')` : it.lid ? `openWallet(${it.lid})` : `openLink('https://gmgn.ai/sol/address/${w}')`;
-    return `<div class="item" style="cursor:default">
-      ${SEL ? `<div class="ck ${SEL.has(it.wallet) ? 'on' : ''}" onclick="toggleSel('${w}')">${SEL.has(it.wallet) ? '✓' : ''}</div>` : ''}
-      <div class="av" onclick="${open}">${esc(it.emoji || avText(it.name || it.wallet))}</div>
-      <div class="sp" onclick="${open}" style="cursor:pointer"><div class="b">${esc(it.name || short(it.wallet))}</div>
-        <div class="mut tiny">${short(it.wallet)}${it.status === 'watch' ? ' · 👁 obserwujesz' : ''}${agoTxt(it) ? ' · ' + agoTxt(it) : ''}${holdTxt(it.hold) ? ' · ' + holdTxt(it.hold) : ''}</div>
-        ${statsTxt(it)}</div>
-      <button class="chip" style="padding:6px 10px;${it.priority ? 'color:var(--y);border-color:var(--y)' : ''}" onclick="setPrio('${w}', ${!it.priority})">${it.priority ? '⭐' : '☆'}</button>
-      <label class="toggle"><input type="checkbox" ${on ? 'checked' : ''} onchange="setSwitch('${w}', this.checked, this)"><span></span></label></div>`;
-  }).join('');
-  return (rows || '<div class="empty">Nic nie pasuje</div>') + (list.length > SAVED_N
-    ? `<button class="btn ghost" style="margin-top:8px" onclick="SAVED_N+=60;$('#savedl').innerHTML=savedRows()">Pokaż więcej (${list.length - SAVED_N})</button>` : '');
+  if (!list.length) return '<div class="card"><div class="empty">Nic nie pasuje</div></div>';
+  const more = n => list.length > SAVED_N ? `<button class="btn ghost" style="margin-top:8px" onclick="SAVED_N+=60;$('#savedl').innerHTML=savedRows()">Pokaż więcej (${list.length - SAVED_N})</button>` : '';
+  const shown = list.slice(0, SAVED_N);
+  if (SAVED_F !== 'all' || SAVED_Q) return `<div class="card">${shown.map(savedRow).join('')}${more()}</div>`;
+  const st = it => it.health ? it.health.state : it.status === 'copy' ? 'copy' : it.status === 'watch' ? 'watch' : null;
+  const groups = [['copy', '🟢 Bot kopiuje', 'każdy ich ruch = Twój ruch'],
+                  ['paused', '⏸ Włączeni, ale bot ich teraz nie kopiuje', 'powód pod nazwą – sami wrócą albo wymień ich'],
+                  ['watch', '👁 Obserwujesz', 'tylko powiadomienia, bez kopiowania'],
+                  [null, '📋 Zapisani (wyłączeni)', 'włącz przełącznikiem, gdy chcesz kopiować']];
+  return groups.map(([k, title, sub]) => {
+    const g = shown.filter(it => st(it) === k);
+    return g.length ? `<h2 style="margin-top:14px">${title} (${g.length})</h2><div class="mut tiny" style="margin:-4px 2px 8px">${sub}</div><div class="card">${g.map(savedRow).join('')}</div>` : '';
+  }).join('') + more();
 }
 function statsTxt(it) {
   const st = it.stats;
@@ -831,28 +902,53 @@ async function openWallet(id) {
   catch (e) { sheet(hdr('Trader') + `<div class="empty">${esc(e.message)}</div>`); }
 }
 function renderWallet() {
-  const w = WAL, st = w.stats, own = w.own;
+  const w = WAL, st = w.stats, own = w.own, h = w.health || {issues: [], me: {pnl: 0, sells: 0, wins: 0, buys: 0}, skipped: {n: 0, top: []}};
   const chipsSol = [0.05, 0.1, 0.25, 0.5, 1].map(v => `<button class="chip ${own.sol == v ? 'on' : ''}" onclick="setAmount({sol:${v}})">${v} SOL</button>`).join('');
   const chipsPct = [5, 10, 25, 50, 100].map(v => `<button class="chip ${own.pct == v ? 'on' : ''}" onclick="setAmount({pct:${v}})">${v}%</button>`).join('');
-  const b = w.mine.buy || {n: 0, sol: 0}, s = w.mine.sell || {n: 0, sol: 0};
+  const state = h.state || (w.status === 'copy' ? 'copy' : w.status);
+  const big = {copy: ['g', '🟢 Bot go kopiuje', 'każdy jego zakup i sprzedaż powtarzasz automatycznie'],
+               paused: ['y', '⏸ Włączony, ale bot go teraz nie kopiuje', 'powód niżej – wróci sam, gdy problem minie'],
+               watch: ['', '👁 Tylko obserwujesz', 'dostajesz powiadomienia, bot nic nie kupuje']}[state] || ['', '⚪ Wyłączony', 'jest na liście, ale bot go nie kopiuje'];
+  const m = h.me;
+  const icon = c => c.status === 'filled' ? (c.side === 'buy' ? '🟢' : '🔴') : c.status === 'error' ? '❌' : '⚪';
   sheet(hdr(esc(w.name)) + `
     <div class="card">
-      <div class="row"><div class="sp"><div class="mut small">Jak mu idzie</div><div class="big">${st ? pct(st.total * 100) : '—'}</div>
-        <div class="mut tiny">tyle zarobiłby ktoś, kto kopiuje każdy jego ruch${st ? ' od ' + new Date(st.since).toLocaleDateString('pl-PL') : ''}</div></div>
-        ${w.status === 'copy' ? '<span class="pill g">✅ Kopiujesz</span>' : w.status === 'watch' ? '<span class="pill">👁 Obserwujesz</span>' : ''}</div>
+      <div class="b ${big[0]}" style="font-size:17px">${big[1]}</div>
+      <div class="mut tiny" style="margin-top:2px">${big[2]}</div>
+      ${h.issues.map(i => `<div class="iss ${i.level}">${esc(i.text)}</div>`).join('')}
+      <div class="row" style="gap:8px;margin-top:12px">
+        ${w.status === 'copy' ? `<button class="btn ghost" onclick="follow('watch')">⏹ Przestań kopiować</button>` : `<button class="btn g" onclick="follow('copy')">✅ Kopiuj</button>`}
+        ${w.status ? `<button class="btn ghost" style="width:auto;color:var(--r)" onclick="follow('remove')">🗑 Usuń</button>` : `<button class="btn ghost" onclick="follow('watch')">👁 Obserwuj</button>`}</div>
+    </div>
+    <h2>💼 Twój wynik na nim (7 dni)</h2>
+    <div class="card">
+      <div class="grid">
+        <div class="stat"><div class="mut tiny">Zarobek</div><div class="v ${m.pnl > 0 ? 'g' : m.pnl < 0 ? 'r' : ''}">${m.sells ? (m.pnl >= 0 ? '+' : '') + m.pnl.toFixed(4) : '—'}</div><div class="mut tiny">SOL${m.sells ? ' · ' + inUsd(m.pnl) : ''}</div></div>
+        <div class="stat"><div class="mut tiny">Na plus</div><div class="v">${m.sells ? Math.round(m.wins / m.sells * 100) + '%' : '—'}</div><div class="mut tiny">${m.wins} z ${m.sells} sprzedaży</div></div>
+        <div class="stat"><div class="mut tiny">Skopiowane zakupy</div><div class="v">${m.buys}</div><div class="mut tiny">w 7 dni</div></div>
+        <div class="stat"><div class="mut tiny">Pominięte (24 h)</div><div class="v ${h.skipped.n ? 'y' : ''}">${h.skipped.n}</div><div class="mut tiny">powody niżej</div></div></div>
+      ${h.skipped.top.length ? `<div class="mut tiny" style="margin-top:10px">Dlaczego bot pominął jego ruchy (24 h):</div>
+        ${h.skipped.top.map(([r, n]) => `<div class="row tiny" style="margin-top:4px"><span class="sp">${esc(r)}</span><b>${n}×</b></div>`).join('')}` : ''}
+    </div>
+    ${w.copies && w.copies.length ? `<h2>🧾 Twoje ostatnie kopie</h2><div class="card">${w.copies.map(c => `<div class="item" style="cursor:pointer" onclick="openToken('${esc(c.mint)}')">
+      <div class="av" style="font-size:15px">${icon(c)}</div>
+      <div class="sp" style="min-width:0"><div class="b">${c.status === 'filled' ? (c.side === 'buy' ? 'Kupiono' : 'Sprzedano') : c.status === 'error' ? 'Nie weszło' : 'Pominięto'} ${esc(c.symbol)}</div>
+        <div class="mut tiny ell">${ago(c.ts)}${c.status !== 'filled' && c.info ? ' · ' + esc(c.info) : ''}</div></div>
+      <div style="text-align:right">${c.status === 'filled' ? `<div class="b">${num(c.sol, 4)} SOL</div>${c.pnl != null ? `<div class="tiny ${c.pnl >= 0 ? 'g' : 'r'}">${c.pnl >= 0 ? '+' : ''}${c.pnl.toFixed(4)}</div>` : ''}` : ''}</div></div>`).join('')}</div>` : ''}
+    <h2>📈 Jak idzie jemu</h2>
+    <div class="card">
+      <div class="row"><div class="sp"><div class="big">${st ? pct(st.total * 100) : '—'}</div>
+        <div class="mut tiny">tyle zarobiłby ktoś, kto kopiuje każdy jego ruch po jego cenie${st ? ' (od ' + new Date(st.since).toLocaleDateString('pl-PL') + ')' : ''}</div></div></div>
       <div style="margin:12px -4px 0">${st ? chart(st.series, 110) : ''}</div>
       ${w.hold && w.hold.median_s != null ? `<div class="small" style="margin-top:8px">${holdTxt(w.hold, true)}</div>` : ''}
-      ${w.hold && w.hold.median_s != null && w.hold.median_s < 15 && w.hold.n >= 3 ? `<div class="warn">⚡ <b>Flipper</b> – sprzedaje po kilku sekundach. Kopia dochodzi z opóźnieniem, więc kupujesz drożej i sprzedajesz taniej niż on. Na ćwiczeniach może wychodzić na plus, na prawdziwych SOL zwykle traci. Rozważ wyłączenie albo ustaw filtr flipperów w ⚙️.</div>` : ''}
       ${st ? `<div class="grid" style="margin-top:10px">
         <div class="stat"><div class="mut tiny">Ostatnie 7 dni</div><div class="v">${pct(st.d7 != null ? st.d7 * 100 : null)}</div></div>
         <div class="stat"><div class="mut tiny">Udane transakcje</div><div class="v">${st.win_rate != null ? Math.round(st.win_rate * 100) + '%' : '—'}</div><div class="mut tiny">${st.wins} z ${st.closed}</div></div>
         <div class="stat"><div class="mut tiny">Największy spadek</div><div class="v">${pct(-st.max_dd * 100)}</div><div class="mut tiny">po drodze</div></div>
-        <div class="stat"><div class="mut tiny">Twoje kopie</div><div class="v">${b.n} / ${s.n}</div><div class="mut tiny">kupna / sprzedaże</div></div></div>` : ''}
+        <div class="stat"><div class="mut tiny">Ostatni ruch</div><div class="v" style="font-size:16px">${h.his_last ? ago(h.his_last) : '—'}</div></div></div>` : ''}
+      <div class="mut tiny" style="margin-top:8px">Jego wynik to nie Twój wynik: kopia wchodzi kilka bloków później i po innej cenie – Twój prawdziwy wynik jest wyżej.</div>
     </div>
-    <div class="card"><div class="row" style="gap:8px">
-      ${w.status === 'copy' ? `<button class="btn ghost" onclick="follow('watch')">👁 Tylko powiadomienia</button>` : `<button class="btn g" onclick="follow('copy')">✅ Kopiuj</button>`}
-      ${w.status ? `<button class="btn ghost" style="width:auto;color:var(--r)" onclick="follow('remove')">Usuń</button>` : `<button class="btn ghost" onclick="follow('watch')">👁 Obserwuj</button>`}</div></div>
-    <h2>Gdy on kupi, Ty kupujesz za…</h2>
+    <h2>💵 Gdy on kupi, Ty kupujesz za…</h2>
     <div class="card">
       <button class="chip ${!own.sol && !own.pct ? 'on' : ''}" onclick="setAmount({})">jak w ustawieniach</button>
       <div class="mut tiny" style="margin:6px 0 12px">${esc(S.default_amount)}</div>
@@ -1002,7 +1098,7 @@ function history() {
     <button class="btn ghost" style="width:auto" onclick="act('export_csv', {}, {reload: false})">📄 CSV</button></div>
   <div class="mut tiny c">Sesja = od włączenia ▶️ do wyłączenia ⏸ kopiowania</div>
   <h2>Wszystkie ruchy</h2>
-  <div class="card">${S.feed.length ? S.feed.map(feedItem).join('') : '<div class="empty">Jeszcze nic.</div>'}</div>`;
+  <div class="card">${S.feed.length ? feedGrouped(S.feed, 100) : '<div class="empty">Jeszcze nic.</div>'}</div>`;
 }
 async function openReport() {
   loading('Raport sesji');

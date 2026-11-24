@@ -771,16 +771,23 @@ class SolEngine:
         if bad >= 2:
             raise Skip(f"sieć odrzuciła ten token już {bad}× w 30 min – nie próbuję dalej (każda próba to opłata)")
         if lead is not None:
-            # 3 ostatnie kopie TEGO tradera na minusie (w 2 h) – przerwa 2 h od ostatniej straty. Np. wieloryb w małej
-            # puli: jego zakup i szybsze boty podbijają cenę, zanim wejdziemy, a jego sprzedaż ją zbija, zanim wyjdziemy.
-            last = self.db._q("""SELECT pnl, ts FROM sol_trades WHERE tg_id = ? AND leader_id = ? AND paper = ?
-                                 AND side = 'sell' AND status = 'filled' AND pnl IS NOT NULL ORDER BY id DESC LIMIT 3""",
-                              (u["tg_id"], lead["id"], int(not self.is_live(u))))
-            if len(last) == 3 and all(r["pnl"] < 0 for r in last) and now_ms() - last[2]["ts"] < 2 * 3600_000 \
-                    and now_ms() - last[0]["ts"] < 2 * 3600_000:
-                left = 120 - (now_ms() - last[0]["ts"]) // 60_000
+            left = self.trader_pause_left(u, lead["id"])
+            if left:
                 raise Skip(f"⏸ pauza tradera – 3 ostatnie kopie na minusie (kopia nie nadąża za jego ceną), "
                            f"wracam za ok. {left} min")
+
+    def trader_pause_left(self, u, lid: int) -> int | None:
+        """⏸ Pauza tradera: 3 ostatnie kopie TEGO tradera na minusie (w 2 h) – przerwa 2 h od ostatniej straty.
+        Np. wieloryb w małej puli: jego zakup i szybsze boty podbijają cenę, zanim wejdziemy, a jego sprzedaż ją
+        zbija, zanim wyjdziemy. Zwraca minuty do końca pauzy albo None."""
+        last = self.db._q("""SELECT pnl, ts FROM sol_trades WHERE tg_id = ? AND leader_id = ? AND paper = ?
+                             AND side = 'sell' AND status = 'filled' AND pnl IS NOT NULL ORDER BY id DESC LIMIT 3""",
+                          (u["tg_id"], lid, int(not self.is_live(u))))
+        now = now_ms()
+        if len(last) == 3 and all(r["pnl"] < 0 for r in last) and now - last[2]["ts"] < 2 * 3600_000 \
+                and now - last[0]["ts"] < 2 * 3600_000:
+            return max(int(120 - (now - last[0]["ts"]) // 60_000), 1)
+        return None
 
     async def guard_buy(self, u, sw: Swap, lead=None, allow_add: bool = False):
         """Bezpieczniki przed skopiowaniem zakupu: limit straty, filtry tradera, „nie dokupuj”, 🛡 ryzyko."""

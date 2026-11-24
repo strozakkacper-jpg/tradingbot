@@ -414,6 +414,13 @@ async def state(s, u) -> dict:
                         "result": rep["total"] * 100 if ok else None,
                         "spark": [v for _, v in rep["series"]][-30:] if ok else [],
                         "own": own_amount(fr)})
+    from . import health as HL
+    hl = HL.overview(s, u, [w["id"] for w in wallets])
+    for w in wallets:  # stan z tego samego miejsca co lista traderów: czy bot naprawdę kopiuje i Twój wynik
+        h = hl.get(w["id"]) or {}
+        w["state"], w["me"] = h.get("state"), h.get("me")
+        w["issue"] = next((i["text"] for i in h.get("issues", []) if i["level"] in ("pause", "block", "warn")), None)
+    HL.unique_names(wallets)
     wallets.sort(key=lambda w: (not w["priority"], not w["copy"]))
     start = se.paper_start(uid)
     series = s.db.sol_equity_series(uid, not live, now_ms() - 7 * DAY_MS) + [(now_ms(), pf["total"])]
@@ -457,9 +464,18 @@ async def wallet(s, u, lid: int) -> dict:
         stats = None
     mine = s.db._q("""SELECT side, COUNT(*) n, SUM(sol) sol FROM sol_trades WHERE tg_id = ? AND leader_id = ?
                       AND status = 'filled' GROUP BY side""", (uid, lid))
+    from . import health as HL
+    h = HL.overview(s, s.db.get_user(uid), [lid]).get(lid) or {}
+    paper = not s.sol.is_live(u)
+    copies = [{"ts": r["ts"], "side": r["side"], "symbol": r["symbol"] or short(r["mint"]), "mint": r["mint"],
+               "sol": r["sol"], "pnl": r["pnl"], "status": r["status"], "info": r["info"]}
+              for r in s.db._q("""SELECT t.ts, t.side, t.mint, t.sol, t.pnl, t.status, t.info, k.symbol FROM sol_trades t
+                                  LEFT JOIN sol_tokens k ON k.mint = t.mint WHERE t.tg_id = ? AND t.leader_id = ?
+                                  AND t.paper = ? ORDER BY t.id DESC LIMIT 15""", (uid, lid, int(paper)))]
     return {"id": lid, "name": lead["name"], "wallet": lead["wallet"], "hold": s.sol.hold_stats(lid),
             "status": None if not fr else ("copy" if fr["copy"] else "watch"), "own": own_amount(fr),
             "stats": stats, "mine": {r["side"]: {"n": r["n"], "sol": r["sol"] or 0} for r in mine},
+            "health": h, "copies": copies,
             "can_rename": lead["owner_tg_id"] == uid or uid in admin_ids(s)}
 
 
@@ -1122,7 +1138,14 @@ def routes(s, app: web.Application, auth):
                 "last_id": s.db.chat_last_id(), "me": u["tg_id"], "admin": u["tg_id"] in admin_ids(s)}
 
     async def h_saved(_, u):
-        return {"items": saved_list(s, u["tg_id"]), "max_copied": MAX_COPIED,
+        from . import health as HL
+        items = saved_list(s, u["tg_id"])
+        hl = HL.overview(s, s.db.get_user(u["tg_id"]), [it["lid"] for it in items if it["lid"]])
+        for it in items:
+            h = hl.get(it["lid"]) if it["lid"] else None
+            it["health"] = h
+        HL.unique_names(items)
+        return {"items": items, "max_copied": MAX_COPIED,
                 "copied": copied_count(s, u["tg_id"]), "scan": _SCANS.get(u["tg_id"]), "now": now_ms(),
                 "research": _RESEARCH.get(u["tg_id"])}
 

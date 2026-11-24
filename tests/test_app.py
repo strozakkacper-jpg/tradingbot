@@ -2065,3 +2065,29 @@ def test_fastswap_pump_template_build_and_paper_curve(tmp_path):
     f = asyncio.run(s.sol.execute(s.db.get_user(OWNER), "buy", mint, 50_000_000, decimals=6, fallback=sw))
     exp = F.tokens_for_sol(c, 50_000_000)
     assert f.note == "⚡ Pump.fun w bocie" and abs(f.tokens * 10**6 - exp * (1 - s.sol.paper_slip("buy"))) / exp < 0.001
+
+
+def test_trader_health_overview_states_and_issues(tmp_path):
+    from copybot.db import ref_id
+    from copybot.sol import health as HL
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    u = s.db.get_user(OWNER)
+    paper = not s.sol.is_live(u)
+    a = s.db.create_leader("Top 5 ocena", "sol", OWNER, "active", wallet=WALLET)
+    b = s.db.create_leader("Top 5 ocena", "sol", OWNER, "active", wallet=W2)
+    s.db.follow(OWNER, a, True)
+    s.db.follow(OWNER, b, False)
+    for i in range(3):  # 3 straty z rzędu na A → pauza
+        s.sol.record(OWNER, a, f"l{i}", "sell", TOKEN, 0.05, 100, "filled", "x", paper, pnl=-0.01)
+    s.sol.record(ref_id(a), a, "r1", "buy", TOKEN, 1, 100, "filled", "x", True)  # jego świeży ruch
+    for i in range(4):
+        s.sol.record(OWNER, a, f"k{i}", "buy", TOKEN, 0, 0, "skipped", f"🛡 ten token kupiłeś już {i}× w 24 h – x", paper)
+    h = HL.overview(s, u, [a, b])
+    assert h[a]["state"] == "paused" and any("pauza" in i["text"] for i in h[a]["issues"])
+    assert any("tracisz" in i["text"] for i in h[a]["issues"]) and h[a]["me"]["sells"] == 3
+    assert h[a]["skipped"]["n"] == 4 and h[a]["skipped"]["top"][0][1] == 4   # „3×”, „4×” liczone jako jeden powód
+    assert h[b]["state"] == "watch"
+    items = [{"name": "Top 5 ocena", "wallet": WALLET}, {"name": "Top 5 ocena", "wallet": W2}]
+    HL.unique_names(items)
+    assert items[0]["name"] != items[1]["name"] and items[0]["name"].endswith(WALLET[-4:])
