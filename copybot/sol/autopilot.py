@@ -476,3 +476,48 @@ async def demo_traders_check_once(ctx):
             log.info("Skład traderów %s (%s): %s", u["tg_id"], "prawdziwe" if live else "ćwiczenia", "; ".join(rows) or "BRAK")
         except Exception:  # noqa: BLE001
             log.exception("Sprawdzenie traderów %s", u["tg_id"])
+
+
+async def rebuild_demo_traders_once(ctx):
+    """Jednorazowo (24.11, prośba właściciela „ustaw dobrych traderów”): na ćwiczeniach skład od zera z aktualnej
+    czołówki (aktywni ≤ 36 h, na plusie 7 i 30 dni, nie flipperzy). Wyłącza traderów spoza czołówki – także z ⭐,
+    bo zostawały nieaktywne od kilku dni. Prawdziwych SOL nie rusza."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("rebuild_demo_traders"):
+        return
+    s.db.set_state("rebuild_demo_traders", str(now_ms()))
+    from .api import saved_list, switch
+    why = Counter()
+    cands = candidates(s, why)
+    log.info("Czołówka do kopiowania: %d kandydatów (%s): %s", len(cands), dict(why),
+             "; ".join(f"{(c.get('name') or c['wallet'][:6])[:20]} ({c.get('activity')})" for c in cands[:10]))
+    if not cands:
+        return
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        try:
+            if s.sol.is_live(u):
+                continue
+            uid = u["tg_id"]
+            target = target_count(2.0)
+            if (u["sol_risk"] if "sol_risk" in u.keys() else 0) > 0:
+                target = min(target, 3)
+            want = {c["wallet"] for c in cands[:target]}
+            off = []
+            for it in saved_list(s, uid):
+                if it["status"] == "copy" and it["wallet"] not in want:
+                    switch(s, uid, it["wallet"], False)
+                    s.db._q("UPDATE sol_saved SET priority = 0 WHERE tg_id = ? AND wallet = ?", (uid, it["wallet"]))
+                    off.append(it["name"] or it["wallet"][:6])
+            res = rotate(s, s.db.get_user(uid), 2.0)
+            autocfg.apply(s, s.db.get_user(uid), 2.0)
+            now_copy = [f"{(it['name'] or '')[:26]} ({'%.0f h' % ((now_ms() - x) / 3600_000) if (x := _his_last(s, it['lid'])) else 'nowy'})"
+                        for it in saved_list(s, uid) if it["status"] == "copy" and it["lid"]]
+            log.info("Ćwiczenia %s: nowy skład %s (dodani %d, wyłączeni %d)", uid, "; ".join(now_copy), len(res["on"]), len(off))
+            if res["on"]:
+                await s.sol.say(s.db.get_user(uid), "auto",
+                                "🚀 <b>NOWY SKŁAD TRADERÓW</b> (ćwiczenia)\nTylko aktywni z czołówki rankingu – handlują "
+                                "codziennie, są na plusie w 7 i 30 dniach, trzymają tokeny dłużej niż sekundy.\n"
+                                "🟢 " + html.escape(", ".join(res["on"]))
+                                + (f"\n⚪ Wyłączeni (nieaktywni albo spoza czołówki): {len(off)}" if off else ""))
+        except Exception:  # noqa: BLE001
+            log.exception("Nowy skład traderów %s", u["tg_id"])

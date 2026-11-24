@@ -2109,3 +2109,18 @@ def test_reset_demo_2sol_once(tmp_path):
     assert not s.db._q("SELECT 1 FROM sol_equity WHERE tg_id = ? AND paper = 1", (OWNER,))
     assert u["sol_paper_start"] == 2.0 and u["sol_autopilot"] == 1 and u["sol_day_limit"] == 0.36 and u["sol_streak"] == 5
     assert any("OD NOWA" in t for _, t in sent)
+
+
+def test_rebuild_demo_traders_once(tmp_path, monkeypatch):
+    from copybot.sol import autopilot as AP
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    idle = s.db.create_leader("Stary", "sol", OWNER, "active", wallet=W2)
+    s.db.follow(OWNER, idle, True)
+    good = [{"wallet": WALLET, "name": "Dobry", "pnl": 10.0, "pnl_usd": None, "activity": 90}]
+    monkeypatch.setattr(AP, "candidates", lambda s, why=None: good)
+    asyncio.run(AP.rebuild_demo_traders_once(SimpleNamespace(application=ctx.application)))
+    from copybot.sol.api import saved_list
+    copy = [it["wallet"] for it in saved_list(s, OWNER) if it["status"] == "copy"]
+    assert WALLET in copy and W2 not in copy
+    assert any("NOWY SKŁAD" in t for _, t in sent)

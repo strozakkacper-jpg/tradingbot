@@ -138,6 +138,7 @@ async def post_init(app: Application):
             (sol_autopilot.safety_v3_once, 200),                   # bezpieczniki dla wszystkich: limit dnia 18%, 5 strat
             (sol_autopilot.reset_demo_2sol_once, 240),             # ćwiczenia od nowa: 2 SOL + najlepsi traderzy
             (sol_autopilot.demo_traders_check_once, 270),          # po resecie: skład traderów do logów + uzupełnienie
+            (sol_autopilot.rebuild_demo_traders_once, 120),        # ćwiczenia: skład od zera z aktywnej czołówki
         ):
             app.job_queue.run_once(job, delay)
     app.job_queue.run_daily(daily_report_job, dt.time(cfg.daily_report_hour, 0, tzinfo=ZoneInfo(cfg.timezone)))
