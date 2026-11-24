@@ -250,6 +250,17 @@ html,body{overscroll-behavior-y:contain}
 #view.ptrpull{transition:none}
 details.dead summary{cursor:pointer;list-style:none}
 .ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.labhero{background:linear-gradient(135deg,rgba(139,92,246,.18),rgba(34,197,94,.10))}
+.labc{position:relative;overflow:hidden}
+.labc.best{border-color:rgba(34,197,94,.35)}.labc.reject{opacity:.85}
+.labrank{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-weight:800;background:var(--card2);flex:none}
+.labrank.m1{background:rgba(234,179,8,.18)}.labrank.m2{background:rgba(148,163,184,.18)}.labrank.m3{background:rgba(180,83,9,.18)}
+.labgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px 14px;margin-top:10px}
+.labbar{height:5px;border-radius:4px;background:var(--card2);margin-top:3px;overflow:hidden}.labbar i{display:block;height:100%;border-radius:4px;transition:width .8s ease}
+.labprog{height:6px;border-radius:4px;background:var(--card2);margin-top:10px;overflow:hidden}.labprog i{display:block;height:100%;background:linear-gradient(90deg,var(--acc,#8b5cf6),var(--g));border-radius:4px;transition:width 1s ease}
+.labpod{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;align-items:end}
+.labp{background:var(--card);border:1px solid rgba(255,255,255,.08);border-radius:16px;padding:12px 8px;text-align:center;cursor:pointer;min-width:0}
+.labp.p1{padding-top:20px;border-color:rgba(234,179,8,.45);box-shadow:0 0 24px rgba(234,179,8,.15)}.labp.p2{border-color:rgba(148,163,184,.35)}.labp.p3{border-color:rgba(180,83,9,.35)}
 .item.tr .pill{font-size:11px;padding:1px 7px}
 .iss{padding:8px 10px;border-radius:10px;margin-top:6px;font-size:13px;background:var(--card2)}
 .iss.warn{background:var(--rbg)}.iss.pause,.iss.block{background:var(--ybg)}
@@ -668,8 +679,9 @@ let SAVED = null, SAVED_Q = '', SAVED_N = 40, SAVED_F = 'all', SCAN_T = null, SE
 let TR_VIEW = 'mine', LB = null, LB_P = 7, LB_SORT = 'score';
 try { LB_SORT = localStorage.getItem('lb_sort') || 'score'; } catch (e) {}
 function traders() {
-  const seg = `<div class="seg" style="margin:4px 0 12px">${[['mine', '👥 Moi traderzy'], ['lb', '🌍 Ranking top 100']].map(([k, l]) => `<button class="${TR_VIEW === k ? 'on' : ''}" onclick="TR_VIEW='${k}';render();${k === 'lb' ? 'loadLB()' : ''}">${l}</button>`).join('')}</div>`;
+  const seg = `<div class="seg" style="margin:4px 0 12px">${[['mine', '👥 Moi'], ['lab', '🧪 Laboratorium'], ['lb', '🌍 Ranking']].map(([k, l]) => `<button class="${TR_VIEW === k ? 'on' : ''}" onclick="TR_VIEW='${k}';render();${k === 'lb' ? 'loadLB()' : k === 'lab' ? 'loadLab()' : ''}">${l}</button>`).join('')}</div>`;
   if (TR_VIEW === 'lb') return seg + lbHtml();
+  if (TR_VIEW === 'lab') { if (!LAB) loadLab(); return seg + labHtml(); }
   if (!SAVED) loadSaved();
   const empty = SAVED && !SAVED.items.length;
   return seg + `
@@ -1538,6 +1550,95 @@ async function withdraw() {
 
 // ---------- ranking top 100 ----------
 let LB_KIND = null;
+// ---------- 🧪 laboratorium traderów ----------
+let LAB = null, LAB_F = 'all';
+async function loadLab() {
+  try { LAB = await api('/api/sol/lab'); } catch (e) { LAB = {enabled: false, members: [], error: e.message}; }
+  if (TAB === 'traders' && TR_VIEW === 'lab' && !SHEET) render();
+}
+const LAB_V = {best: ['g', '🏆 Sprawdzony'], testing: ['y', '🧪 W teście'], reject: ['r', '❌ Odrzucony']};
+function labPct(v, good, unsigned) {  // kolor: zielony gdy dobrze dla kopii
+  if (v == null) return '<span class="mut">—</span>';
+  const p = v * 100, ok = good(v);
+  return `<b class="${ok ? 'g' : 'r'}">${p >= 0 && !unsigned ? '+' : ''}${p.toFixed(0)}%</b>`;
+}
+function labBar(label, v, good, hint, unsigned) {
+  const ok = v == null ? null : good(v), w = v == null ? 0 : Math.min(Math.abs(v) * 100 * 2, 100);
+  return `<div class="labm"><div class="row tiny"><span class="sp mut">${label}</span>${labPct(v, good, unsigned)}</div>
+    <div class="labbar"><i style="width:${w}%;background:${ok == null ? 'var(--card2)' : ok ? 'var(--g)' : 'var(--r)'}"></i></div>
+    ${hint ? `<div class="mut" style="font-size:10.5px;margin-top:2px">${hint}</div>` : ''}</div>`;
+}
+function labCard(d, i) {
+  const [vc, vl] = LAB_V[d.verdict];
+  const name = d.name && !/^🌍/.test(d.name) ? d.name : short(d.wallet);
+  const need = Math.max((LAB.min_closed || 5) - d.closed, 0);
+  const prog = d.verdict === 'testing' ? Math.min(d.closed / (LAB.min_closed || 5), 1) * (d.hours >= 24 ? 1 : Math.min(d.hours / 24, 1)) : 1;
+  const rank = d.verdict === 'best' ? i + 1 : null;
+  return `<div class="card labc ${d.verdict}">
+    <div class="row" style="gap:10px">
+      <div class="labrank ${rank && rank <= 3 ? 'm' + rank : ''}">${rank ? (rank <= 3 ? ['🥇', '🥈', '🥉'][rank - 1] : '#' + rank) : d.verdict === 'reject' ? '❌' : '🧪'}</div>
+      <div class="sp" style="min-width:0"><div class="b ell">${esc(name)}</div>
+        <div class="tiny"><span class="pill ${vc}">${vl}</span> <span class="mut">${short(d.wallet)} · ${d.source === 'kopiowany' ? 'kopiowany przez kogoś' : 'z rankingu'} · w teście ${d.hours < 48 ? Math.round(d.hours) + ' h' : Math.round(d.hours / 24) + ' dni'}</span></div></div>
+      <div style="text-align:right"><div class="big" style="font-size:24px">${labPct(d.roi, v => v >= 0)}</div><div class="mut tiny">wynik kopii</div></div>
+    </div>
+    ${d.reason ? `<div class="iss warn" style="margin-top:8px">${esc(d.reason)}</div>` : ''}
+    <div class="row tiny" style="margin-top:8px;gap:12px;flex-wrap:wrap">
+      <span>💰 <b class="${d.pnl >= 0 ? 'g' : 'r'}">${d.pnl >= 0 ? '+' : ''}${d.pnl.toFixed(3)} SOL</b> <span class="mut">z ${d.buys}× 0,1 SOL</span></span>
+      <span>🎯 <b>${d.closed ? Math.round(d.wins / d.closed * 100) + '%' : '—'}</b> <span class="mut">na plus (${d.wins}/${d.closed})</span></span>
+      <span>📂 <b>${d.open}</b> <span class="mut">otwarte</span></span></div>
+    <div class="labgrid">
+      ${labBar('Wejście vs on', d.gap_in, v => v <= 0.05, 'ile drożej kupujemy')}
+      ${labBar('Wyjście vs on', d.gap_out, v => v >= -0.08, 'ile taniej sprzedajemy')}
+      ${labBar('Cena ucieka', d.chase_rate, v => v < 0.3, 'zakupy pominięte (>10%)', true)}
+      ${labBar('Rug pulle', d.rug_rate, v => v < 0.2, 'jego tokeny 💀', true)}
+    </div>
+    ${d.verdict === 'testing' ? `<div class="labprog"><i style="width:${Math.round(prog * 100)}%"></i></div>
+      <div class="mut tiny" style="margin-top:4px">${need ? `do werdyktu: jeszcze ${need} zamkn. pozycji` : ''}${need && d.hours < 24 ? ' i ' : ''}${d.hours < 24 ? `min. 24 h testu` : ''}${!need && d.hours >= 24 ? 'werdykt przy następnym przeliczeniu' : ''}</div>` : ''}
+    <div class="row" style="gap:8px;margin-top:10px">
+      ${d.mine === 'copy' ? '<span class="pill g" style="padding:8px 12px">✅ Kopiujesz</span>'
+        : `<button class="btn ${d.verdict === 'best' ? 'g' : 'ghost'}" style="padding:9px" onclick="labCopy('${esc(d.wallet)}', ${rank || 0}, ${d.roi == null ? 'null' : d.roi})">${d.verdict === 'reject' ? 'Kopiuj mimo to' : '➕ Kopiuj'}</button>`}
+      <button class="btn ghost" style="width:auto;padding:9px 12px" onclick="openLink('https://gmgn.ai/sol/address/${esc(d.wallet)}')">GMGN</button></div>
+  </div>`;
+}
+function labHtml() {
+  if (!LAB) return '<div class="card"><div class="loader"></div></div>';
+  if (!LAB.enabled) return `<div class="card"><div class="empty">Laboratorium jest wyłączone${LAB.error ? ': ' + esc(LAB.error) : ''}.</div></div>`;
+  const ms = LAB.members, n = k => ms.filter(d => d.verdict === k).length;
+  const chip = (k, l) => `<button class="chip ${LAB_F === k ? 'on' : ''}" onclick="LAB_F='${k}';render()">${l}</button>`;
+  const best = ms.filter(d => d.verdict === 'best');
+  const list = LAB_F === 'all' ? ms : ms.filter(d => d.verdict === LAB_F);
+  return `<div class="card hero labhero">
+    <div class="b" style="font-size:19px">🧪 Laboratorium traderów</div>
+    <div class="mut small" style="margin-top:4px">Bot kopiuje <b>na niby</b> każdego testowanego tradera – z prawdziwym opóźnieniem, ceną z chwili kopii, poślizgiem i opłatami (${LAB.buy_sol} SOL na każdy jego zakup). Widać, <b>na kim kopia naprawdę zarabia</b>, a nie na kim zarabia on sam. Autopilot wybiera tylko 🏆 sprawdzonych.</div>
+    <div class="grid" style="margin-top:12px;grid-template-columns:repeat(3,1fr)">
+      <div class="stat"><div class="v g">${n('best')}</div><div class="mut tiny">🏆 sprawdzonych</div></div>
+      <div class="stat"><div class="v y">${n('testing')}</div><div class="mut tiny">🧪 w teście</div></div>
+      <div class="stat"><div class="v r">${n('reject')}</div><div class="mut tiny">❌ odrzuconych</div></div></div>
+    <div class="mut tiny" style="margin-top:8px">Nasłuch: ${LAB.watched} portfeli · wyniki z ${LAB.window_h} h · ${LAB.updated ? 'przeliczone ' + ago(LAB.updated) : 'pierwsze wyniki za ok. 10 min'}</div>
+  </div>
+  ${best.length ? `<h2>🏆 Podium</h2><div class="labpod">${best.slice(0, 3).map((d, i) => `<div class="labp p${i + 1}" onclick="LAB_F='best';render()">
+    <div style="font-size:26px">${['🥇', '🥈', '🥉'][i]}</div><div class="b ell" style="max-width:100%">${esc(d.name && !/^🌍/.test(d.name) ? d.name : short(d.wallet))}</div>
+    <div class="big" style="font-size:20px">${labPct(d.roi, v => v >= 0)}</div><div class="mut tiny">${d.wins}/${d.closed} na plus</div></div>`).join('')}</div>` : ''}
+  <div class="chips" style="margin:12px 0 8px">${chip('all', 'Wszyscy (' + ms.length + ')')}${chip('best', '🏆 Sprawdzeni')}${chip('testing', '🧪 W teście')}${chip('reject', '❌ Odrzuceni')}</div>
+  ${list.length ? list.map((d, i) => labCard(d, LAB_F === 'all' || LAB_F === 'best' ? ms.filter(x => x.verdict === 'best').indexOf(d) : i)).join('')
+    : `<div class="card"><div class="empty">${ms.length ? 'Nikogo w tej grupie' : 'Laboratorium dopiero rusza – pierwsi testowani pojawią się w ciągu kilku minut, werdykty po ok. dobie.'}</div></div>`}
+  <details class="sec"><summary><div><div class="t">❓ Jak czytać wyniki</div><div class="s">co znaczą liczby i kiedy trader odpada</div></div></summary>
+  <div class="card small">
+    <p><b>Wynik kopii</b> – ile zarobiłaby kopia na tym traderze (zamknięte + otwarte pozycje po cenie rynkowej, 💀 rug pull = 0) w stosunku do wydanych SOL.</p>
+    <p><b>Wejście vs on</b> – o ile drożej kupuje kopia niż on (opóźnienie + jego własny wpływ na cenę). Powyżej 12% → odrzucony (snajper / wieloryb w małej puli).</p>
+    <p><b>Wyjście vs on</b> – o ile taniej sprzedaje kopia. Poniżej −15% → odrzucony (jego sprzedaż zbija cenę, zanim wyjdziemy).</p>
+    <p><b>Cena ucieka</b> – jaka część jego zakupów jest pomijana, bo cena skoczyła o ponad 10%. Od 50% → odrzucony.</p>
+    <p><b>Rug pulle</b> – jaka część kupionych przez niego tokenów skończyła jako 💀. Od 40% → odrzucony.</p>
+    <p><b>🏆 Sprawdzony</b> – min. ${LAB.min_closed} zamkniętych pozycji, min. 24 h testu i kopia na plusie. Kopia traci ponad 10% → odrzucony.</p>
+    <p class="mut">Wyniki laboratorium to ćwiczenia – pokazują, jak kopia by poszła; przyszłość może być inna.</p>
+  </div></details>`;
+}
+async function labCopy(wallet, rank, roi) {
+  const name = rank ? `🧪 Lab #${rank} (${roi != null ? (roi >= 0 ? '+' : '') + Math.round(roi * 100) + '% kopia' : 'test'})` : `🧪 Lab ${short(wallet)}`;
+  const r = await act('lb_add', {wallet, name, copy: 1}, {reload: false});
+  if (r) { SAVED = null; await loadLab(); load(); }
+}
+
 async function loadLB() {
   try { LB = await api(`/api/sol/leaderboard?period=${LB_P}&sort=${LB_SORT}${LB_KIND ? '&kind=' + LB_KIND : ''}`); } catch (e) { toast('⚠️ ' + e.message); }
   if (TAB === 'traders' && TR_VIEW === 'lb' && !SHEET) render();
@@ -1921,7 +2022,7 @@ try {
 async function refreshAll() {
   LAST_JSON = '';
   const jobs = [load()];
-  if (TAB === 'traders') jobs.push(TR_VIEW === 'lb' ? loadLB() : loadSaved());
+  if (TAB === 'traders') jobs.push(TR_VIEW === 'lb' ? loadLB() : TR_VIEW === 'lab' ? loadLab() : loadSaved());
   if (TAB === 'tokens') jobs.push(loadTrend());
   if (TAB === 'admin') jobs.push(loadAdmin(true));
   if (TAB === 'chat') jobs.push(loadChat(true));

@@ -52,6 +52,14 @@ CREATE TABLE IF NOT EXISTS leaderboard (  -- ranking traderów liczony przez bot
     wallet TEXT NOT NULL, period INTEGER NOT NULL, stats TEXT NOT NULL, score REAL NOT NULL, updated INTEGER NOT NULL,
     source TEXT, PRIMARY KEY (wallet, period)
 );
+CREATE TABLE IF NOT EXISTS lab (  -- 🧪 laboratorium: traderzy kopiowani na niby w tle (test, czy kopia na nich zarabia)
+    id INTEGER PRIMARY KEY AUTOINCREMENT, wallet TEXT UNIQUE NOT NULL, name TEXT, source TEXT,
+    added_at INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1, last_seen INTEGER, left_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS lab_events (  -- każdy ruch tradera w laboratorium: co zrobiła kopia i po jakiej cenie
+    lab_id INTEGER NOT NULL, ts INTEGER NOT NULL, mint TEXT, side TEXT, his_sol REAL, status TEXT, gap REAL, info TEXT
+);
+CREATE INDEX IF NOT EXISTS lab_events_idx ON lab_events (lab_id, ts);
 CREATE TABLE IF NOT EXISTS reports (  -- raporty (sesja / dzień / tydzień) – /raporty pokazuje 10 ostatnich
     id INTEGER PRIMARY KEY AUTOINCREMENT, tg_id INTEGER NOT NULL, kind TEXT NOT NULL, ts INTEGER NOT NULL,
     title TEXT NOT NULL, summary TEXT, text TEXT NOT NULL

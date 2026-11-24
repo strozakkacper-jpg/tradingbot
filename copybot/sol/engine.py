@@ -259,10 +259,19 @@ class SolEngine:
         return self.db._q("SELECT * FROM leaders WHERE source = 'sol' AND status = 'active' AND wallet = ?", (wallet,))
 
     def watched_wallets(self) -> set[str]:
-        # tylko portfele, które ktoś kopiuje albo obserwuje – każdy nasłuchiwany portfel to zapytania do RPC i Jupitera
-        return {r["wallet"] for r in self.db._q(
+        # tylko portfele, które ktoś kopiuje albo obserwuje (+ 🧪 laboratorium) – każdy nasłuchiwany portfel to
+        # zapytania do RPC i Jupitera
+        out = {r["wallet"] for r in self.db._q(
             """SELECT DISTINCT l.wallet FROM leaders l JOIN follows f ON f.leader_id = l.id
                WHERE l.source = 'sol' AND l.status = 'active' AND l.wallet IS NOT NULL""")}
+        lab = self.__dict__.get("lab")
+        return out | (lab.wallets() if lab is not None else set())
+
+    @staticmethod
+    def _acct(u) -> bool:
+        """Prawdziwe konto (użytkownik) albo konto 🧪 laboratorium – liczone jak ćwiczenia (poślizg, opłaty, „nie goń
+        ceny”). Portfel wzorcowy tradera (ujemne id bez flagi) liczy się po jego cenie."""
+        return u["tg_id"] > 0 or bool(isinstance(u, dict) and u.get("lab"))
 
     # ---------- salda ----------
     def is_live(self, u) -> bool:
@@ -436,6 +445,11 @@ class SolEngine:
     # ---------- reakcja na wymianę tradera ----------
     async def on_swap(self, wallet: str, sw: Swap, t_recv: float) -> Counter:
         res = Counter()
+        lab = self.__dict__.get("lab")
+        if lab is not None and wallet in lab.wallets():
+            if sw.pump:
+                self.note_pump_template(sw)
+            asyncio.create_task(lab.on_swap(wallet, sw, t_recv))  # 🧪 kopia testowa w tle – nie opóźnia prawdziwych
         for lead in self.leaders_for(wallet):
             res += await self.copy_leader(lead, sw, t_recv)
         return res
@@ -1038,15 +1052,17 @@ class SolEngine:
         busy = getattr(self.jup, "busy", None)
         return bool(busy and busy())
 
-    async def fast_quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
+    async def fast_quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int, lab: bool = False) -> dict:
         """Wycena bez stania w kolejce: gdy okno zapytań Jupitera jest pełne (transakcja czekałaby do ~10 s),
-        od razu pytamy Raptora; gdy Raptor nie ma trasy – i tak Jupiter."""
-        if self.raptor is not None and self._jup_busy():
+        od razu pytamy Raptora; gdy Raptor nie ma trasy – i tak Jupiter. 🧪 Laboratorium: zawsze najpierw Raptor,
+        a Jupitera tylko, gdy ma wolne miejsce (prawdziwe kopie mają pierwszeństwo)."""
+        if self.raptor is not None and (lab or self._jup_busy()):
             try:
                 rq = await self.raptor.quote(in_mint, out_mint, amount, slippage_bps)
                 return {"outAmount": rq["amountOut"], "_raptor": rq}
             except ChainError:
-                pass
+                if lab and self._jup_busy():
+                    raise
         return await self.jup.quote(in_mint, out_mint, amount, slippage_bps)
 
     async def execute(self, u, side: str, mint: str, amount_raw: int, t_recv: float | None = None,
@@ -1060,7 +1076,7 @@ class SolEngine:
             cached = self.cached_token(mint)
             decimals = cached[1] if cached else (await self.token_info(mint))[1]
         tpl = self._pump_template(mint, side, fallback)
-        if tpl is not None and u["tg_id"] > 0:
+        if tpl is not None and self._acct(u):
             fill = await self._fast_pump(u, side, mint, amount_raw, t0, t_recv, decimals, fallback, tpl)
             if fill is not None:
                 if prequote is not None and hasattr(prequote, "cancel"):
@@ -1069,11 +1085,12 @@ class SolEngine:
         t_q = time.monotonic()
         try:
             quote = await (prequote if prequote is not None else
-                           self.fast_quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"])))
+                           self.fast_quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]),
+                                           lab=isinstance(u, dict) and bool(u.get("lab"))))
         except ChainError as e:
             limited = "Too many requests" in str(e) or "429" in str(e)
             quote = None
-            if not limited:
+            if not limited and not (isinstance(u, dict) and u.get("lab")):  # laboratorium nie zjada limitu Jupitera
                 try:  # druga próba: szersze trasy (przez tokeny pośrednie)
                     quote = await self.jup.quote(in_mint, out_mint, amount_raw, int(u["sol_slippage_bps"]), restrict=False)
                 except ChainError:
@@ -1102,11 +1119,11 @@ class SolEngine:
                     return await self._live_pumpportal(u, side, mint, amount_raw, t0, t_recv, decimals)
                 raise Skip(f"brak trasy wymiany – Jupiter jeszcze nie obsługuje tego tokena ({e})") from e
         out = int(quote["outAmount"])
-        if not self.is_live(u) and u["tg_id"] > 0:
+        if not self.is_live(u) and self._acct(u):
             # ćwiczenia: poślizg taki, jak wychodzi na prawdziwych transakcjach (cena rusza się, zanim wejdziemy)
             out = int(out * (1 - self.paper_slip(side)))
         chase = u["sol_chase"] if "sol_chase" in u.keys() else 0
-        if side == "buy" and chase and fallback is not None and out > 0 and u["tg_id"] > 0:
+        if side == "buy" and chase and fallback is not None and out > 0 and self._acct(u):
             his = await self._trader_price(fallback)  # lamporty za jednostkę tokena u tradera
             mine = amount_raw / out
             if his and mine > his * (1 + chase / 100):
@@ -1115,7 +1132,7 @@ class SolEngine:
         sol_raw, tok_raw = (amount_raw, out) if side == "buy" else (out, amount_raw)
         if not self.is_live(u):
             lat = int((time.monotonic() - t0) * 1000)
-            if u["tg_id"] > 0:
+            if self._acct(u):
                 amount_raw, out = self.paper_trade(u, side, mint, amount_raw, out)
             elif side == "buy":
                 self.paper_apply(u["tg_id"], {SOL_MINT: -(amount_raw + PAPER_TX_FEE), mint: out})

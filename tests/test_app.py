@@ -2139,3 +2139,69 @@ def test_candidates_skip_traders_bot_sees_idle(tmp_path, monkeypatch):
     why = AP.Counter()
     out = [r["wallet"] for r in AP.candidates(s, why)]
     assert out == [WALLET] and why["bot nie widzi ruchów >48h"] == 1   # śledzony 5 dni, zero ruchów
+
+
+def test_lab_shadow_copy_metrics_and_verdicts(tmp_path, monkeypatch):
+    from copybot.sol import autopilot as AP
+    from copybot.sol import lab as LABM
+    from copybot.sol.parser import SOL_MINT
+    s, ctx, sent = ready(tmp_path)
+    lab = s.sol.lab = LABM.Lab(s)
+    lab.sync([{"wallet": WALLET, "name": "Test", "source": "ranking"}])
+    assert WALLET in lab.wallets() and WALLET in s.sol.watched_wallets()   # laboratorium jest nasłuchiwane
+    asyncio.run(lab.on_swap(WALLET, swap("buy", 0.5, "lb1")))
+    m = lab.member(WALLET)
+    uid = LABM.lab_uid(m["id"])
+    assert uid < -LABM.LAB_BASE and s.sol.paper(uid).get(TOKEN, 0) > 0
+    s.sol.jup.token_usd = 0.2   # cena rośnie
+    asyncio.run(lab.on_swap(WALLET, swap("sell", 1.0, "ls1")))
+    tr = s.db._q("SELECT side, pnl FROM sol_trades WHERE tg_id = ? ORDER BY id", (uid,))
+    assert [r["side"] for r in tr] == ["buy", "sell"] and tr[1]["pnl"] is not None
+    ev = s.db._q("SELECT status, gap FROM lab_events WHERE lab_id = ?", (m["id"],))
+    assert [e["status"] for e in ev] == ["filled", "filled"]
+    res = asyncio.run(lab.compute())
+    d = res["members"][0]
+    assert d["buys"] == 1 and d["closed"] == 1 and d["verdict"] == "testing"   # za mało danych na werdykt
+    assert not any(u_id == uid for u_id, _ in sent)                          # konto testowe nie dostaje wiadomości
+    # werdykty
+    base = {"limited": 0, "his_buys": 10, "chase_rate": 0.1, "buys": 10, "gap_in": 0.03, "tokens": 10, "rug_rate": 0.1,
+            "closed": 8, "gap_out": -0.05, "roi": 0.2, "hours": 48}
+    assert LABM.verdict(base)[0] == "best"
+    assert LABM.verdict({**base, "chase_rate": 0.6})[1].startswith("cena ucieka")
+    assert "drożej" in LABM.verdict({**base, "gap_in": 0.3})[1]
+    assert "rug pull" in LABM.verdict({**base, "rug_rate": 0.5})[1]
+    assert "traci" in LABM.verdict({**base, "roi": -0.3})[1]
+    assert LABM.verdict({**base, "hours": 5})[0] == "testing"
+    # dobór: odrzucony przez laboratorium odpada, sprawdzony idzie na początek
+    rows = [{"wallet": W2, "pnl": 9.0, "pnl_usd": None, "activity": 90, "last": None},
+            {"wallet": WALLET, "pnl": 1.0, "pnl_usd": None, "activity": 90, "last": None},
+            {"wallet": "Bad1111111111111111111111111111111111111111", "pnl": 5.0, "pnl_usd": None, "activity": 90, "last": None}]
+    monkeypatch.setattr(AP.LB, "top", lambda s, period, sort, kind=None, limit=None: rows if period == 7 else [])
+    lab.stats_cache = {"updated": 1, "members": [
+        {"wallet": WALLET, "verdict": "best", "score": 15.0, "roi": 0.15, "active": True, "name": "Test"},
+        {"wallet": "Bad1111111111111111111111111111111111111111", "verdict": "reject", "reason": "x", "score": -5,
+         "roi": -0.3, "active": True}]}
+    out = [r["wallet"] for r in AP.candidates(s)]
+    assert out == [WALLET, W2]
+    assert [r["wallet"] for r in AP.candidates(s, use_lab=False)][0] == W2
+
+
+def test_rotate_swaps_weak_trader_for_lab_proven(tmp_path, monkeypatch):
+    from copybot.sol import autopilot as AP
+    from copybot.sol import lab as LABM
+    from copybot.sol.api import saved_list
+    s, ctx, sent = ready(tmp_path)
+    s.sol.wallet(OWNER)
+    ws = ["Aaa1111111111111111111111111111111111111111", "Bbb1111111111111111111111111111111111111111",
+          "Ccc1111111111111111111111111111111111111111"]
+    for w in ws:
+        s.db.follow(OWNER, s.db.create_leader("Stary " + w[:3], "sol", OWNER, "active", wallet=w), True)
+    lab = s.sol.lab = LABM.Lab(s)
+    lab.stats_cache = {"updated": 1, "members": [
+        {"wallet": WALLET, "verdict": "best", "score": 20.0, "roi": 0.25, "active": True, "name": "Gwiazda"},
+        {"wallet": ws[1], "verdict": "testing", "score": -3.0, "roi": -0.05, "active": True}]}
+    monkeypatch.setattr(AP.LB, "top", lambda s, period, sort, kind=None, limit=None: [])
+    res = AP.rotate(s, s.db.get_user(OWNER), 0.1)   # cel: 3 traderów – skład pełny
+    copy = {it["wallet"] for it in saved_list(s, OWNER) if it["status"] == "copy"}
+    assert WALLET in copy and len(copy) == 3 and any("laboratorium" in o for o in res["off"])
+    assert any(n.startswith("🧪 Lab #") for n in res["on"])

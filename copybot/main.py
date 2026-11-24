@@ -1,4 +1,5 @@
 import asyncio
+import os
 import datetime as dt
 import logging
 import warnings
@@ -11,7 +12,7 @@ from telegram.warnings import PTBUserWarning
 import aiohttp
 
 from . import demo, mirror, traders
-from .sol import admin as sol_admin, autocfg as sol_autocfg, autopilot as sol_autopilot, axiom, extras as sol_extras, leaderboard as sol_leaderboard, ui as sol_ui
+from .sol import admin as sol_admin, autocfg as sol_autocfg, autopilot as sol_autopilot, axiom, extras as sol_extras, lab as sol_lab, leaderboard as sol_leaderboard, ui as sol_ui
 from .sol.chain import Jito, Jupiter, PumpPortal, Raptor, Rpc
 from .sol.engine import SolEngine
 from .sol.watcher import SolWatcher
@@ -78,6 +79,8 @@ async def post_init(app: Application):
         svc.sol.pump = PumpPortal(session)
         svc.sol.raptor = Raptor(session)
         svc.sol.jito = Jito(cfg.jito_url, session) if cfg.jito_url else None
+        if os.getenv("LAB_ENABLED", "1") != "0":
+            svc.sol.lab = sol_lab.Lab(svc)  # 🧪 laboratorium traderów (kopia testowa w tle)
         app.bot_data.update(sol_session=session, sol_task=asyncio.create_task(sol_watcher.run()))
         log.info("Solana: RPC %s · Jupiter %s · %s", "Helius" if cfg.helius_api_key else "publiczny (wolniejszy)",
                  "z kluczem" if cfg.jupiter_api_key else "lite (bez klucza)",
@@ -116,6 +119,8 @@ async def post_init(app: Application):
             (sol_leaderboard.leaderboard_job, 6 * 3600, 600),      # ranking światowy i ranking bota
             (sol_extras.dust_job, 6 * 3600, 300),                  # prawdziwe SOL: pył spalony, depozyty kont wracają
             (sol_extras.dead_job, 300, 45),                        # 💀 rug pull: tokeny bez trasy sprzedaży = 0 SOL
+            (sol_lab.lab_job, 3 * 3600, 150),                      # 🧪 laboratorium: skład (czołówka + kopiowani)
+            (sol_lab.lab_stats_job, 15 * 60, 600),                 # 🧪 laboratorium: wyniki i werdykty
         ):
             app.job_queue.run_repeating(job, interval=every, first=first)
         # codziennie o stałej porze (czas użytkowników)

@@ -1137,6 +1137,19 @@ def routes(s, app: web.Application, auth):
         return {"messages": [chat_msg(s, r, u["tg_id"]) for r in s.db.chat_list(after)],
                 "last_id": s.db.chat_last_id(), "me": u["tg_id"], "admin": u["tg_id"] in admin_ids(s)}
 
+    async def h_lab(_, u):
+        """🧪 Laboratorium: wyniki kopii testowej każdego testowanego tradera + czy Ty go kopiujesz."""
+        from . import lab as LABM
+        lab = getattr(s.sol, "lab", None)
+        if lab is None:
+            return {"enabled": False, "members": []}
+        res = lab.results()
+        mine = {it["wallet"]: it["status"] for it in saved_list(s, u["tg_id"])}
+        members = [dict(d, mine=mine.get(d["wallet"])) for d in res.get("members", [])]
+        return {"enabled": True, "members": members, "updated": res.get("updated"), "window_h": LABM.WINDOW_H,
+                "min_closed": LABM.MIN_CLOSED, "buy_sol": LABM.BUY / LAMPORTS, "watched": len(lab.wallets()),
+                "now": now_ms()}
+
     async def h_saved(_, u):
         from . import health as HL
         items = saved_list(s, u["tg_id"])
@@ -1172,6 +1185,7 @@ def routes(s, app: web.Application, auth):
     r.add_get("/api/sol/deposit", handler(h_deposit))
     r.add_post("/api/sol/action", handler(h_action))
     r.add_get("/api/sol/saved", handler(h_saved))
+    r.add_get("/api/sol/lab", handler(h_lab))
     r.add_get("/api/sol/chat", handler(h_chat))
     r.add_get("/api/sol/ranking", handler(h_ranking))
     r.add_get("/api/sol/live", handler(h_live))

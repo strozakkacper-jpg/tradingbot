@@ -22,12 +22,13 @@ sieć Solana ──► sol/watcher.py ──► sol/parser.py ──► sol/engi
 | `parser.py` | z transakcji odczytuje: kto, kupno/sprzedaż, token, ile SOL/USDC, jaki % salda |
 | `engine.py` | **serce kopiowania**: filtry (`guard_buy`), kwota (`buy_amount`), wykonanie (`execute`), ćwiczenia (`paper_*`), portfel wzorcowy tradera (`_reference`), wyniki |
 | `chain.py` | klienci sieci: RPC (Helius), Jupiter (wyceny, wymiany, limit zapytań), Raptor (druga droga – gdy Jupiter zajęty), DexScreener (ceny poza limitem Jupitera), PumpPortal, Jito (kilka regionów naraz) |
+| `lab.py` | 🧪 laboratorium traderów: kopia testowa w tle (czołówka + kopiowani) z opóźnieniem, ceną z chwili kopii i opłatami; wynik kopii, wejście/wyjście vs on, „cena ucieka”, rug pulle → werdykt 🏆/🧪/❌ dla autopilota |
 | `health.py` | 🩺 stan kopiowanych traderów: czy bot naprawdę kopiuje i dlaczego nie (pauza, flipper, brak handlu, straty, brak tras, pominięcia), Twój wynik na każdym |
 | `fastswap.py` | ⚡ szybka kopia na krzywej Pump.fun: instrukcja tradera z podmienionymi kontami, cena z krzywej, bez Jupitera (sprawdzone symulacją na sieci) |
 | `axiom.py` | pulpit w czacie, ręczne kupno/sprzedaż, **automatyczna sprzedaż** (`tpsl_job`: TP/SL, drabinka zysku, ruchomy stop, wyjście po czasie, ucieczka twórcy) |
 | `api.py` | API aplikacji (`/api/sol/*`): stan, akcje (`h_action`), traderzy, ranking, raporty, admin |
 | `autocfg.py` | **✨ Ustaw za mnie / 🤖 Auto** – kwoty pod saldo, osobny % dla każdego tradera, poziomy ryzyka; nie rusza bezpieczników (`SAFETY_KEYS`) |
-| `autopilot.py` | **🚀 autopilot zarobku** – dobór i rotacja traderów, zadania jednorazowe po wdrożeniach |
+| `autopilot.py` | **🚀 autopilot zarobku** – dobór (najpierw sprawdzeni w 🧪 laboratorium) i rotacja co ~3 h (odrzuceni przez laboratorium wylatują, słabszy wymieniany na sprawdzonego), zadania jednorazowe po wdrożeniach |
 | `leaderboard.py` | ranking traderów: światowy (Solana Tracker / Vybe) + liczony przez bota z łańcucha; nazwy z rankingu |
 | `research.py` | badanie portfela tradera z łańcucha (zysk, skuteczność, czas trzymania) |
 | `optimizer.py` | 🧪 optymalizator – odtwarza ruchy traderów z różnymi ustawieniami |
@@ -54,7 +55,7 @@ sieć Solana ──► sol/watcher.py ──► sol/parser.py ──► sol/engi
 ## Aplikacja (`webapp/sol.html`) – układ
 
 - **Pulpit** – saldo, wykres, status bota, kopiowani traderzy (rozwijani), ostatnie ruchy
-- **Traderzy** – Moi traderzy w grupach (🟢 bot kopiuje / ⏸ wstrzymani z powodem / 👁 obserwujesz / 📋 zapisani), przy każdym Twój wynik 7 dni i problem; karta tradera: stan, Twój wynik, powody pominięć, Twoje kopie, jego wynik, kwota / 🌍 Ranking top 100
+- **Traderzy** – Moi traderzy w grupach (🟢 bot kopiuje / ⏸ wstrzymani z powodem / 👁 obserwujesz / 📋 zapisani), przy każdym Twój wynik 7 dni i problem; karta tradera: stan, Twój wynik, powody pominięć, Twoje kopie, jego wynik, kwota / 🧪 Laboratorium (podium, wynik kopii, werdykty) / 🌍 Ranking top 100
 - **Tokeny** – sprawdzanie tokena, moje tokeny, popularne
 - **Historia** – wynik dnia, raport sesji, 📑 raporty, CSV, wszystkie ruchy
 - **Czat** – czat grupowy

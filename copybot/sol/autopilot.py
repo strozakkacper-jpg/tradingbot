@@ -29,8 +29,17 @@ def target_count(balance: float) -> int:
     return 3 if balance < 0.5 else 4 if balance < 1 else 5 if balance < 3 else 6 if balance < 10 else 8
 
 
-def candidates(s, why: Counter | None = None) -> list[dict]:
+def _lab(s) -> dict[str, dict]:
+    lab = getattr(getattr(s, "sol", None), "lab", None)
+    try:
+        return lab.by_wallet() if lab is not None else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def candidates(s, why: Counter | None = None, use_lab: bool = True) -> list[dict]:
     """Najlepsi do kopiowania – świat (a gdy brak kluczy: ranking bota), od najlepszego.
+    🧪 use_lab: najpierw sprawdzeni w laboratorium (kopia na nich zarabia), odrzuceni przez laboratorium odpadają.
     why – jeśli podany, zlicza powody odrzucenia (do logów)."""
     why = why if why is not None else Counter()
     for kind in ("world", "chain"):
@@ -39,8 +48,8 @@ def candidates(s, why: Counter | None = None) -> list[dict]:
             break
     else:
         why["pusty ranking"] += 1
-        return []
-    m30 = {r["wallet"]: r for r in LB.top(s, 30, "score", kind=kind)}
+        rows, kind = [], "chain"
+    m30 = {r["wallet"]: r for r in LB.top(s, 30, "score", kind=kind)} if rows else {}
     now = time.time()
     seen = _bot_seen(s, [r["wallet"] for r in rows])
     out = []
@@ -65,6 +74,24 @@ def candidates(s, why: Counter | None = None) -> list[dict]:
         else:
             out.append(r)
     why[f"ok ({kind})"] += len(out)
+    labw = _lab(s) if use_lab else {}
+    if labw:
+        kept = []
+        for r in out:
+            d = labw.get(r["wallet"])
+            if d and d["verdict"] == "reject":
+                why["🧪 odrzucony w laboratorium"] += 1
+                continue
+            kept.append({**r, "lab": d})
+        have = {r["wallet"] for r in kept}
+        # sprawdzeni w laboratorium, choć spoza dzisiejszej czołówki (np. kopiowani) – też kandydaci
+        extra = [{"wallet": w, "name": d.get("name"), "lab": d} for w, d in labw.items()
+                 if d["verdict"] == "best" and w not in have and d.get("active")]
+        best = sorted([r for r in kept + extra if r.get("lab") and r["lab"]["verdict"] == "best"],
+                      key=lambda r: -(r["lab"]["score"] or 0))
+        rest = [r for r in kept if not (r.get("lab") and r["lab"]["verdict"] == "best")]
+        why["🧪 sprawdzeni w laboratorium"] += len(best)
+        out = best + rest
     return out
 
 
@@ -78,7 +105,12 @@ def _bot_seen(s, wallets: list[str]) -> dict[str, tuple[int, int | None]]:
                        JOIN follows f ON f.leader_id = l.id
                        LEFT JOIN sol_trades t ON t.tg_id = -l.id AND t.status = 'filled'
                        WHERE l.source = 'sol' AND l.wallet IN ({q}) GROUP BY l.wallet""", tuple(wallets))
-    return {r["wallet"]: (r["since"] or now_ms(), r["last"]) for r in rows}
+    out = {r["wallet"]: (r["since"] or now_ms(), r["last"]) for r in rows}
+    # 🧪 laboratorium też nasłuchuje (i to dłużej) – jego obserwacja się liczy
+    for r in s.db._q(f"SELECT wallet, added_at, last_seen FROM lab WHERE wallet IN ({q})", tuple(wallets)):
+        since, last = out.get(r["wallet"], (r["added_at"], None))
+        out[r["wallet"]] = (min(since, r["added_at"]), max(last or 0, r["last_seen"] or 0) or None)
+    return out
 
 
 def _no_route_share(s, uid: int, lid: int) -> float:
@@ -105,6 +137,7 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
     if (u["sol_risk"] if "sol_risk" in u.keys() else 0) > 0:
         target = min(target, 3)  # 🔥 duże wejścia = mało traderów naraz (inaczej pierwszy zjada całe saldo)
     off, kept, on, off_w = [], [], [], set()
+    labw = _lab(s)
     follows = {r["leader_id"]: r["created_at"] for r in s.db._q("SELECT leader_id, created_at FROM follows WHERE tg_id = ?",
                                                                  (uid,))}
     for it in items:
@@ -127,6 +160,9 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
                     h = it.get("hold") or {}
                     if h.get("n", 0) >= 3 and (h.get("median_s") or 999) < 20:
                         why = "flipper – kopia nie nadąża"
+            ld = labw.get(it["wallet"])
+            if not why and ld and ld["verdict"] == "reject":
+                why = f"🧪 laboratorium: {ld['reason']}"
         if why:
             switch(s, uid, it["wallet"], False)
             off.append(f"{name} ({why})")
@@ -145,6 +181,23 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
             off.append(f"{it['name'] or it['wallet'][:6]} (za dużo traderów naraz)")
             off_w.add(it["wallet"])
         kept = [k for k in kept[:target]] + [k for k in kept[target:] if k[0]["priority"]]
+    if not initial and labw and len(kept) >= target:
+        # 🔁 szybka wymiana: jest sprawdzony w laboratorium, a któryś z Twoich nie (i Tobie na nim nie idzie) –
+        # najwyżej 1 wymiana na rotację, żeby skład nie skakał
+        have_w = {it["wallet"] for it, _ in kept}
+        best = [w for w, d in labw.items() if d["verdict"] == "best" and d.get("active") and w not in have_w
+                and w not in off_w]
+        if best:
+            top = max(labw[w]["roi"] or 0 for w in best)
+            weak = [(it, r) for it, r in kept if not it["priority"] and (r.get("pnl_7d") or 0) <= 0
+                    and (labw.get(it["wallet"]) or {}).get("verdict") != "best"
+                    and ((labw.get(it["wallet"]) or {}).get("roi") is None or labw[it["wallet"]]["roi"] < top - 0.10)]
+            if weak:
+                it, _ = min(weak, key=lambda x: (labw.get(x[0]["wallet"]) or {}).get("roi") or -1)
+                switch(s, uid, it["wallet"], False)
+                off.append(f"{it['name'] or it['wallet'][:6]} (🧪 w laboratorium są lepsi)")
+                off_w.add(it["wallet"])
+                kept = [k for k in kept if k[0]["wallet"] != it["wallet"]]
     need = max(target - len(kept), 0)
     have = {it["wallet"] for it in saved_list(s, uid) if it["status"] == "copy"}
     why = Counter()
@@ -158,7 +211,11 @@ def rotate(s, u, balance: float, initial: bool = False) -> dict:
         prev = mine.get(w) or {}
         if (prev.get("sells") or 0) >= 5 and (prev.get("pnl_7d") or 0) < 0:
             continue  # już go kopiowałeś i traciłeś – nie wracamy do niego
-        name = LB.rank_name(COMBO, i + 1, 7, r.get("name"))
+        ld = r.get("lab")
+        if ld and ld["verdict"] == "best":  # 🧪 sprawdzony: krótko i z wynikiem kopii
+            name = f"🧪 Lab #{i + 1} ({(ld['roi'] or 0) * 100:+.0f}% kopia)"
+        else:
+            name = LB.rank_name(COMBO, i + 1, 7, r.get("name"))
         old = s.db._q("SELECT name FROM sol_saved WHERE tg_id = ? AND wallet = ?", (uid, w))
         if old and not LB.is_generic(old[0]["name"], w):
             name = old[0]["name"]
@@ -244,7 +301,7 @@ async def autopilot_job(ctx):
     from .axiom import portfolio
     for u in s.db._q("SELECT * FROM users WHERE approved = 1 AND sol_autopilot = 1"):
         key = f"autopilot:{u['tg_id']}"
-        if now_ms() - int(s.db.get_state(key) or 0) < 5.5 * 3600 * 1000:
+        if now_ms() - int(s.db.get_state(key) or 0) < 2.75 * 3600 * 1000:  # 🔁 co ~3 h (szybsza reakcja)
             continue
         s.db.set_state(key, str(now_ms()))
         try:
