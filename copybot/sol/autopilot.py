@@ -449,3 +449,30 @@ async def reset_demo_2sol_once(ctx):
         except Exception:  # noqa: BLE001
             log.exception("Ćwiczenia od nowa %s", uid)
     log.info("Ćwiczenia od nowa (2 SOL): konta z traderami %s", done)
+
+
+async def demo_traders_check_once(ctx):
+    """Jednorazowo po resecie ćwiczeń: skład traderów każdego konta do logów (czas od ostatniego ruchu) i
+    uzupełnienie do celu, jeśli ktoś ma za mało aktywnych traderów."""
+    s = ctx.application.bot_data["svc"]
+    if not getattr(s, "sol", None) or s.db.get_state("demo_traders_check"):
+        return
+    s.db.set_state("demo_traders_check", str(now_ms()))
+    from .api import saved_list
+    for u in s.db._q("SELECT u.* FROM users u JOIN sol_wallets w ON w.tg_id = u.tg_id WHERE u.approved = 1"):
+        try:
+            live = s.sol.is_live(u)
+            if not live:
+                res = rotate(s, u, 2.0)
+                if res["on"] or res["off"]:
+                    autocfg.apply(s, s.db.get_user(u["tg_id"]), 2.0)
+                    log.info("Ćwiczenia %s: uzupełniono traderów +%s / -%s", u["tg_id"], res["on"], res["off"])
+            rows = []
+            for it in saved_list(s, u["tg_id"]):
+                if it["status"] != "copy" or not it["lid"]:
+                    continue
+                last = _his_last(s, it["lid"])
+                rows.append(f"{(it['name'] or '')[:28]} ({'%.0f h' % ((now_ms() - last) / 3600_000) if last else 'brak ruchu'})")
+            log.info("Skład traderów %s (%s): %s", u["tg_id"], "prawdziwe" if live else "ćwiczenia", "; ".join(rows) or "BRAK")
+        except Exception:  # noqa: BLE001
+            log.exception("Sprawdzenie traderów %s", u["tg_id"])
