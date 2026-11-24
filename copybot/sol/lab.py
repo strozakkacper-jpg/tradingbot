@@ -78,6 +78,10 @@ class Lab:
                              (w["wallet"], w.get("name"), w.get("source"), now))
                 added += 1
             else:
+                limited = self.s.db._q("SELECT 1 FROM lab_events WHERE lab_id = ? AND status = 'limit' AND ts >= ?",
+                                       (r["id"], now - 7 * DAY_MS))
+                if limited:  # bot / scalper – nie wraca do nasłuchu przez tydzień
+                    continue
                 self.s.db._q("UPDATE lab SET active = 1, left_at = NULL, name = COALESCE(?, name), source = ? "
                              "WHERE id = ?", (w.get("name"), w.get("source"), r["id"]))
         want = {w["wallet"] for w in wanted}
@@ -109,7 +113,11 @@ class Lab:
         while q and now - q[0] > 3600:
             q.popleft()
         if len(q) >= PER_HOUR:
-            return self._event(m["id"], sw, "limit")  # bot/scalper – i tak go odrzucimy (za dużo ruchów)
+            # bot / scalper: kopia i tak nie nadąży, a każdy jego ruch to zapytanie do RPC – przestajemy nasłuchiwać
+            self.s.db._q("UPDATE lab SET active = 0, left_at = ? WHERE id = ?", (now_ms(), m["id"]))
+            self._wallets = (0.0, set())
+            log.info("🧪 Laboratorium: %s – ponad %d ruchów/h, koniec nasłuchu (bot/scalper)", wallet[:6], PER_HOUR)
+            return self._event(m["id"], sw, "limit")
         q.append(now)
         try:
             async with self.sem:
@@ -224,7 +232,7 @@ class Lab:
 
 def verdict(d: dict) -> tuple[str, str | None]:
     """🏆 best / 🧪 testing / ❌ reject + powód po ludzku. Odrzucamy typy, których kopia z zasady nie dogoni."""
-    if d["limited"] >= 10:
+    if d["limited"] >= 1:
         return "reject", "za dużo ruchów (bot / scalper) – kopia nie nadąża"
     if d["his_buys"] >= 6 and (d["chase_rate"] or 0) >= 0.5:
         return "reject", f"cena ucieka: {d['chase_rate'] * 100:.0f}% jego zakupów nie da się skopiować w limicie 10%"

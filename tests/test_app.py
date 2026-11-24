@@ -2205,3 +2205,37 @@ def test_rotate_swaps_weak_trader_for_lab_proven(tmp_path, monkeypatch):
     copy = {it["wallet"] for it in saved_list(s, OWNER) if it["status"] == "copy"}
     assert WALLET in copy and len(copy) == 3 and any("laboratorium" in o for o in res["off"])
     assert any(n.startswith("🧪 Lab #") for n in res["on"])
+
+
+def test_close_skips_vanished_accounts_and_lab_stops_bots(tmp_path):
+    from solders.keypair import Keypair
+    from copybot.sol import lab as LABM
+    from copybot.sol.chain import Rpc
+    r = Rpc("http://x", None, 0)
+    sent_tx = []
+
+    async def call(method, params=None):
+        if method == "getMultipleAccounts":   # pierwsze konto już zamknięte (np. przez samą wymianę)
+            return {"value": [None, {"owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"}]}
+        if method == "getLatestBlockhash":
+            return {"value": {"blockhash": "11111111111111111111111111111111"}}
+        raise AssertionError(method)
+
+    async def sac(tx, timeout=45, also=None):
+        sent_tx.append(tx)
+        return "sig", 0.1
+    r.call, r.send_and_confirm = call, sac
+    accs = [(str(Keypair().pubkey()), "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+            (str(Keypair().pubkey()), "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")]
+    assert asyncio.run(r.close_token_accounts(Keypair(), accs)) == 1 and len(sent_tx) == 1
+    # laboratorium: trader z > PER_HOUR ruchami/h przestaje być nasłuchiwany i jest odrzucony
+    s, ctx, sent = ready(tmp_path)
+    lab = s.sol.lab = LABM.Lab(s)
+    lab.sync([{"wallet": WALLET, "name": "Bot", "source": "ranking"}])
+    lab._rate[WALLET] = __import__("collections").deque([time.monotonic()] * LABM.PER_HOUR)
+    asyncio.run(lab.on_swap(WALLET, swap("buy", 0.5, "bx")))
+    assert WALLET not in lab.wallets()
+    lab.sync([{"wallet": WALLET, "name": "Bot", "source": "ranking"}])   # nie wraca przy kolejnym składzie
+    assert WALLET not in lab.wallets()
+    d = asyncio.run(lab.compute())["members"][0]
+    assert d["verdict"] == "reject" and "bot" in d["reason"]

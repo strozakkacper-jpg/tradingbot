@@ -167,16 +167,17 @@ class SolEngine:
             self.db.conn.execute("DELETE FROM sol_trades WHERE tg_id = ? AND paper = 1", (tg_id,))
         self.db._q("INSERT INTO sol_paper VALUES (?, ?, ?)", (tg_id, SOL_MINT, int(self.paper_start(tg_id) * LAMPORTS)))
 
-    def paper_fee(self, u, lamports: int | None = None) -> int:
-        """Ćwiczenia z prawdziwymi kosztami: opłata sieci + napiwek liczony jak na prawdziwej transakcji."""
-        return BASE_FEE + self.trade_tip(u, lamports)
+    def paper_fee(self, u, lamports: int | None = None, side: str | None = None) -> int:
+        """Ćwiczenia z prawdziwymi kosztami: opłata sieci + napiwek liczony jak na prawdziwej transakcji
+        (zakup – wyższy napiwek, tak jak na prawdziwych SOL)."""
+        return BASE_FEE + self.trade_tip(u, lamports, side)
 
     def paper_trade(self, u, side: str, mint: str, amount_raw: int, out_raw: int) -> tuple[int, int]:
         """Transakcja na ćwiczeniach z kosztami jak na prawdziwych SOL: opłaty + depozyt za nowe konto tokena
         (wraca po sprzedaży całości, bo bot zamyka puste konta). Zwraca (ilość, wynik) NAPRAWDĘ wykonane:
         sprzedaż nie może przekroczyć tego, co masz – dwie sprzedaże tego samego tokena naraz (trader sprzedaje
         w dwóch transakcjach) liczyły się wcześniej obie od pełnego stanu i dopisywały SOL za więcej tokenów."""
-        uid, fee = u["tg_id"], self.paper_fee(u, amount_raw if side == "buy" else out_raw)
+        uid, fee = u["tg_id"], self.paper_fee(u, amount_raw if side == "buy" else out_raw, side)
         held = self.paper(uid).get(mint, 0)
         if side == "buy":
             rent = ATA_RENT if held <= 0 else 0

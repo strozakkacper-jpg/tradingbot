@@ -257,6 +257,16 @@ class Rpc:
         """Zamyka puste konta tokenów (instrukcja CloseAccount) – depozyt wraca do właściciela. Zwraca liczbę."""
         owner = kp.pubkey()
         closed = 0
+        # konto mogło już zniknąć (zamknęła je sama wymiana przy sprzedaży całości albo sprzątanie chwilę wcześniej) –
+        # zamykanie nieistniejącego kończyło się „IncorrectProgramId” i opłatą za nic
+        if accounts:
+            try:
+                res = await self.call("getMultipleAccounts", [[a for a, _ in accounts], {"encoding": "base64",
+                                                                                         "commitment": "confirmed"}])
+                live = res.get("value") or []
+                accounts = [(a, p) for (a, p), v in zip(accounts, live) if v and v.get("owner") == p]
+            except ChainError:
+                pass
         for i in range(0, len(accounts), 8):  # po 8 w jednej transakcji
             ixs = [Instruction(Pubkey.from_string(prog), bytes([9]),
                                [AccountMeta(Pubkey.from_string(acc), False, True), AccountMeta(owner, False, True),
